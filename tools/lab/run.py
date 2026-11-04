@@ -380,7 +380,7 @@ def main():
     for r in results:
         ok = "lỗi" if "error" in r else ("✅" if r.get("pass") else "❌")
         split = f"{r.get('edits_split', '')}/{r.get('edits', '')}" if "edits" in r else ""
-        note = r.get("error", "") or ("mong đợi: " + r["expect"] if not r.get("pass") and "expect" in r else "")
+        note = r.get("error", "") or ("mong đợi: " + r["expect"] if not r.get("pass") and r.get("expect") is not None else "")
         rows.append(f"| {r['terminal']} | {r.get('style', '')} | {r['test']} | {ok} | `{r.get('final', '')}` | {split} | {note} |")
     md = "\n".join(rows)
     (OUT / "summary.md").write_text(md + "\n")
