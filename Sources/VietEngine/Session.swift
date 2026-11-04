@@ -80,6 +80,10 @@ public final class Session {
     /// Terminal: chữ của từ đang gõ thật sự nằm trên dòng, khi khác `engine.displayed` — phím đã đi nguyên văn vì
     /// chưa chắc có phím nào đi vòng bộ gõ không (`KeyGap.unsure`). nil nếu khớp.
     private var onLine: String?
+    /// iTerm2 / Terminal.app, lúc chưa chắc mà màn hình lệch: hoặc chỉ là shell chưa in lại (từ cũ vẫn đúng), hoặc đã có
+    /// phím đi vòng ngay trước (vd. ⌫ ở Terminal.app) và từ thật bắt đầu từ phím lúc đó — các ký tự đã gõ (nguyên văn) từ
+    /// đó tới giờ. Phím sau quyết định: sổ phím sạch → từ cũ; màn hình (đã in kịp) khớp các ký tự này → từ mới.
+    private var restartChars: [Character]?
     /// Chữ vừa gửi có thể chưa kịp hiện (shell chưa in lại): trong khoảng này con trỏ đứng sau là bình thường.
     private static let echoLag = 0.15
     /// Kiểu `.deferred` (Ghostty): gửi lần sửa sau bấy nhiêu giây kể từ lúc trả lời phím, không gửi ngay.
@@ -103,6 +107,7 @@ public final class Session {
     public func reset() {
         engine.reset()
         onLine = nil
+        restartChars = nil
         endMarkedWord()
         continueWordOnNextChar = false
     }
@@ -323,6 +328,7 @@ public final class Session {
     private func handleTerminalKey(_ key: Key, _ client: TextClient, options: EngineOptions,
                                    style: TerminalStyle, repeatDelay: Double?, gap: KeyGap, legacy: String?) -> Bool {
         var unsure = gap == .unsure || gap == .unsureSteady
+        if gap == .none { restartChars = nil }      // không có phím nào đi vòng: từ cũ đúng
         let now = client.currentTime()
         if let repeatDelay, let bs = lastBackspaceAt, now - bs >= repeatDelay * 0.9 {
             resetTerminalWord()     // có thể Backspace đã được giữ (phím lặp không qua bộ gõ): không biết đã xoá bao nhiêu
@@ -333,6 +339,7 @@ public final class Session {
             resetTerminalWord()     // Enter, mũi tên, Ctrl+...: shell tự xử lý, không khôi phục từ sau phím này
             return false
         case .backspace:
+            restartChars = nil
             guard !engine.isEmpty else { return false }
             if guardCursor(client, gap: gap) == .matches, gap == .unsureSteady { unsure = false }
             guard !engine.isEmpty else { return false }
@@ -362,7 +369,19 @@ public final class Session {
             // iTerm2 / Terminal.app: sổ phím chưa chắc nhưng không có thêm phím nào chưa thấy kể từ phím trước, và màn
             // hình (đã in lại phím trước, nên cả mọi thứ trước nó) cho thấy đúng từ nằm ngay trước con trỏ: sửa được
             // (vd. ⌫ ở Terminal.app không qua bộ gõ, rồi gõ tiếp liền tay).
-            if !engine.isEmpty, guardCursor(client, gap: gap) == .matches, gap == .unsureSteady { unsure = false }
+            if !engine.isEmpty {
+                switch guardCursor(client, gap: gap) {
+                case .matches where gap == .unsureSteady:
+                    unsure = false
+                case .restartMatches where gap == .unsureSteady:
+                    restartWord(restartChars ?? [], options)
+                    unsure = false
+                case .unconfirmed where unsure && restartChars == nil:
+                    restartChars = []          // từ phím này: có thể là từ mới (xem `restartChars`)
+                default:
+                    break
+                }
+            }
             if engine.isEmpty {
                 engine.options = Self.terminalOptions(options)
                 onLine = nil
@@ -371,8 +390,10 @@ public final class Session {
             let line = onLine ?? engine.displayed      // chữ của từ đang nằm ngay trước con trỏ
             let rawLine = onLine != nil
             onLine = nil
+            if unsure, restartChars != nil { restartChars!.append(ch) }
             guard engine.process(ch) != nil else {
                 // Hết từ (dấu cách, dấu câu…): khôi phục từ không phải tiếng Việt trước ký tự này.
+                restartChars = nil
                 let finished = engine.finishWord()
                 var target = finished.text
                 if case let .replace(_, new) = finished.action { target = new }
@@ -400,6 +421,20 @@ public final class Session {
     private func resetTerminalWord() {
         engine.reset()
         onLine = nil
+        restartChars = nil
+    }
+
+    /// Từ thật bắt đầu từ `restartChars` (đã nằm nguyên văn ngay trước con trỏ): nạp lại.
+    private func restartWord(_ chars: [Character], _ options: EngineOptions) {
+        resetTerminalWord()
+        engine.options = Self.terminalOptions(options)
+        var raw = ""
+        for c in chars {
+            guard engine.process(c) != nil else { resetTerminalWord(); return }
+            raw.append(c)
+        }
+        if !Self.same(raw, engine.displayed) { onLine = raw }
+        log?("màn hình cho thấy có phím đi vòng: từ bắt đầu lại từ \(raw.debugDescription)")
     }
 
     /// Phím chắc chắn (sổ phím) kết thúc từ mà không in được (⏎, ⇥, ⎋) khi dòng còn giữ phím đi nguyên văn lúc chưa chắc
@@ -448,6 +483,8 @@ public final class Session {
         case matches
         /// Con trỏ nằm giữa từ: đã nạp lại phần trước con trỏ (đúng như màn hình).
         case reseeded
+        /// Màn hình khớp các ký tự gõ từ lúc nghi có phím đi vòng (`restartChars`), không khớp từ cũ.
+        case restartMatches
         /// Không khớp (từ có thể đã bị bỏ).
         case unconfirmed
     }
@@ -471,7 +508,14 @@ public final class Session {
             if client.currentTime() - termLastWrite >= Self.echoLag { resetTerminalWord() }
             return .unconfirmed
         case .unsure, .unsureSteady, .interrupted:
-            resetTerminalWord()
+            // Không xoá gì lúc chưa chắc; giữ từ cũ (có thể chỉ là chưa in kịp). Màn hình khớp các ký tự gõ từ lúc nghi có
+            // phím đi vòng thì đó là từ thật.
+            if let chars = restartChars, !chars.isEmpty {
+                let suffix = Array(String(chars).utf16)
+                let tail = client.text(location: max(0, cursor - suffix.count), length: min(suffix.count, cursor))
+                    .map { Array($0.utf16) } ?? []
+                if tail == suffix { return .restartMatches }
+            }
             return .unconfirmed
         case .unverified:
             break

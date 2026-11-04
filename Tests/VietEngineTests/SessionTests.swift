@@ -958,6 +958,19 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(v.line, "ti6e")
     }
 
+    /// iTerm2 / Terminal.app: ứng dụng treo rồi các phím tới dồn (shell chưa kịp in lại phím nào): sổ phím "chưa biết"
+    /// cho tới phím cuối — màn hình lệch chỉ vì chưa in kịp, không được bỏ từ; phím cuối (sạch) sửa cả từ một lần.
+    func testTerminalScreenLagDuringStallBurst() {
+        let t = ScreenTerminal()
+        t.type("Vi", ms: 120)
+        t.type("e6", ms: 0.3, echoes: false, gap: .unsure)
+        t.type("5", ms: 0.3, echoes: false, gap: .unsure)
+        t.type("t", ms: 0.3, echoes: false, gap: .none)
+        t.echo()
+        t.type(" Nam", ms: 120)
+        XCTAssertEqual(t.line, "Việt Nam")
+    }
+
     /// Ghostty: Enter / Ctrl+E bấm khi lần sửa dấu còn chờ (vài ms sau phím dấu): gửi kèm lần sửa trong một lần ghi —
     /// Ghostty không nuốt phím, thứ tự đúng.
     func testGhosttyPendingEditCarriesControlKeys() {
