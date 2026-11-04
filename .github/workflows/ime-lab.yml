@@ -26,9 +26,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  config:
+    # tools/lab/lab.env có thể chọn loại máy (RUNNER=…), vd. máy Intel khi máy macOS arm64 của GitHub đang thiếu.
+    name: Config
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.r.outputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: r
+        run: |
+          r="$(grep -E '^RUNNER=' tools/lab/lab.env 2>/dev/null | tail -1 | cut -d= -f2-)"
+          echo "runner=${r:-macos-26}" >> "$GITHUB_OUTPUT"
+
   lab:
     name: Lab
-    runs-on: macos-26
+    needs: config
+    runs-on: ${{ needs.config.outputs.runner }}
     timeout-minutes: 50
     env:
       TERMS: ${{ inputs.terms || 'terminal ghostty rex muxy kitty wezterm iterm2' }}
