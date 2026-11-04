@@ -70,7 +70,17 @@ func selectInputSource(_ id: String) {
     let list = TISCreateInputSourceList([kTISPropertyInputSourceID as String: full] as CFDictionary, false)?
         .takeRetainedValue() as? [TISInputSource] ?? []
     guard let s = list.first else {
-        FileHandle.standardError.write("không thấy input source \(full)\n".data(using: .utf8)!)
+        let all = TISCreateInputSourceList(nil, true)?.takeRetainedValue() as? [TISInputSource] ?? []
+        var info = ""
+        for src in all {
+            guard let p = TISGetInputSourceProperty(src, kTISPropertyInputSourceID) else { continue }
+            let sid = Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
+            guard sid.contains("gtv") else { continue }
+            let en = TISGetInputSourceProperty(src, kTISPropertyInputSourceIsEnabled).map {
+                Unmanaged<CFBoolean>.fromOpaque($0).takeUnretainedValue() == kCFBooleanTrue } ?? false
+            info += " \(sid)(enabled=\(en))"
+        }
+        FileHandle.standardError.write("không thấy input source \(full); GTV đã cài:\(info)\n".data(using: .utf8)!)
         exit(4)
     }
     TISSelectInputSource(s)

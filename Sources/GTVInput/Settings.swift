@@ -1,5 +1,6 @@
 import AppKit
 import VietEngine
+import notify
 
 extension Notification.Name {
     static let gtvSettingsChanged = Notification.Name("GTVSettingsChanged")
@@ -117,7 +118,28 @@ final class Settings {
             charset: Charset(rawValue: defaults.integer(forKey: "charset")) ?? .unicode,
             modernToneStyle: defaults.bool(forKey: "modernToneStyle"),
             autoRestore: defaults.bool(forKey: "autoRestore"))
+        #if DEBUG
+        // IME Lab: `defaults write …` rồi `notifyutil -p com.gtv.lab.reload` để đổi cài đặt mà không phải
+        // tắt bộ gõ.
+        var token: Int32 = 0
+        notify_register_dispatch("com.gtv.lab.reload", &token, .main) { _ in Settings.shared.reloadForLab() }
+        #endif
     }
+
+    #if DEBUG
+    private func reloadForLab() {
+        defaults.synchronize()
+        alwaysMarked = defaults.bool(forKey: "alwaysMarked")
+        markedApps = Set(defaults.stringArray(forKey: "markedApps") ?? [])
+        excludedApps = Set(defaults.stringArray(forKey: "excludedApps") ?? [])
+        options = EngineOptions(
+            method: InputMethod(rawValue: defaults.integer(forKey: "method")) ?? .telex,
+            charset: Charset(rawValue: defaults.integer(forKey: "charset")) ?? .unicode,
+            modernToneStyle: defaults.bool(forKey: "modernToneStyle"),
+            autoRestore: defaults.bool(forKey: "autoRestore"))
+        DebugLog.write("lab: nạp lại cài đặt, method=\(options.method), terminalStyle=\(terminalMode), markedApps=\(markedApps.count)")
+    }
+    #endif
 
     private func changed() {
         NotificationCenter.default.post(name: .gtvSettingsChanged, object: nil)

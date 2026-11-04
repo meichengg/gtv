@@ -84,14 +84,13 @@ def current_source():
 
 
 def configure(method, style):
+    """Đổi kiểu gõ / cách gõ trong terminal mà không tắt bộ gõ (bản Debug nghe com.gtv.lab.reload)."""
     d = "com.gtv.inputmethod.GTV"
     sh(["defaults", "write", d, "method", "-int", "1" if method == "vni" else "0"])
     sh(["defaults", "write", d, "terminalStyle", "-string", style])
     sh(["defaults", "write", d, "markedApps", "-array", *TERMINAL_IDS])
-    sh(["pkill", "-x", "GTVInput"])
-    time.sleep(0.5)
-    sh(["open", "-g", str(IM)])
-    time.sleep(1.5)
+    sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+    time.sleep(0.4)
 
 
 def open_terminal(key):

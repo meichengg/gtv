@@ -98,6 +98,16 @@ jobs:
       - name: Run lab
         run: python3 tools/lab/run.py
 
+      - name: Diagnose IME restart
+        # Cập nhật GTV tắt rồi mở lại bộ gõ: kiểm tra input source có còn chọn được không.
+        if: always()
+        run: |
+          echo "trước: $(/tmp/l/is get)"; /tmp/l/is list | grep gtv || true
+          pkill -x GTVInput || true; sleep 1
+          open -g "$HOME/Library/Input Methods/GTVInput.app"; sleep 4
+          echo "sau khi tắt/mở lại:"; /tmp/l/is list | grep gtv || true
+          /tmp/l/is select com.gtv.inputmethod.GTV.vi || true
+
       - name: Collect logs
         if: always()
         run: |
