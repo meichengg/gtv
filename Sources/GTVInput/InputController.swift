@@ -79,7 +79,13 @@ private final class ClientAdapter: TextClient {
 /// Với các ứng dụng không hỗ trợ (terminal) thì dùng marked text như bộ gõ thông thường.
 @objc(GTVInputController)
 final class GTVInputController: IMKInputController {
-    private let session = Session()
+    private let session: Session = {
+        let s = Session()
+        #if DEBUG
+        s.log = { DebugLog.write("session: \($0)") }
+        #endif
+        return s
+    }()
     private let adapter = ClientAdapter()
     private var bundleID = ""
     private var hotkeyArmedAt: TimeInterval?

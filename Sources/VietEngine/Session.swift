@@ -80,6 +80,9 @@ public final class Session {
 
     public init() {}
 
+    /// Ghi log chẩn đoán (bản Debug của bộ gõ gắn vào DebugLog).
+    public var log: ((String) -> Void)?
+
     public func reset() {
         engine.reset()
         endMarkedWord()
@@ -300,6 +303,7 @@ public final class Session {
             pendingSerial &+= 1
             let serial = pendingSerial
             client.setMarkedText("\u{200B}")     // giữ phím lại (Ghostty), không hiện gì
+            log?("deferred #\(serial): chờ \(pending!.debugDescription)")
             client.schedule { [weak self, weak client] in
                 guard let self, let client else { return }
                 self.sendPending(client, serial: serial, attempt: 1)
@@ -312,13 +316,16 @@ public final class Session {
     private func sendPending(_ client: TextClient, serial: Int, attempt: Int) {
         guard let text = pending, pendingSerial == serial, pendingClient === client else { return }
         if attempt > 1 && !client.hasMarkedText() { clearPending(); return }   // lần trước đã tới
+        log?("deferred #\(serial): gửi lần \(attempt) (ngoài keyDown)")
         client.insertText(text)
         guard attempt < 3 else { clearPending(); return }
         client.schedule(after: 0.03) { [weak self, weak client] in
             guard let self, let client, self.pendingSerial == serial, self.pending != nil else { return }
             if client.hasMarkedText() {
+                self.log?("deferred #\(serial): mark còn sau 30ms → gửi lại")
                 self.sendPending(client, serial: serial, attempt: attempt + 1)
             } else {
+                self.log?("deferred #\(serial): đã tới (mark đã mất)")
                 self.clearPending()
             }
         }
@@ -328,8 +335,10 @@ public final class Session {
     /// Ghostty đang xử lý phím bắt đầu khi còn marked text nên ghi nguyên văn; đã tới rồi thì thôi.
     private func settlePending(_ client: TextClient) {
         guard let text = pending, pendingClient === client else { return }
+        let marked = client.hasMarkedText()
+        log?("deferred #\(pendingSerial): phím kế tiếp tới, mark \(marked ? "còn → gửi ngay trong keyDown" : "đã mất → coi như đã tới")")
         clearPending()
-        if client.hasMarkedText() { client.insertText(text) }
+        if marked { client.insertText(text) }
     }
 
     private func clearPending() {
