@@ -16,7 +16,7 @@ on:
         type: string
       styles:
         description: "Cách gõ trong terminal (marked inline inlineBare direct)"
-        default: "marked inline inlineBare direct"
+        default: "marked inline deferred direct"
         type: string
   push:
     branches: ['lab/**']
@@ -33,7 +33,7 @@ jobs:
     env:
       TERMS: ${{ inputs.terms || 'terminal iterm2 ghostty kitty wezterm rex' }}
       METHODS: ${{ inputs.methods || 'vni telex' }}
-      STYLES: ${{ inputs.styles || 'marked inline inlineBare direct' }}
+      STYLES: ${{ inputs.styles || 'marked inline deferred direct' }}
       OUT: ${{ github.workspace }}/lab-out
     steps:
       - uses: actions/checkout@v4
@@ -87,6 +87,14 @@ jobs:
             /tmp/l/drv - 10 "{RET}" || true
           done
           for i in $(seq 1 30); do pgrep -x GTV >/dev/null || break; sleep 0.5; done   # đợi GTV.app (launcher) xong
+          # Bộ gõ cha cũng phải bật (macOS lại hỏi Allow)
+          for i in 1 2 3 4 5; do
+            /tmp/l/is list | grep -q "com.gtv.inputmethod.GTV enabled=true" && break
+            /tmp/l/is enable com.gtv.inputmethod.GTV || true
+            sleep 3; screencapture -x "$OUT/shots/00-enable-parent-$i.png"
+            /tmp/l/drv - 10 "{RET}" || true
+          done
+          /tmp/l/is select com.gtv.inputmethod.GTV.vi || true
           pkill -x "System Settings" || true
           sleep 1
           screencapture -x "$OUT/shots/00-after-install.png"

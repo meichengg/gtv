@@ -37,6 +37,18 @@ private final class ClientAdapter: TextClient {
                               replacementRange: NSRange(location: location, length: length))
         client?.insertText(text, replacementRange: notFound)
     }
+
+    /// Chạy sau khi ứng dụng xử lý xong phím hiện tại, với chính ô nhập liệu đó.
+    func schedule(_ work: @escaping () -> Void) {
+        let target = client
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let target else { return }
+            let saved = self.client
+            self.client = target
+            work()
+            self.client = saved
+        }
+    }
 }
 
 /// Một controller cho mỗi ô nhập liệu.
@@ -156,7 +168,8 @@ final class GTVInputController: IMKInputController {
             switch settings.terminalMode {
             case "marked": forceMarked = true
             case "direct": break
-            case let mode: terminal = TerminalStyle(rawValue: mode) ?? .inline
+            case "auto": terminal = Settings.defaultTerminalStyle(for: bundleID)
+            case let mode: terminal = TerminalStyle(rawValue: mode) ?? Settings.defaultTerminalStyle(for: bundleID)
             }
         }
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,

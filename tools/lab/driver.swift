@@ -67,7 +67,7 @@ func post(_ code: CGKeyCode, _ flags: CGEventFlags, _ text: String?) {
 func selectInputSource(_ id: String) {
     let full = ["vi": "com.gtv.inputmethod.GTV.vi", "en": "com.gtv.inputmethod.GTV.en",
                 "abc": "com.apple.keylayout.ABC"][id] ?? id
-    let list = TISCreateInputSourceList([kTISPropertyInputSourceID as String: full] as CFDictionary, false)?
+    let list = TISCreateInputSourceList([kTISPropertyInputSourceID as String: full] as CFDictionary, true)?
         .takeRetainedValue() as? [TISInputSource] ?? []
     guard let s = list.first else {
         let all = TISCreateInputSourceList(nil, true)?.takeRetainedValue() as? [TISInputSource] ?? []

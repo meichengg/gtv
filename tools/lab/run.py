@@ -7,7 +7,7 @@ Với từng terminal: mở ứng dụng, gõ phím giả qua HID (đi qua bộ 
 Mỗi bài chụp màn hình. Kết quả: $OUT/results.json, $OUT/summary.md (+ $GITHUB_STEP_SUMMARY).
 
 Biến môi trường: TERMS="terminal iterm2 ghostty kitty wezterm rex", METHODS="vni telex",
-STYLES="marked inline inlineBare direct" (cách gõ trong terminal, xem Settings.terminalMode), OUT=lab-out
+STYLES="marked inline deferred direct" (cách gõ trong terminal, xem Settings.terminalMode), OUT=lab-out
 """
 import json
 import os
@@ -157,7 +157,7 @@ def main():
     shutil.copy(HERE / "capture.py", L / "c.py")
     terms = os.environ.get("TERMS", "terminal iterm2 ghostty kitty wezterm").split()
     methods = os.environ.get("METHODS", "vni telex").split()
-    styles = os.environ.get("STYLES", "marked inline inlineBare direct").split()
+    styles = os.environ.get("STYLES", "marked inline deferred direct").split()
     results = []
     for key in terms:
         if key not in TERMINALS or not pathlib.Path(TERMINALS[key][1]).exists():

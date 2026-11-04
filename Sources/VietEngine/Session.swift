@@ -10,6 +10,12 @@ public protocol TextClient: AnyObject {
     func insertText(_ text: String)
     /// Thay một đoạn bằng `text` qua marked text rồi chốt ngay (dùng cho ứng dụng Qt, xem `replace`).
     func replaceViaMarkedText(location: Int, length: Int, with text: String)
+    /// Chạy `work` ngay sau khi ứng dụng xử lý xong phím hiện tại (ngoài keyDown), với cùng ô nhập liệu.
+    func schedule(_ work: @escaping () -> Void)
+}
+
+public extension TextClient {
+    func schedule(_ work: @escaping () -> Void) { work() }
 }
 
 public enum Key: Equatable {
@@ -28,6 +34,11 @@ public enum TerminalStyle: String, CaseIterable, Sendable {
     case inline
     /// Một lần `insertText`: n DEL + chữ mới (không có ký tự mồi).
     case inlineBare
+    /// Cho Ghostty (và terminal dùng lớp AppKit của Ghostty): trong keyDown Ghostty bỏ chữ có ký tự điều khiển
+    /// khi shell bật kitty keyboard protocol (fish 4), và không giữ phím nếu bộ gõ không đưa chữ / marked text.
+    /// Nên: đặt marked text rỗng (U+200B, không hiện, không gạch chân) để giữ phím, rồi ngay sau khi phím xử lý
+    /// xong mới gửi n DEL + chữ mới — đường này Ghostty ghi nguyên văn xuống shell, một lần.
+    case deferred
 }
 
 /// Nối Engine với một ô nhập liệu: quyết định cho phím đi qua, thay văn bản hay dùng marked text,
@@ -42,6 +53,10 @@ public final class Session {
     private var preedit = ""
     /// Chế độ gạch chân: từ đang gõ đã chốt vì không còn thay đổi được nữa; các chữ cái còn lại của từ đi thẳng.
     private var literalTail = false
+    /// Terminal kiểu `.deferred`: chuỗi xoá + chữ mới chờ gửi sau keyDown; `pendingSerial` bỏ lần gửi đã cũ.
+    private var pending: String?
+    private weak var pendingClient: AnyObject?
+    private var pendingSerial = 0
     private var anchor = 0       // vị trí bắt đầu của từ đang gõ
     private var qtApp = false    // ô nhập liệu thuộc ứng dụng Qt (xem `replace`)
     /// Vừa xoá lùi khi không có từ nào đang gõ (vd. "hoir " → xoá " " và "r" → còn "hoi"): ở phím chữ tiếp
@@ -119,6 +134,7 @@ public final class Session {
 
     /// Chốt từ đang gõ (khi ô nhập liệu mất focus, click chuột...).
     public func commit(_ client: TextClient?) {
+        if let client { flushPending(client) }
         if marked, !engine.isEmpty, let client {
             insertMarkedTail(engine.finishWord().text, client)
         }
@@ -185,6 +201,7 @@ public final class Session {
     private func handleTerminal(_ key: Key, _ client: TextClient, options: EngineOptions,
                                 style: TerminalStyle) -> Bool {
         continueWordOnNextChar = false
+        flushPending(client)        // lần sửa trước (kiểu .deferred) luôn tới shell trước phím này
         switch key {
         case .other:
             engine.reset()          // Enter, mũi tên, Ctrl+...: shell tự xử lý, không khôi phục từ sau phím này
@@ -210,7 +227,7 @@ public final class Session {
         }
     }
 
-    /// Đổi `old` (đang nằm cuối dòng lệnh) thành `new` + `suffix` bằng một lần `insertText`.
+    /// Đổi `old` (đang nằm cuối dòng lệnh) thành `new` + `suffix`: một lần ghi xuống shell.
     private func emit(_ old: String, _ new: String, typed ch: Character, then suffix: String,
                       _ client: TextClient, _ style: TerminalStyle) {
         var oi = old.startIndex, ni = new.startIndex
@@ -220,15 +237,36 @@ public final class Session {
         }
         // Shell xoá từng code point một (chữ dựng sẵn: mỗi chữ là một code point).
         let deletes = old[oi...].unicodeScalars.count
-        var out = ""
-        if deletes > 0 {
-            switch style {
-            case .inline: out = String(ch) + String(repeating: "\u{7f}", count: deletes + 1)
-            case .inlineBare: out = String(repeating: "\u{7f}", count: deletes)
+        let insert = String(new[ni...]) + suffix
+        let dels = String(repeating: "\u{7f}", count: deletes)
+        switch style {
+        case .inline:
+            guard deletes > 0 else { client.insertText(insert); return }
+            // Ký tự mồi (bị xoá ngay): phím vừa gõ; khi hết từ thì không dùng dấu cách (fish mở abbreviation).
+            let lead = suffix.isEmpty ? ch : (insert.first ?? "x")
+            client.insertText(String(lead) + "\u{7f}" + dels + insert)
+        case .inlineBare:
+            let out = dels + insert
+            if !out.isEmpty { client.insertText(out) }
+        case .deferred:
+            pending = dels + insert
+            pendingClient = client
+            pendingSerial &+= 1
+            let serial = pendingSerial
+            client.setMarkedText("\u{200B}")     // giữ phím lại (Ghostty), không hiện gì
+            client.schedule { [weak self, weak client] in
+                guard let self, let client, self.pendingSerial == serial else { return }
+                self.flushPending(client)
             }
         }
-        out += String(new[ni...]) + suffix
-        if !out.isEmpty { client.insertText(out) }
+    }
+
+    /// Gửi lần sửa đang chờ (kiểu `.deferred`) — chỉ tới đúng ô nhập liệu đã gõ ra nó.
+    private func flushPending(_ client: TextClient) {
+        guard let text = pending, pendingClient === client else { return }
+        pending = nil
+        pendingClient = nil
+        client.insertText(text)
     }
 
     private static func isPrintable(_ ch: Character) -> Bool {

@@ -159,7 +159,15 @@ final class Settings {
 
     /// Cách gõ trong ứng dụng terminal (danh sách `markedApps`): "inline" (mặc định), "inlineBare",
     /// "marked" (gạch chân như trước), "direct" (thay chữ như ứng dụng thường). Đọc mỗi lần để đổi được ngay.
-    var terminalMode: String { defaults.string(forKey: "terminalStyle") ?? TerminalStyle.inline.rawValue }
+    var terminalMode: String { defaults.string(forKey: "terminalStyle") ?? "auto" }
+
+    /// Terminal có lớp AppKit của Ghostty: trong keyDown bỏ chữ có ký tự điều khiển khi shell bật kitty
+    /// keyboard protocol, nên dùng kiểu `.deferred`; các terminal khác ghi nguyên chuỗi `.inline` một lần.
+    static let ghosttyLikeTerminals: Set<String> = ["com.mitchellh.ghostty", "com.superlogical.rex"]
+
+    static func defaultTerminalStyle(for bundleID: String) -> TerminalStyle {
+        ghosttyLikeTerminals.contains(bundleID) ? .deferred : .inline
+    }
 
     func toggleMarked(for bundleID: String) {
         guard !bundleID.isEmpty else { return }

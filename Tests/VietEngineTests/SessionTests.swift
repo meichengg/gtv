@@ -138,9 +138,25 @@ private final class Shell: TextClient {
     func selectedRange() -> (location: Int, length: Int)? { (0, 0) }
     func text(location: Int, length: Int) -> String? { nil }
     func replaceText(location: Int, length: Int, with text: String) { XCTFail("terminal: không thay được chữ") }
-    func setMarkedText(_ text: String) { XCTFail("terminal: không được gạch chân (\(text))") }
+    /// Kiểu `.deferred` (Ghostty): chỉ được dùng marked text rỗng U+200B (không hiện) để giữ phím.
+    func setMarkedText(_ text: String) {
+        if text == "\u{200B}" { invisibleMarks += 1 } else { XCTFail("terminal: không được gạch chân (\(text))") }
+    }
     func insertText(_ text: String) { write(text) }
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
+
+    var invisibleMarks = 0
+    /// false: việc "sau keyDown" bị trễ (phím sau tới trước) — chạy bằng `runLater()`.
+    var runScheduledNow = true
+    private var later: [() -> Void] = []
+    func schedule(_ work: @escaping () -> Void) {
+        if runScheduledNow { work() } else { later.append(work) }
+    }
+    func runLater() {
+        let works = later
+        later = []
+        works.forEach { $0() }
+    }
 
     private func write(_ s: String) {
         writes.append(s)
@@ -474,6 +490,31 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(u.text, "")
         u.type("ddi")
         XCTAssertEqual(u.text, "đi")
+    }
+
+    /// Ghostty (kiểu .deferred): giữ phím bằng marked text rỗng rồi gửi xoá + chữ mới sau keyDown.
+    func testTerminalModeDeferred() {
+        for now in [true, false] {
+            let t = Shell()
+            t.style = .deferred
+            t.options.method = .vni
+            t.runScheduledNow = now
+            t.type("To6i ye6u tie61ng Vie65t, d9e5p la81m! ls -la ./suo")
+            t.runLater()
+            XCTAssertEqual(t.text, "Tôi yêu tiếng Việt, đẹp lắm! ls -la ./suo", "chạy ngay=\(now)")
+            XCTAssertGreaterThan(t.invisibleMarks, 0)
+        }
+        // Phím sau tới trước khi lần sửa trước kịp gửi: lần sửa vẫn tới shell trước phím đó.
+        let u = Shell()
+        u.style = .deferred
+        u.options.method = .vni
+        u.runScheduledNow = false
+        u.type("tie6")
+        XCTAssertEqual(u.text, "tie")       // chưa gửi
+        u.type("n")
+        XCTAssertEqual(u.text, "tiên")
+        u.runLater()                        // lần gửi cũ đến muộn: không gửi lại
+        XCTAssertEqual(u.text, "tiên")
     }
 
     /// Phím đặc biệt (mũi tên, Ctrl+…) giữa từ: bộ gõ thôi theo dõi từ, không xoá nhầm chữ của shell.

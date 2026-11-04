@@ -1,4 +1,4 @@
-// is get | is select <inputSourceID> | is list   — đọc / chọn / liệt kê input source (IME Lab).
+// is get | is select <id> | is enable <id> | is list   — đọc / chọn / liệt kê input source (IME Lab).
 import Carbon
 
 func prop(_ s: TISInputSource, _ k: CFString) -> AnyObject? {
@@ -8,8 +8,14 @@ func prop(_ s: TISInputSource, _ k: CFString) -> AnyObject? {
 
 let a = CommandLine.arguments
 switch a.count >= 2 ? a[1] : "get" {
+case "enable" where a.count >= 3:
+    let list = TISCreateInputSourceList([kTISPropertyInputSourceID as String: a[2]] as CFDictionary, true)?
+        .takeRetainedValue() as? [TISInputSource] ?? []
+    guard let s = list.first else { print("not found: \(a[2])"); exit(1) }
+    print("enable \(a[2]): \(TISEnableInputSource(s))")
 case "select" where a.count >= 3:
-    let list = TISCreateInputSourceList([kTISPropertyInputSourceID as String: a[2]] as CFDictionary, false)?
+    // Tìm trong mọi input source đã cài: trên máy ảo CI, bộ gõ cha có thể chưa bật dù chế độ đã bật.
+    let list = TISCreateInputSourceList([kTISPropertyInputSourceID as String: a[2]] as CFDictionary, true)?
         .takeRetainedValue() as? [TISInputSource] ?? []
     guard let s = list.first else { print("not found: \(a[2])"); exit(1) }
     let status = TISSelectInputSource(s)
