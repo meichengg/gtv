@@ -187,6 +187,29 @@ private final class Shell: TextClient {
 
     /// Phím đặc biệt (Ctrl+E, mũi tên…): bộ gõ không được giữ lại.
     func other() -> Bool { session.handle(.other, self, options: options, forceMarked: false, terminal: style) }
+
+    // Terminal tự xử lý phím lặp mà không qua bộ gõ (Rex, Muxy)
+    var now = 100.0
+    func currentTime() -> Double { now }
+    func typeRex(_ keys: String, gap: Double = 0.1) {
+        for k in keys {
+            if !session.handle(.char(k), self, options: options, forceMarked: false, terminal: .inline, repeatDelay: 0.4) {
+                write(String(k))
+            }
+            now += gap
+        }
+    }
+    func backspaceRex() {
+        if !session.handle(.backspace, self, options: options, forceMarked: false, terminal: .inline, repeatDelay: 0.4) {
+            write("\u{7f}")
+        }
+        now += 0.1
+    }
+    /// Giữ Backspace: các lần lặp tới shell, bộ gõ không thấy.
+    func heldBackspaceRepeats(_ n: Int) {
+        for _ in 0..<n { write("\u{7f}") }
+        now += 0.5
+    }
 }
 
 /// Terminal giả có màn hình + con trỏ như iTerm2 / Terminal.app: báo vị trí con trỏ và cho đọc chữ trên màn
@@ -554,6 +577,27 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(u.text, "")
         u.type("ddi")
         XCTAssertEqual(u.text, "đi")
+    }
+
+    /// Rex/Muxy: giữ Backspace, phím lặp không qua bộ gõ — sau đó không được xoá theo từ cũ.
+    func testTerminalHeldBackspaceRepeatsBypass() {
+        let t = Shell()
+        t.options.method = .vni
+        t.typeRex("tie61ng")
+        XCTAssertEqual(t.text, "tiếng")
+        t.backspaceRex()                  // bộ gõ thấy lần đầu
+        t.heldBackspaceRepeats(2)         // 2 lần lặp đi thẳng
+        XCTAssertEqual(t.text, "ti")
+        t.typeRex("e65t ")
+        XCTAssertEqual(t.text, "tiệt ")
+
+        // Backspace một lần rồi gõ dấu ngay (không kịp lặp): vẫn sửa đúng từ đang gõ
+        let u = Shell()
+        u.options.method = .vni
+        u.typeRex("tien")
+        u.backspaceRex()
+        u.typeRex("6")
+        XCTAssertEqual(u.text, "tiê")
     }
 
     /// Ghostty (kiểu .deferred): giữ phím bằng marked text rỗng rồi gửi xoá + chữ mới sau keyDown.

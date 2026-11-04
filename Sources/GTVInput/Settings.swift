@@ -163,17 +163,22 @@ final class Settings {
         return Self.knownTerminals.contains(bundleID) ? underlineTerminals.contains(bundleID) : markedApps.contains(bundleID)
     }
 
-    /// Terminal đã biết: gõ thẳng xuống shell, không gạch chân (xem `Session.handleTerminal`). Chỉ dùng cho
-    /// terminal thật: ở ứng dụng khác (vd. trình soạn thảo), ký tự xoá DEL sẽ thành chữ rác.
+    /// Terminal đã kiểm chứng (IME Lab trên máy macOS thật và/hoặc đọc mã nguồn): gõ thẳng xuống shell, không
+    /// gạch chân (xem `Session.handleTerminal`). Chỉ dùng cho terminal đã kiểm chứng: ở ứng dụng khác (vd. trình
+    /// soạn thảo, hay terminal có ô nhập liệu riêng như Warp), ký tự xoá DEL sẽ thành chữ rác.
     static let knownTerminals: Set<String> = [
-        "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "net.kovidgoyal.kitty",
-        "io.alacritty", "org.alacritty", "com.github.wez.wezterm", "dev.warp.Warp-Stable", "dev.warp.Warp-Preview",
-        "dev.warp.Warp", "com.superlogical.rex", "com.muxy.app", "co.zeit.hyper", "org.tabby",
-        "dev.commandline.waveterm", "com.raphaelamorim.rio", "org.contourterminal.Contour",
-        "com.extraterm.extraterm", "com.termius-dmg.mac", "com.termius.mac", "com.vandyke.SecureCRT",
-        "com.emtec.zoc7", "com.emtec.zoc9", "com.panic.prompt.3", "com.yourcompany.cool-retro-term",
-        "org.electerm.electerm", "app.termix.Termix", "io.appmakes.otty", "io.coressh.shell", "com.cmuxterm.app",
+        "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.superlogical.rex",
+        "com.muxy.app", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
     ]
+
+    /// Terminal tự xử lý phím lặp (giữ phím) mà không qua bộ gõ, và không cho biết vị trí con trỏ.
+    static let repeatBypassTerminals: Set<String> = ["com.superlogical.rex", "com.muxy.app"]
+
+    /// Thời gian giữ phím trước khi phím bắt đầu lặp (cài đặt bàn phím của macOS; đơn vị 15 ms).
+    var keyRepeatDelay: Double {
+        let v = UserDefaults.standard.double(forKey: "InitialKeyRepeat")
+        return v > 0 ? v * 0.015 : 0.25
+    }
 
     /// Terminal người dùng muốn gõ có gạch chân (như trước) thay vì gõ thẳng.
     private(set) var underlineTerminals: Set<String>
@@ -191,9 +196,10 @@ final class Settings {
     /// "deferred", "marked" (gạch chân), "direct" (thay chữ như ứng dụng thường).
     var terminalMode: String { defaults.string(forKey: "terminalStyle") ?? "auto" }
 
-    /// Terminal có lớp AppKit của Ghostty: trong keyDown bỏ chữ có ký tự điều khiển khi shell bật kitty
-    /// keyboard protocol, nên dùng kiểu `.deferred`; các terminal khác ghi nguyên chuỗi `.inline` một lần.
-    static let ghosttyLikeTerminals: Set<String> = ["com.mitchellh.ghostty", "com.superlogical.rex"]
+    /// Ghostty: trong keyDown bỏ chữ có ký tự điều khiển khi shell bật kitty keyboard protocol, nên dùng kiểu
+    /// `.deferred`; terminal khác (kể cả Rex — Rex vẽ marked text rỗng thành một ô gạch chân) ghi nguyên chuỗi
+    /// `.inline` một lần.
+    static let ghosttyLikeTerminals: Set<String> = ["com.mitchellh.ghostty"]
 
     static func defaultTerminalStyle(for bundleID: String) -> TerminalStyle {
         ghosttyLikeTerminals.contains(bundleID) ? .deferred : .inline

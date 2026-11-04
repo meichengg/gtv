@@ -38,7 +38,9 @@ final class Modes {
     private var lastSourceIsGTV = InputSources.isGTVSelected
 
     private init() {
-        vietnamese = InputSources.currentID != InputSources.englishID
+        // Giữ chế độ người dùng chọn lần trước (bộ gõ có thể khởi động lại khi cập nhật, hay khi đang ở ABC).
+        vietnamese = UserDefaults.standard.object(forKey: "vietnameseMode") as? Bool
+            ?? (InputSources.currentID != InputSources.englishID)
         NotificationCenter.default.addObserver(forName: .gtvExcludedAppsChanged, object: nil, queue: .main) { [weak self] _ in
             self?.exclusionChanged()
         }
@@ -267,6 +269,7 @@ final class Modes {
     private func set(_ on: Bool, updateSystem: Bool = true) {
         guard on != vietnamese else { return }
         vietnamese = on
+        UserDefaults.standard.set(on, forKey: "vietnameseMode")
         if updateSystem {
             syncSystemMode()
             verifySystemMode(retries: 1, delay: 0.3)

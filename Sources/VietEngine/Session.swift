@@ -70,6 +70,8 @@ public final class Session {
     /// Lúc bộ gõ ghi xuống shell lần cuối (terminal). Dùng để phân biệt "chữ chưa kịp in lại" với "con trỏ đã
     /// bị phím khác (không qua bộ gõ) dời đi" — xem `guardCursor`.
     private var termLastWrite = 0.0
+    /// Lúc bấm Backspace gần nhất (terminal có phím lặp không qua bộ gõ), xem `handle(repeatDelay:)`.
+    private var lastBackspaceAt: Double?
     /// Chữ vừa gửi có thể chưa kịp hiện (shell chưa in lại): trong khoảng này con trỏ đứng sau là bình thường.
     private static let echoLag = 0.15
     private var anchor = 0       // vị trí bắt đầu của từ đang gõ
@@ -99,12 +101,14 @@ public final class Session {
     /// Trả về true nếu bộ gõ đã xử lý phím (ứng dụng không cần xử lý nữa).
     /// `qtApp`: ứng dụng viết bằng Qt (Telegram Desktop…), cần cách thay riêng — xem `replace`.
     /// `terminal`: ô nhập liệu là terminal (xem `TerminalStyle`); khi có thì bỏ qua `forceMarked`.
+    /// `repeatDelay`: với terminal tự xử lý phím lặp mà không qua bộ gõ (Rex, Muxy) — thời gian giữ phím trước
+    /// khi phím lặp; sau Backspace mà phím kế tiếp tới muộn hơn thế thì có thể Backspace đã lặp: bắt đầu từ mới.
     public func handle(_ key: Key, _ client: TextClient, options: EngineOptions, forceMarked: Bool,
-                       qtApp: Bool = false, terminal: TerminalStyle? = nil) -> Bool {
+                       qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil) -> Bool {
         self.qtApp = qtApp
         if let terminal {
             if marked || literalTail { reset() }     // vừa đổi từ chế độ gạch chân
-            return handleTerminal(key, client, options: options, style: terminal)
+            return handleTerminal(key, client, options: options, style: terminal, repeatDelay: repeatDelay)
         }
         if literalTail {
             // Từ đã chốt (xem `showMarked`): chữ cái gõ tiếp đi thẳng, phím khác kết thúc từ.
@@ -217,9 +221,14 @@ public final class Session {
     /// chỉ dựa vào chính những gì nó đã gửi; mọi thao tác nó không theo dõi được (phím đặc biệt, click) kết
     /// thúc từ, không bao giờ xoá quá phần do nó gõ ra.
     private func handleTerminal(_ key: Key, _ client: TextClient, options: EngineOptions,
-                                style: TerminalStyle) -> Bool {
+                                style: TerminalStyle, repeatDelay: Double?) -> Bool {
         continueWordOnNextChar = false
         settlePending(client)       // lần sửa trước (kiểu .deferred) luôn tới shell trước phím này
+        let now = client.currentTime()
+        if let repeatDelay, let bs = lastBackspaceAt, now - bs >= repeatDelay * 0.9 {
+            engine.reset()          // có thể Backspace đã được giữ (phím lặp không qua bộ gõ): không biết đã xoá bao nhiêu
+        }
+        lastBackspaceAt = nil
         switch key {
         case .other:
             engine.reset()          // Enter, mũi tên, Ctrl+...: shell tự xử lý, không khôi phục từ sau phím này
@@ -229,6 +238,7 @@ public final class Session {
             guardCursor(client)
             guard !engine.isEmpty else { return false }
             termLastWrite = client.currentTime()
+            lastBackspaceAt = termLastWrite
             if case .passThrough = engine.backspace() { return false }   // shell xoá 1 ký tự: vẫn khớp
             engine.reset()          // xoá làm dấu phải đặt lại chỗ khác: thôi theo dõi từ, xoá như thường
             return false

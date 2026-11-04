@@ -147,6 +147,9 @@ def open_terminal(key):
             sh([DRV, bid, "10", "{RET}"]); time.sleep(0.6)
         sh([DRV, bid, "10", "{CMDN}"]); time.sleep(2.5)
         shot("rex-after-onboarding")
+    if key == "muxy":      # cửa sổ dự án "No tabs": mở tab terminal
+        sh([DRV, bid, "10", "{CMDT}"]); time.sleep(3)
+        shot("muxy-after-new-tab")
     dismiss_dialogs()
     if front() != bid:
         sh(["open", "-a", path])
