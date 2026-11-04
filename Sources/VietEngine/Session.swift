@@ -264,7 +264,7 @@ public final class Session {
             return false
         case let .char(ch):
             if !engine.isEmpty { guardCursor(client) }
-            if engine.isEmpty { engine.options = options }
+            if engine.isEmpty { engine.options = Self.terminalOptions(options) }
             termLastWrite = client.currentTime()
             guard let action = engine.process(ch) else {
                 // Hết từ (dấu cách, dấu câu…): khôi phục từ không phải tiếng Việt trước ký tự này.
@@ -376,6 +376,14 @@ public final class Session {
     private func clearPending() {
         pending = nil
         pendingClient = nil
+    }
+
+    /// Terminal: luôn xuất chữ dựng sẵn. Với chữ tổ hợp (chữ gốc + dấu thanh U+0300…), một DEL của fish, bash, zsh
+    /// mặc định xoá cả chữ lẫn dấu còn zsh -f chỉ xoá dấu — không có số DEL nào đúng cho mọi shell.
+    static func terminalOptions(_ options: EngineOptions) -> EngineOptions {
+        var o = options
+        if o.charset == .unicodeCombining { o.charset = .unicode }
+        return o
     }
 
     private static func isPrintable(_ ch: Character) -> Bool {

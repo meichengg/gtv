@@ -862,6 +862,21 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(g.controls, ["\u{05}", "\u{05}", "\u{1b}[A", "\r"])
     }
 
+    /// Bảng mã Unicode tổ hợp: terminal vẫn nhận chữ dựng sẵn (shell xoá cả chữ lẫn dấu bằng một DEL, xoá theo
+    /// code point sẽ xoá lố ra ngoài từ).
+    func testTerminalModeCombiningCharsetUsesPrecomposed() {
+        for style in TerminalStyle.allCases {
+            let t = Shell()
+            t.style = style
+            t.options.charset = .unicodeCombining
+            t.line = Array("echo X ")
+            t.type("asa ass tiesnge pass ")
+            t.runLater()
+            XCTAssertEqual(t.text, "echo X ấ as tiếng pas ", "\(style)")   // Telex: ss huỷ dấu
+            XCTAssertTrue(t.writes.allSatisfy { !$0.unicodeScalars.contains { (0x300...0x323).contains($0.value) } })
+        }
+    }
+
     /// Phím đặc biệt (mũi tên, Ctrl+…) giữa từ: bộ gõ thôi theo dõi từ, không xoá nhầm chữ của shell.
     func testTerminalModeNeverDeletesShellText() {
         let t = Shell()
