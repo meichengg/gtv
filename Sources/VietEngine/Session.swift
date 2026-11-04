@@ -321,7 +321,9 @@ public final class Session {
             return false
         case .backspace:
             guard !engine.isEmpty else { return false }
-            guardCursor(client, proven: proven)
+            var unsure = unsure
+            let screen = guardCursor(client, proven: proven)
+            if screen == .matches || screen == .reseeded { unsure = false }   // màn hình chứng minh từ nằm trước con trỏ
             guard !engine.isEmpty else { return false }
             termLastWrite = client.currentTime()
             lastBackspaceAt = termLastWrite
@@ -346,7 +348,13 @@ public final class Session {
             engine.reset()          // xoá làm dấu phải đặt lại chỗ khác: thôi theo dõi từ, xoá như thường
             return false
         case let .char(ch):
-            if !engine.isEmpty { guardCursor(client, proven: proven) }
+            var unsure = unsure
+            if !engine.isEmpty {
+                // iTerm2 / Terminal.app: màn hình cho thấy đúng từ nằm ngay trước con trỏ thì sửa được dù sổ phím chưa
+                // chắc (vd. ⌫ ở Terminal.app không qua bộ gõ, gõ tiếp liền tay).
+                let screen = guardCursor(client, proven: proven)
+                if screen == .matches || screen == .reseeded { unsure = false }
+            }
             if engine.isEmpty {
                 engine.options = Self.terminalOptions(options)
                 onLine = nil
@@ -393,19 +401,33 @@ public final class Session {
     /// - Con trỏ nằm giữa từ đang hiện đầy đủ (mũi tên, Ctrl+A): đọc lại phần trước con trỏ rồi gõ tiếp.
     /// - Khác đi mà chữ vừa gửi đã đủ lâu (không phải đang chờ shell in lại): bắt đầu từ mới tại con trỏ — từ
     ///   đó chỉ xoá những gì gõ sau đó, luôn đúng dù shell in chậm.
-    private func guardCursor(_ client: TextClient, proven: Bool) {
-        guard let sel = client.selectedRange(), sel.location > 0 else { return }
+    /// Kết quả đối chiếu từ đang theo dõi với màn hình (`guardCursor`).
+    private enum ScreenCheck {
+        /// Terminal không cho đọc màn hình (Ghostty, Rex, Muxy…).
+        case unavailable
+        /// Màn hình cho thấy đúng từ đang theo dõi nằm ngay trước con trỏ.
+        case matches
+        /// Con trỏ nằm giữa từ: đã nạp lại phần trước con trỏ (đúng như màn hình).
+        case reseeded
+        /// Không khớp (từ có thể đã bị bỏ).
+        case unconfirmed
+    }
+
+    /// `proven`: sổ phím chứng minh không có phím nào đi vòng bộ gõ (màn hình lệch chỉ vì shell chưa in lại).
+    @discardableResult
+    private func guardCursor(_ client: TextClient, proven: Bool) -> ScreenCheck {
+        guard let sel = client.selectedRange(), sel.location > 0 else { return .unavailable }
         let word = Array((onLine ?? engine.displayed).utf16)
         let n = word.count, cursor = sel.location
         let beforeLen = min(n, cursor)
         let before = client.text(location: cursor - beforeLen, length: beforeLen).map { Array($0.utf16) } ?? []
-        if before == word { return }
+        if before == word { return .matches }
         if proven {
             // Không có phím nào đi vòng bộ gõ (sổ phím): màn hình lệch chỉ vì shell chưa in lại (chữ sau con trỏ có thể
             // là gợi ý của fish, không phải phần còn lại của từ) — trừ khi đã quá lâu (chương trình không in lại chữ:
             // vim ở normal mode, ô mật khẩu).
             if client.currentTime() - termLastWrite >= Self.echoLag { resetTerminalWord() }
-            return
+            return .unconfirmed
         }
         let after = client.text(location: cursor, length: n).map { Array($0.utf16) } ?? []
         // Con trỏ nằm giữa (hoặc ngay trước) từ đang hiện đầy đủ: trước con trỏ là word[..<k], sau là word[k...].
@@ -413,9 +435,10 @@ public final class Session {
         where before.suffix(k).elementsEqual(word[..<k]) && after.prefix(n - k).elementsEqual(word[k...]) {
             resetTerminalWord()
             if k > 0 { engine.seed(String(decoding: word[..<k], as: UTF16.self)) }
-            return
+            return .reseeded
         }
         if client.currentTime() - termLastWrite >= Self.echoLag { resetTerminalWord() }
+        return .unconfirmed
     }
 
     /// Đổi `old` (đang nằm cuối dòng lệnh) thành `new` + `suffix`: một lần ghi xuống shell.

@@ -385,10 +385,10 @@ private final class ScreenTerminal: TextClient {
 
     func tick(_ ms: Double) { now += ms / 1000 }
 
-    /// Gõ (mỗi phím cách nhau `ms`), shell in lại ngay sau mỗi phím nếu `echoes`.
-    func type(_ keys: String, ms: Double = 120, echoes: Bool = true) {
+    /// Gõ (mỗi phím cách nhau `ms`), shell in lại ngay sau mỗi phím nếu `echoes`; `gap`: sổ phím báo gì cho mỗi phím.
+    func type(_ keys: String, ms: Double = 120, echoes: Bool = true, gap: KeyGap = .none) {
         for k in keys {
-            if !session.handle(.char(k), self, options: options, forceMarked: false, terminal: .inline) {
+            if !session.handle(.char(k), self, options: options, forceMarked: false, terminal: .inline, gap: gap) {
                 insertText(String(k))
             }
             if echoes { echo() }
@@ -914,6 +914,23 @@ final class SessionTests: XCTestCase {
         t.bypassLineStart()
         t.type("6")
         XCTAssertEqual(t.line, "6tie")
+    }
+
+    /// Terminal.app: ⌫ không qua bộ gõ; gõ tiếp liền tay (sổ phím chưa chắc: "chưa biết" ở mọi phím sau đó). Màn hình cho
+    /// thấy đúng từ nằm trước con trỏ thì vẫn thêm dấu được — không phải chờ dừng tay.
+    func testTerminalScreenConfirmsWordWhenUnsure() {
+        let t = ScreenTerminal()
+        t.type("tie61ng", ms: 45)
+        XCTAssertEqual(t.line, "tiếng")
+        t.bypassBackspace(); t.bypassBackspace(); t.bypassBackspace()
+        t.type("e65t ", ms: 45, gap: .unsure)
+        XCTAssertEqual(t.line, "tiệt ")
+        // Mũi tên trái (không qua bộ gõ) rồi gõ liền: màn hình không khớp → bỏ từ, không xoá gì.
+        let u = ScreenTerminal()
+        u.type("tie", ms: 45)
+        u.bypassLeft()
+        u.type("6", ms: 45, gap: .unsure)
+        XCTAssertEqual(u.line, "ti6e")
     }
 
     /// Shell chưa kịp in lại chữ vừa gõ (gõ nhanh, ssh): con trỏ đứng sau là bình thường, vẫn thêm dấu đúng.
