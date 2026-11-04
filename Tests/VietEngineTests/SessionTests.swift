@@ -109,8 +109,11 @@ private final class Terminal: TextClient {
         XCTFail("terminal không sửa được chữ đã gửi (thay bằng \"\(text)\")")
     }
 
+    /// Terminal (chốt sớm phần không còn đổi được); false: ứng dụng thường dùng gạch chân (giữ cả từ).
+    var earlyCommit = true
+
     func type(_ keys: String) {
-        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: true) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: true, earlyCommit: earlyCommit) {
             // Bộ gõ phải chốt marked text trước khi để terminal tự xử lý phím.
             XCTAssertEqual(marked, "", "phím \(k) đi thẳng khi còn marked text")
             shell.append(k)
@@ -118,7 +121,7 @@ private final class Terminal: TextClient {
     }
 
     func backspace() {
-        if session.handle(.backspace, self, options: options, forceMarked: true) { return }
+        if session.handle(.backspace, self, options: options, forceMarked: true, earlyCommit: earlyCommit) { return }
         XCTAssertEqual(marked, "", "Backspace đi thẳng khi còn marked text")
         if !shell.isEmpty { shell.removeLast() }
     }
@@ -595,6 +598,40 @@ final class SessionTests: XCTestCase {
             XCTAssertEqual(t.shell, shell, "\(method) \(keys)")
             XCTAssertEqual(t.marked, marked, "\(method) \(keys)")
         }
+    }
+
+    /// Ứng dụng thường dùng gạch chân (bật tay, ứng dụng không báo con trỏ): giữ cả từ trong phần gạch chân như
+    /// bản gốc, nên sửa chữ bằng ⌫ rồi thêm dấu vẫn đúng.
+    func testMarkedAppKeepsWholeWordForBackspaceFixes() {
+        let cases: [(InputMethod, String, String)] = [
+            (.telex, "anht<f", "ành"), (.telex, "tooss<f", "tồ"), (.telex, "hocx<j", "học"),
+            (.telex, "hocf<j", "học"), (.telex, "demw<<tej", "dệt"), (.telex, "tooss<s", "tố"),
+            (.telex, "shoq<w", "show"), (.telex, "knoq<w", "know"),
+            (.vni, "anht<2", "ành"), (.vni, "to611<2", "tồ"),
+        ]
+        for (method, keys, expect) in cases {
+            let t = Terminal()
+            t.earlyCommit = false
+            t.options.method = method
+            for k in keys { if k == "<" { t.backspace() } else { t.type(String(k)) } }
+            XCTAssertEqual(t.screen, expect, "\(method) \(keys)")
+        }
+    }
+
+    /// Terminal gạch chân: từ đã chốt (không phải tiếng Việt), ⌫ rồi gõ tiếp vẫn là chữ thường, không biến đổi
+    /// giữa từ; xoá hết từ đã chốt thì từ gõ sau đó lại có dấu.
+    func testTerminalLiteralWordBackspace() {
+        let t = Terminal()
+        t.type("shoq")
+        t.backspace()
+        t.type("w ")
+        XCTAssertEqual(t.screen, "show ")
+        let u = Terminal()
+        u.type("ls")
+        u.backspace()
+        u.backspace()
+        u.type("vieets ")
+        XCTAssertEqual(u.shell, "viết ")
     }
 
     func testTerminalBackspace() {

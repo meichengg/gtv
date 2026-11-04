@@ -187,7 +187,8 @@ final class GTVInputController: IMKInputController {
             || (Settings.knownTerminals.contains(bundleID) && settings.terminalMode == "marked"))
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
-                                     qtApp: QtDetector.isQt(bundleID), terminal: terminal, repeatDelay: repeatDelay)
+                                     qtApp: QtDetector.isQt(bundleID), terminal: terminal, repeatDelay: repeatDelay,
+                                     earlyCommit: forceMarked && Settings.terminalApps.contains(bundleID))
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled
     }

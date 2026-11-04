@@ -59,6 +59,10 @@ public final class Session {
     private var preedit = ""
     /// Chế độ gạch chân: từ đang gõ đã chốt vì không còn thay đổi được nữa; các chữ cái còn lại của từ đi thẳng.
     private var literalTail = false
+    /// Chế độ gạch chân trong terminal: chốt sớm phần không còn đổi được (xem `handle(earlyCommit:)`).
+    private var earlyCommit = false
+    /// Số ký tự của từ đã chốt (`literalTail`) còn trên dòng.
+    private var literalLength = 0
     /// Terminal kiểu `.deferred`: chuỗi xoá + chữ mới chờ gửi sau keyDown; `pendingSerial` bỏ lần gửi đã cũ.
     /// Chỉ coi là xong khi marked text rỗng đã biến mất (ứng dụng đã nhận chuỗi): xem `settlePending`.
     private var pending: String?
@@ -107,22 +111,32 @@ public final class Session {
     /// `terminal`: ô nhập liệu là terminal (xem `TerminalStyle`); khi có thì bỏ qua `forceMarked`.
     /// `repeatDelay`: với terminal tự xử lý phím lặp mà không qua bộ gõ (Rex, Muxy) — thời gian giữ phím trước
     /// khi phím lặp; sau Backspace mà phím kế tiếp tới muộn hơn thế thì có thể Backspace đã lặp: bắt đầu từ mới.
+    /// `earlyCommit`: chế độ gạch chân trong terminal — chữ không còn đổi được thì chốt ngay cho shell thấy (xem
+    /// `showMarked`). Ứng dụng thường giữ cả từ trong phần gạch chân để xoá lùi rồi thêm dấu vẫn đúng.
     public func handle(_ key: Key, _ client: TextClient, options: EngineOptions, forceMarked: Bool,
-                       qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil) -> Bool {
+                       qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil,
+                       earlyCommit: Bool = false) -> Bool {
         self.qtApp = qtApp
+        self.earlyCommit = earlyCommit
         if let terminal {
             if marked || literalTail { reset() }     // vừa đổi từ chế độ gạch chân
             return handleTerminal(key, client, options: options, style: terminal, repeatDelay: repeatDelay)
         }
         if literalTail {
-            // Từ đã chốt (xem `showMarked`): chữ cái gõ tiếp đi thẳng, phím khác kết thúc từ.
+            // Từ đã chốt (xem `showMarked`): chữ cái gõ tiếp đi thẳng, phím khác kết thúc từ. Xoá lùi vẫn ở trong
+            // từ đã chốt (không bắt đầu từ mới giữa từ: "shoq⌫w" phải ra "show", không phải "shoư").
             switch key {
             case let .char(ch) where ch.isASCII && ch.isLetter:
+                literalLength += 1
                 return false
             case .char:
                 reset()          // như khi từ kết thúc bằng dấu câu: phím đi thẳng
                 return false
-            case .backspace, .other:
+            case .backspace:
+                literalLength -= 1                     // terminal tự xoá
+                if literalLength <= 0 { reset() }      // xoá hết từ: gõ tiếp là từ mới
+                return false
+            case .other:
                 reset()          // ô nhập liệu tự xử lý (xem bên dưới)
             }
         }
@@ -177,8 +191,9 @@ public final class Session {
     ///   thì chốt ngay; các chữ cái còn lại của từ đi thẳng.
     /// Gạch chân chỉ còn ở phần từ nguyên âm đầu tiên (hoặc `d`, `w`) tới hết từ, khi từ còn có thể là tiếng Việt.
     private func showMarked(_ ch: Character, _ action: Action, before: String, _ client: TextClient) -> Bool {
-        let final = engine.isFinal
-        if preedit.isEmpty, before == committed, action == .passThrough, final || Self.isStableInitial(ch) {
+        let final = earlyCommit && engine.isFinal
+        if earlyCommit, preedit.isEmpty, before == committed, action == .passThrough,
+           final || Self.isStableInitial(ch) {
             committed = engine.displayed
             if final { enterLiteralTail() }
             return false
@@ -196,6 +211,7 @@ public final class Session {
     }
 
     private func enterLiteralTail() {
+        literalLength = engine.displayed.count
         engine.reset()
         committed = ""
         preedit = ""

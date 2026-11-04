@@ -173,6 +173,11 @@ final class Settings {
         "com.muxy.app", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
     ]
 
+    /// Mọi terminal (kể cả terminal chưa kiểm chứng, chỉ dùng gạch chân): khi gõ có gạch chân thì chốt sớm phần
+    /// không còn đổi được để shell thấy chữ ngay (xem `Session.handle(earlyCommit:)`).
+    static let terminalApps: Set<String> = knownTerminals.union(defaultMarkedApps)
+        .union(["co.zeit.hyper", "org.tabby", "dev.warp.Warp-Preview"])
+
     /// Terminal tự xử lý phím lặp (giữ phím) mà không qua bộ gõ, và không cho biết vị trí con trỏ.
     static let repeatBypassTerminals: Set<String> = ["com.superlogical.rex", "com.muxy.app"]
 
