@@ -46,7 +46,7 @@ let source = CGEventSource(stateID: ["combined": .combinedSessionState, "private
                                     ?? .hidSystemState)
 let tapLocation: CGEventTapLocation = ["session": .cgSessionEventTap, "annotated": .cgAnnotatedSessionEventTap][env["DRIVER_TAP"] ?? ""]
     ?? .cghidEventTap
-let setUnicode = env["DRIVER_UNICODE"] != "0"
+let setUnicode = env["DRIVER_UNICODE"] == "1"   // phím có chuỗi unicode gắn sẵn đi vòng qua bộ gõ (IME Lab, lượt dò)
 let keyboardType = env["DRIVER_KBTYPE"].flatMap { Int64($0) }
 
 func front() -> String { NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "" }

@@ -24,7 +24,7 @@ def keylines():
     return sum(1 for l in LOG.read_text(errors="replace").splitlines() if " phím " in l) if LOG.exists() else 0
 
 VARIANTS = [
-    ("hid+unicode", {}),
+    ("hid+unicode", {"DRIVER_UNICODE": "1"}),
     ("hid-nounicode", {"DRIVER_UNICODE": "0"}),
     ("session-combined", {"DRIVER_TAP": "session", "DRIVER_SOURCE": "combined", "DRIVER_UNICODE": "0"}),
     ("annotated-private", {"DRIVER_TAP": "annotated", "DRIVER_SOURCE": "private", "DRIVER_UNICODE": "0"}),
