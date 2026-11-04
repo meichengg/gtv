@@ -928,6 +928,19 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(u.line, "Việt Nam tôi")
     }
 
+    /// iTerm2/Terminal.app, sổ phím chứng minh không có phím nào đi vòng: màn hình lệch chỉ vì shell chưa in lại. fish
+    /// hiện gợi ý "n" sau con trỏ; gõ "n" rồi "1" ngay (shell chưa in "n"): không được hiểu nhầm là con trỏ nằm giữa từ
+    /// "tiê|n" (DEL sẽ xoá chữ "n" vừa gõ, ra "tiêế").
+    func testTerminalGuardFishSuggestionWithEchoLag() {
+        let t = ScreenTerminal()
+        t.type("tie6")
+        t.cells.append("n")                     // gợi ý của fish, sau con trỏ
+        t.type("n", ms: 2, echoes: false)
+        t.type("1", ms: 2, echoes: false)
+        t.echo()
+        XCTAssertEqual(String(t.cells[..<t.cursor]), "tiến")
+    }
+
     /// Gõ bình thường (shell in lại ngay): kết quả như không có kiểm tra con trỏ.
     func testTerminalGuardNormalTyping() {
         let t = ScreenTerminal()

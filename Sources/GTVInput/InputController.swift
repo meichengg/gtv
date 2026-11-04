@@ -61,6 +61,8 @@ private final class ClientAdapter: TextClient {
     }
 
     func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
+
+    func quietSinceLastKey() -> Bool { KeyWatch.shared.quietSinceLastKey() }
 }
 
 /// Một controller cho mỗi ô nhập liệu.
@@ -115,6 +117,24 @@ final class GTVInputController: IMKInputController {
 
     private static func markedTextAttributes(_ client: Client) -> [String] {
         (client.validAttributesForMarkedText() as? [Any] ?? []).map { "\($0)" }
+    }
+
+    /// Byte terminal gửi xuống shell cho phím (kiểu cũ, không giao thức bàn phím kitty), cho các phím Ghostty nuốt khi
+    /// đang có marked text: Enter, Tab, ⌫, Esc, ←, Ctrl+chữ. nil cho phím khác (Ghostty tự phát lại ↑ ↓ →) và phím
+    /// có ⌘/⌥, ⇧ (trừ Esc).
+    private static func legacyBytes(_ event: NSEvent, _ flags: NSEvent.ModifierFlags) -> String? {
+        guard flags.isDisjoint(with: [.command, .option]) else { return nil }
+        switch event.keyCode {
+        case 53: return "\u{1b}"                                 // Esc
+        case 36, 76: return flags.isEmpty ? "\r" : nil           // Return, Enter
+        case 48: return flags.isEmpty ? "\t" : nil               // Tab
+        case 51: return flags.isEmpty ? "\u{7f}" : nil           // Delete
+        case 123: return flags.isEmpty ? "\u{1b}[D" : nil        // ←
+        default:
+            guard flags == [.control], let chars = event.characters, chars.unicodeScalars.count == 1,
+                  let c = chars.unicodeScalars.first, c.value < 0x20 else { return nil }
+            return chars                                         // Ctrl+chữ: ký tự điều khiển
+        }
     }
 
     /// Loại ô; nil khi InputMethodKit chưa gắn ô thật (ô tạm).
@@ -207,6 +227,8 @@ final class GTVInputController: IMKInputController {
             key = .other
         } else if event.keyCode == 51 {      // Delete
             key = .backspace
+        } else if flags.contains(.shift), [36, 76, 48].contains(event.keyCode) {
+            key = .other                     // ⇧⏎ (xuống dòng trong Claude Code…), ⇧⇥: không phải Enter / Tab thường
         } else if let chars = event.characters, chars.count == 1, let ch = chars.first {
             key = .char(ch)
         } else {
@@ -232,7 +254,7 @@ final class GTVInputController: IMKInputController {
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: QtDetector.isQt(bundleID), terminal: terminal, repeatDelay: repeatDelay,
-                                     earlyCommit: earlyCommit, gap: gap)
+                                     earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags))
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled
     }

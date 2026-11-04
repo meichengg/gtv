@@ -16,6 +16,9 @@ final class KeyWatch {
     private var pointerCarry = false
     /// Số lần đọc: lần kiểm tra hẹn giờ chỉ chạy nếu không có phím nào tới sau lần đọc đã hẹn nó.
     private var readings = 0
+    /// Bộ đếm phím và click lúc đọc phím gần nhất (`quietSinceLastKey`).
+    private var keysAtLastKey: UInt32 = 0
+    private var clicksAtLastKey: UInt32 = 0
     private var checkTimer: DispatchSourceTimer?
 
     private init() {
@@ -40,6 +43,11 @@ final class KeyWatch {
         _ = pointer.changed(Self.pointerCount())
     }
 
+    /// Từ phím bộ gõ nhận gần nhất tới giờ hệ thống không đếm thêm phím hay click nào.
+    func quietSinceLastKey() -> Bool {
+        Self.keyDownCount() == keysAtLastKey && Self.pointerCount() == clicksAtLastKey
+    }
+
     /// flagsChanged bộ gõ nhận. Phím tắt có ⌘/⌃/⌥ đi vòng bộ gõ (⌘V, Ctrl+A…): sổ phím tính là lỡ ngay, không chờ.
     func noteModifiers(_ flags: NSEvent.ModifierFlags) {
         if !flags.isDisjoint(with: [.command, .control, .option]) { modifierPressed = true }
@@ -57,7 +65,10 @@ final class KeyWatch {
         let verdict = ledger.observe(KeyReading(keyDownCount: count, timestamp: event.timestamp, keyCode: event.keyCode,
                                                 isRepeat: event.isARepeat, readAt: ProcessInfo.processInfo.systemUptime),
                                      modifierPressed: modifier)
-        let clicked = pointer.changed(Self.pointerCount())
+        let clicks = Self.pointerCount()
+        keysAtLastKey = count
+        clicksAtLastKey = clicks
+        let clicked = pointer.changed(clicks)
         let pointerMoved = clicked || pointerCarry
         // Click ngay trước lúc ứng dụng nhận phím này (thời điểm phím muộn hơn lúc bấm tới ~60 ms) có thể đã xảy ra sau
         // khi bấm phím: phím sau cũng coi là bị ngắt. Click từ trước đó thì không.

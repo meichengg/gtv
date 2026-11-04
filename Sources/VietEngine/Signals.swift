@@ -10,6 +10,9 @@ public enum KeyGap: Equatable, Sendable {
     case unsure
     /// Có phím hay click bộ gõ không thấy: con trỏ có thể đã đổi chỗ, bỏ từ đang theo dõi.
     case interrupted
+    /// Sổ phím không dùng được (hệ thống không đếm các phím bộ gõ nhận): coi như không có gì, nhưng không phải bằng
+    /// chứng (giữ các kiểm tra khác, vd. đọc màn hình).
+    case unverified
 }
 
 /// Một lần đọc bộ đếm phím của WindowServer, lấy lúc bộ gõ nhận một keyDown.
@@ -53,7 +56,7 @@ public enum GapVerdict: Equatable, Sendable {
         case .clean: return .none
         case .unknown: return .unsure
         case .missed, .unavailable: return .interrupted
-        case .uncounted: return modifierPressed ? .interrupted : .none
+        case .uncounted: return modifierPressed ? .interrupted : .unverified
         }
     }
 }

@@ -39,6 +39,9 @@ private final class Pty: TextClient {
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
     var markActive = false
     func hasMarkedText() -> Bool { markActive }
+    /// Sổ phím: không có phím / click nào khác từ phím vừa rồi.
+    var quiet = true
+    func quietSinceLastKey() -> Bool { quiet }
     /// false: lần gửi hẹn giờ (kiểu `.deferred`) chưa chạy — như khi Ghostty bỏ lần gửi ngoài keyDown.
     var runScheduledNow = true
     private var later: [() -> Void] = []
@@ -252,7 +255,7 @@ final class SignalsTests: XCTestCase {
         for i in 0..<10 { verdicts.append(l.observe(reading(10, at: 1.0 + Double(i) * 0.1, code: UInt16(i)))) }
         XCTAssertEqual(verdicts.prefix(5).filter { $0 == .unavailable }.count, 5, "\(verdicts)")
         XCTAssertTrue(verdicts[5...].allSatisfy { $0 == .uncounted }, "\(verdicts)")
-        XCTAssertEqual(GapVerdict.uncounted.gap(modifierPressed: false), .none)
+        XCTAssertEqual(GapVerdict.uncounted.gap(modifierPressed: false), .unverified)
         XCTAssertEqual(GapVerdict.uncounted.gap(modifierPressed: true), .interrupted)
         XCTAssertEqual(l.observe(reading(11, at: 3.0, code: 50)), .clean)
     }
@@ -452,15 +455,23 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(p.text, "Việt")
     }
 
-    /// Xoá lùi khi dòng đang khác từ của engine: theo đúng dòng.
+    /// Xoá lùi khi dòng đang khác từ của engine: vẫn chưa chắc thì theo đúng dòng (shell xoá "6"); đã chắc thì như thể
+    /// không có lúc chưa chắc ("tiê" ⌫ → "ti").
     func testTerminalBackspaceWhileUnsure() {
         let p = Pty()
         p.type("tie")
         p.key("6", .unsure)
-        p.backspace(gap: .none)        // shell xoá "6"
+        p.backspace(gap: .unsure)
         XCTAssertEqual(p.text, "tie")
         p.type("61ng")
         XCTAssertEqual(p.text, "tiếng")
+        let q = Pty()
+        q.type("tie")
+        q.key("6", .unsure)
+        q.backspace(gap: .none)
+        XCTAssertEqual(q.text, "ti")
+        q.type("e61ng")
+        XCTAssertEqual(q.text, "tiếng")
     }
 
     /// Chưa chắc rồi hoá ra có phím đi vòng: từ bị bỏ, chữ đã gõ nguyên văn giữ nguyên, không xoá gì.
@@ -488,6 +499,85 @@ final class SignalsTests: XCTestCase {
                                        gap: .interrupted))
         XCTAssertEqual(p.text, "tie/tmpx")
         XCTAssertFalse(p.markActive)
+    }
+
+    /// Ghostty: Enter tới khi lần sửa chưa tới (vài ms sau phím dấu, hoặc lần gửi bị bỏ): gửi lần sửa kèm "\r" trong một
+    /// lần ghi — Enter không bị nuốt.
+    func testDeferredPendingEditCarriesEnter() {
+        let p = Pty()
+        p.style = .deferred
+        p.type("echo to")
+        p.runScheduledNow = false
+        p.key("6", .none)
+        XCTAssertEqual(p.text, "echo to")
+        XCTAssertTrue(p.session.handle(.char("\r"), p, options: p.options, forceMarked: false, terminal: .deferred,
+                                       gap: .none, legacy: "\r"))
+        XCTAssertEqual(p.text, "echo tô\r")
+        XCTAssertFalse(p.markActive)
+    }
+
+    /// Ghostty: ⌫ tới khi lần sửa chưa tới: gửi lần sửa kèm DEL; từ vẫn theo dõi đúng để gõ tiếp.
+    func testDeferredPendingEditCarriesBackspace() {
+        let p = Pty()
+        p.style = .deferred
+        p.type("tie")
+        p.runScheduledNow = false
+        p.key("6", .none)
+        XCTAssertTrue(p.session.handle(.backspace, p, options: p.options, forceMarked: false, terminal: .deferred,
+                                       gap: .none, legacy: "\u{7f}"))
+        XCTAssertEqual(p.text, "ti")
+        p.runScheduledNow = true
+        p.type("e65t")
+        XCTAssertEqual(p.text, "tiệt")
+    }
+
+    /// Ghostty: lần sửa chưa tới, có ⌘V (đi vòng bộ gõ) rồi Enter: bỏ lần sửa, Enter vẫn tới shell.
+    func testDeferredStaleEditDroppedBeforeEnter() {
+        let p = Pty()
+        p.style = .deferred
+        p.type("tie")
+        p.runScheduledNow = false
+        p.key("6", .none)
+        p.bypassPaste("/tmp")
+        XCTAssertTrue(p.session.handle(.char("\r"), p, options: p.options, forceMarked: false, terminal: .deferred,
+                                       gap: .interrupted, legacy: "\r"))
+        XCTAssertEqual(p.text, "tie/tmp\r")
+    }
+
+    /// Ghostty: lần gửi hẹn giờ không gửi nếu đã có phím / click khác (có thể là ⌘V đi vòng bộ gõ): phím kế tiếp quyết định.
+    func testDeferredTimerWaitsWhenInputArrived() {
+        let p = Pty()
+        p.style = .deferred
+        p.type("tie")
+        p.quiet = false
+        p.key("6", .none)
+        XCTAssertEqual(p.text, "tie")
+        XCTAssertTrue(p.markActive)
+        p.quiet = true
+        p.key("n", .none)                       // phím kế tiếp (không có gì đi vòng): gửi trong keyDown của nó
+        XCTAssertEqual(p.text, "tiên")
+    }
+
+    /// ⌫ khi dòng đang khác từ của engine (phím đi nguyên văn lúc chưa chắc), lúc đã chắc: sửa cả từ trong một lần ghi.
+    func testBackspaceAfterUnsureKeysFixesWord() {
+        let p = Pty()
+        p.options = EngineOptions(method: .telex)
+        p.type("Vie")
+        p.key("e", .unsure)
+        p.key("t", .unsure)
+        XCTAssertEqual(p.text, "Vieet")
+        p.backspace(gap: .none)
+        XCTAssertEqual(p.text, "Viê")
+        p.type("tj ")
+        XCTAssertEqual(p.text, "Việt ")
+        let q = Pty()
+        q.type("tie")
+        q.key("6", .unsure)
+        q.key("1", .unsure)
+        q.backspace(gap: .none)
+        XCTAssertEqual(q.text, "ti")               // như gõ thường: ⌫ xoá cả chữ "ế"
+        q.type("1n ")
+        XCTAssertEqual(q.text, "tín ")
     }
 
     /// Ghostty (`.deferred`): chưa chắc thì cũng không đặt marked text hay hẹn gửi gì.
