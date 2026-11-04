@@ -219,7 +219,8 @@ final class GTVInputController: IMKInputController {
         }
 
         // Sổ phím: mọi keyDown bộ gõ nhận đều phải vào sổ, kể cả khi phím đi thẳng ngay dưới đây.
-        let gap = KeyWatch.shared.observe(event)
+        let gap = KeyWatch.shared.observe(event, quietChecks: Settings.knownTerminals.contains(bundleID)
+                                          && !Settings.bypassFreeTerminals.contains(bundleID))
 
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {

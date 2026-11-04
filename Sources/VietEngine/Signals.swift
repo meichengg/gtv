@@ -83,7 +83,7 @@ public enum GapVerdict: Equatable, Sendable {
 public struct KeyLedger {
     /// Hẹn kiểm tra lại sau bấy nhiêu giây khi còn phím chưa thấy; chỉ kết luận khi đã bấy nhiêu giây không có phím
     /// nào được bấm (phím đang tới lúc đó, nếu có, phải tới trong khoảng này — trừ khi ứng dụng treo lâu hơn).
-    public var quietTime = 0.15
+    public var quietTime = 0.3
     /// Loạt "chưa biết" kéo dài quá bấy nhiêu giây (gõ liền tay, không có lúc nào ngừng đủ lâu) thì tính là lỡ.
     public var maxUnknownAge = 0.6
     /// `.unavailable` liên tiếp bấy nhiêu lần thì coi là hệ thống không đếm các phím bộ gõ nhận (`.uncounted`).
@@ -114,7 +114,7 @@ public struct KeyLedger {
 
     /// Các lần kiểm tra hẹn giờ sau mỗi phím (giây kể từ phím đó): phím đi vòng bộ gõ lúc người dùng dừng tay (Tab tự
     /// hoàn thành, mũi tên…) được biết trước khi gõ tiếp.
-    public static let checkDelays: [Double] = [0.16, 0.3, 0.6, 1.2, 2.4]
+    public static let checkDelays: [Double] = [0.32, 0.6, 1.2, 2.4, 4.8]
 
     /// Lấy mốc tại đây (bộ gõ vừa gắn vào ô nhập liệu, click…): những gì xảy ra trước đó không còn liên quan.
     public mutating func rebase(keyDownCount: UInt32) {
@@ -213,7 +213,8 @@ public struct KeyLedger {
 
     /// Lần kiểm tra hẹn giờ (không có lần đọc nào xen giữa): còn phím đã đếm mà bộ gõ chưa thấy, và đã `quietTime`
     /// không có phím nào được bấm, thì đó là phím đi vòng bộ gõ.
-    /// `secondsSinceLastKeyDown`: `CGEventSourceSecondsSinceLastEventType(.keyDown)`, đọc TRƯỚC bộ đếm.
+    /// `secondsSinceLastKeyDown`: `CGEventSourceSecondsSinceLastEventType(.keyDown)`, đọc SAU bộ đếm: phím bấm xen giữa hai
+    /// lần đọc thì không được đếm mà lại làm "chưa yên" — không bao giờ bị tính nhầm là phím lỡ.
     public mutating func check(keyDownCount: UInt32, secondsSinceLastKeyDown: Double) -> CheckResult {
         guard let base, resolved == nil else { return .none }
         let u = advance(keyDownCount)

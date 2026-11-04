@@ -164,7 +164,7 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
         XCTAssertEqual(l.observe(reading(13, at: 1.3, code: 2)), .unknown)        // 1 phím đi vòng trước phím 2
         XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.01), .wait)   // vừa có phím: chờ
-        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.16), .resolved)
+        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.31), .resolved)
         XCTAssertEqual(l.observe(reading(14, at: 1.6, code: 3)), .missed(1))
         XCTAssertEqual(l.observe(reading(15, at: 1.7, code: 4)), .clean)
     }
@@ -173,7 +173,7 @@ final class SignalsTests: XCTestCase {
     func testLedgerBypassAfterUnsureKey() {
         var l = ledger(at: 10)
         XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
-        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.2), .resolved)
+        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.35), .resolved)
         XCTAssertEqual(l.observe(reading(14, at: 1.5, code: 2)), .missed(2))
     }
 
@@ -184,7 +184,7 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
         XCTAssertEqual(l.check(keyDownCount: 11, secondsSinceLastKeyDown: 0.1), .none)     // chưa có gì
         XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.03), .wait)    // Tab vừa bấm
-        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.3), .resolved)
+        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.5), .resolved)
         XCTAssertEqual(l.observe(reading(13, at: 2.0, code: 2)), .missed(1))
         XCTAssertEqual(l.observe(reading(14, at: 2.1, code: 3)), .clean)
     }
@@ -194,7 +194,7 @@ final class SignalsTests: XCTestCase {
         var l = ledger(at: 10)
         XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
         XCTAssertEqual(l.observe(reading(13, at: 1.05, code: 2)), .unknownSteady)
-        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.2), .resolved)
+        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.35), .resolved)
         XCTAssertEqual(l.observe(reading(14, at: 1.3, code: 3)), .missed(1))
     }
 
@@ -245,7 +245,7 @@ final class SignalsTests: XCTestCase {
     func testLedgerStalledKeyBookedThenArrives() {
         var l = ledger(at: 10)
         XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
-        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.2), .resolved)
+        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.35), .resolved)
         XCTAssertEqual(l.observe(reading(12, at: 1.2, code: 2)), .unavailable)
         XCTAssertEqual(l.observe(reading(13, at: 1.3, code: 3)), .clean)
     }

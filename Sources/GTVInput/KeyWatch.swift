@@ -55,7 +55,10 @@ final class KeyWatch {
 
     /// Gọi với mọi keyDown bộ gõ nhận (cả ở chế độ E, ứng dụng loại trừ), trước khi xử lý phím: giữa phím trước
     /// mà bộ gõ thấy và phím này có phím / click nào bộ gõ không thấy không.
-    func observe(_ event: NSEvent) -> KeyGap {
+    /// `quietChecks`: hẹn kiểm tra lúc yên tay (terminal có phím thường đi vòng bộ gõ: Terminal.app, iTerm2, Muxy…). Ở
+    /// Ghostty, Rex mọi phím đều tới bộ gõ trừ phím tắt (đã có quy tắc ⌘/⌃/⌥): kiểm tra chỉ có thể tính nhầm phím đang
+    /// xếp hàng khi ứng dụng bận.
+    func observe(_ event: NSEvent, quietChecks: Bool) -> KeyGap {
         readings += 1
         checkTimer?.cancel()
         checkTimer = nil
@@ -73,7 +76,7 @@ final class KeyWatch {
         // Click ngay trước lúc ứng dụng nhận phím này (thời điểm phím muộn hơn lúc bấm tới ~60 ms) có thể đã xảy ra sau
         // khi bấm phím: phím sau cũng coi là bị ngắt. Click từ trước đó thì không.
         pointerCarry = clicked && Self.secondsSinceClick() < ProcessInfo.processInfo.systemUptime - event.timestamp + 0.06
-        scheduleCheck(step: 0, reading: readings, since: event.timestamp)
+        if quietChecks { scheduleCheck(step: 0, reading: readings, since: event.timestamp) }
         #if DEBUG
         let delivery = (ProcessInfo.processInfo.systemUptime - event.timestamp) * 1000
         DebugLog.write("sổ phím: \(verdict)\(pointerMoved ? ", có click" : "")\(modifier ? ", có ⌘/⌃/⌥" : "") phím \(event.keyCode)\(event.isARepeat ? " (lặp)" : "") đếm \(count), tới sau \(String(format: "%.2f", delivery)) ms")
@@ -91,8 +94,9 @@ final class KeyWatch {
         timer.setEventHandler { [weak self] in
             guard let self, self.readings == reading else { return }
             self.checkTimer = nil
-            let since = Self.secondsSinceKeyDown()           // trước bộ đếm
-            let result = self.ledger.check(keyDownCount: Self.keyDownCount(), secondsSinceLastKeyDown: since)
+            let count = Self.keyDownCount()
+            let since = Self.secondsSinceKeyDown()           // sau bộ đếm
+            let result = self.ledger.check(keyDownCount: count, secondsSinceLastKeyDown: since)
             switch result {
             case .resolved:
                 #if DEBUG
