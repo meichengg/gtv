@@ -19,6 +19,17 @@ public enum Key: Equatable {
     case other
 }
 
+/// Cách gõ trong terminal: chữ đã gửi xuống shell không sửa được bằng cách thay văn bản, nên bộ gõ gửi
+/// kèm ký tự xoá (DEL, như phím Backspace) để shell tự xoá rồi gõ chữ mới — không gạch chân, phím tới shell ngay.
+public enum TerminalStyle: String, CaseIterable, Sendable {
+    /// Một lần `insertText`: ký tự vừa gõ + (n+1) DEL + chữ mới. Mở đầu bằng ký tự thường vì Ghostty, kitty
+    /// bỏ chuỗi bắt đầu bằng ký tự điều khiển; terminal ghi cả chuỗi xuống shell một lần nên shell vẽ lại
+    /// một lần (không nháy).
+    case inline
+    /// Một lần `insertText`: n DEL + chữ mới (không có ký tự mồi).
+    case inlineBare
+}
+
 /// Nối Engine với một ô nhập liệu: quyết định cho phím đi qua, thay văn bản hay dùng marked text,
 /// và phát hiện khi văn bản bị thay đổi bởi thao tác mà bộ gõ không thấy (Cmd+A, Cmd+Z, chuột...).
 public final class Session {
@@ -54,9 +65,14 @@ public final class Session {
 
     /// Trả về true nếu bộ gõ đã xử lý phím (ứng dụng không cần xử lý nữa).
     /// `qtApp`: ứng dụng viết bằng Qt (Telegram Desktop…), cần cách thay riêng — xem `replace`.
+    /// `terminal`: ô nhập liệu là terminal (xem `TerminalStyle`); khi có thì bỏ qua `forceMarked`.
     public func handle(_ key: Key, _ client: TextClient, options: EngineOptions, forceMarked: Bool,
-                       qtApp: Bool = false) -> Bool {
+                       qtApp: Bool = false, terminal: TerminalStyle? = nil) -> Bool {
         self.qtApp = qtApp
+        if let terminal {
+            if marked || literalTail { reset() }     // vừa đổi từ chế độ gạch chân
+            return handleTerminal(key, client, options: options, style: terminal)
+        }
         if literalTail {
             // Từ đã chốt (xem `showMarked`): chữ cái gõ tiếp đi thẳng, phím khác kết thúc từ.
             switch key {
@@ -158,6 +174,66 @@ public final class Session {
     private func insertMarkedTail(_ text: String, _ client: TextClient) {
         let tail = String(text.dropFirst(committed.count))
         if !tail.isEmpty || !preedit.isEmpty { client.insertText(tail) }
+    }
+
+    // MARK: - Terminal
+
+    /// Terminal: phím nào không làm đổi chữ thì đi thẳng (shell thấy ngay, gợi ý lệnh hiện ngay); khi cần
+    /// thêm dấu thì gửi một lần chuỗi xoá + chữ mới (`emit`). Không đọc được dòng lệnh của shell, nên bộ gõ
+    /// chỉ dựa vào chính những gì nó đã gửi; mọi thao tác nó không theo dõi được (phím đặc biệt, click) kết
+    /// thúc từ, không bao giờ xoá quá phần do nó gõ ra.
+    private func handleTerminal(_ key: Key, _ client: TextClient, options: EngineOptions,
+                                style: TerminalStyle) -> Bool {
+        continueWordOnNextChar = false
+        switch key {
+        case .other:
+            engine.reset()          // Enter, mũi tên, Ctrl+...: shell tự xử lý, không khôi phục từ sau phím này
+            return false
+        case .backspace:
+            guard !engine.isEmpty else { return false }
+            if case .passThrough = engine.backspace() { return false }   // shell xoá 1 ký tự: vẫn khớp
+            engine.reset()          // xoá làm dấu phải đặt lại chỗ khác: thôi theo dõi từ, xoá như thường
+            return false
+        case let .char(ch):
+            if engine.isEmpty { engine.options = options }
+            guard let action = engine.process(ch) else {
+                // Hết từ (dấu cách, dấu câu…): khôi phục từ không phải tiếng Việt trước ký tự này.
+                if case let .replace(old, new) = engine.finishWord().action, Self.isPrintable(ch) {
+                    emit(old, new, typed: ch, then: String(ch), client, style)
+                    return true
+                }
+                return false
+            }
+            guard case let .replace(old, new) = action else { return false }
+            emit(old, new, typed: ch, then: "", client, style)
+            return true
+        }
+    }
+
+    /// Đổi `old` (đang nằm cuối dòng lệnh) thành `new` + `suffix` bằng một lần `insertText`.
+    private func emit(_ old: String, _ new: String, typed ch: Character, then suffix: String,
+                      _ client: TextClient, _ style: TerminalStyle) {
+        var oi = old.startIndex, ni = new.startIndex
+        while oi < old.endIndex, ni < new.endIndex, old[oi] == new[ni] {
+            oi = old.index(after: oi)
+            ni = new.index(after: ni)
+        }
+        // Shell xoá từng code point một (chữ dựng sẵn: mỗi chữ là một code point).
+        let deletes = old[oi...].unicodeScalars.count
+        var out = ""
+        if deletes > 0 {
+            switch style {
+            case .inline: out = String(ch) + String(repeating: "\u{7f}", count: deletes + 1)
+            case .inlineBare: out = String(repeating: "\u{7f}", count: deletes)
+            }
+        }
+        out += String(new[ni...]) + suffix
+        if !out.isEmpty { client.insertText(out) }
+    }
+
+    private static func isPrintable(_ ch: Character) -> Bool {
+        guard let a = ch.asciiValue else { return false }
+        return a >= 0x20 && a != 0x7f
     }
 
     // MARK: -

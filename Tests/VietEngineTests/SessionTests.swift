@@ -124,6 +124,49 @@ private final class Terminal: TextClient {
     }
 }
 
+/// Shell giả sau một terminal (chế độ terminal): phím đi thẳng và chuỗi `insertText` được ghi xuống shell
+/// ngay; DEL (0x7F) xoá một ký tự như phím Backspace. Không được dùng marked text.
+private final class Shell: TextClient {
+    var line: [Character] = []       // dòng lệnh của shell (mỗi phần tử một code point)
+    var writes: [String] = []        // từng lần terminal ghi xuống shell
+    let session = Session()
+    var options = EngineOptions()
+    var style = TerminalStyle.inline
+
+    var text: String { String(String.UnicodeScalarView(line.flatMap { $0.unicodeScalars })) }
+
+    func selectedRange() -> (location: Int, length: Int)? { (0, 0) }
+    func text(location: Int, length: Int) -> String? { nil }
+    func replaceText(location: Int, length: Int, with text: String) { XCTFail("terminal: không thay được chữ") }
+    func setMarkedText(_ text: String) { XCTFail("terminal: không được gạch chân (\(text))") }
+    func insertText(_ text: String) { write(text) }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
+
+    private func write(_ s: String) {
+        writes.append(s)
+        for scalar in s.unicodeScalars {
+            if scalar == "\u{7f}" {
+                if !line.isEmpty { line.removeLast() }
+            } else {
+                line.append(Character(scalar))
+            }
+        }
+    }
+
+    func type(_ keys: String) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: false, terminal: style) {
+            write(String(k))
+        }
+    }
+
+    func backspace() {
+        if !session.handle(.backspace, self, options: options, forceMarked: false, terminal: style) { write("\u{7f}") }
+    }
+
+    /// Phím đặc biệt (Ctrl+E, mũi tên…): bộ gõ không được giữ lại.
+    func other() -> Bool { session.handle(.other, self, options: options, forceMarked: false, terminal: style) }
+}
+
 final class SessionTests: XCTestCase {
     func testTypingThroughSession() {
         let f = Field()
@@ -370,5 +413,76 @@ final class SessionTests: XCTestCase {
         t.type("ls")
         t.session.commit(t)
         XCTAssertEqual(t.shell, "ngườils")
+    }
+
+    // MARK: - Chế độ terminal (không gạch chân)
+
+    func testTerminalModeVietnamese() {
+        for style in TerminalStyle.allCases {
+            let telex = Shell()
+            telex.style = style
+            telex.type("Tooi yeeu tieengs Vieetj, ddepj lawms! Nguowif, Ddaof, quys, gif, ww, text, windows.")
+            XCTAssertEqual(telex.text, "Tôi yêu tiếng Việt, đẹp lắm! Người, Đào, quý, gì, w, text, windows.", "\(style)")
+
+            let vni = Shell()
+            vni.style = style
+            vni.options.method = .vni
+            vni.type("To6i ye6u tie61ng Vie65t, d9e5p la81m! git commit -m \"Su73a lo64i\" ls -la")
+            XCTAssertEqual(vni.text, "Tôi yêu tiếng Việt, đẹp lắm! git commit -m \"Sửa lỗi\" ls -la", "\(style)")
+        }
+    }
+
+    /// Issue #2: mọi phím tới shell ngay khi gõ (gợi ý của fish hiện ngay), Ctrl+E không bị giữ lại.
+    func testTerminalModeKeysReachShellImmediately() {
+        let t = Shell()
+        t.options.method = .vni
+        for (i, k) in "./suo".enumerated() {
+            t.type(String(k))
+            XCTAssertEqual(t.text, String(Array("./suo")[0...i]))
+        }
+        XCTAssertFalse(t.other(), "Ctrl+E phải tới shell")
+        t.type("x")
+        XCTAssertEqual(t.text, "./suox")
+    }
+
+    /// Mỗi lần sửa là một lần ghi: xoá và chữ mới tới shell cùng lúc (shell vẽ lại một lần, không nháy).
+    func testTerminalModeEditsAreSingleWrites() {
+        let t = Shell()
+        t.type("tieengs Vieetj nguowif")
+        let edits = t.writes.filter { $0.contains("\u{7f}") }
+        XCTAssertFalse(edits.isEmpty)
+        for w in edits {
+            XCTAssertFalse(w.hasSuffix("\u{7f}"), "sửa phải kèm chữ mới trong cùng lần ghi: \(w.debugDescription)")
+            XCTAssertNotEqual(w.unicodeScalars.first, "\u{7f}", "kiểu inline mở đầu bằng ký tự thường: \(w.debugDescription)")
+        }
+    }
+
+    func testTerminalModeBackspace() {
+        let t = Shell()
+        t.options.method = .vni
+        t.type("tie61ng")
+        XCTAssertEqual(t.text, "tiếng")
+        t.backspace(); t.backspace(); t.backspace()
+        XCTAssertEqual(t.text, "ti")
+        t.type("e65t ")
+        XCTAssertEqual(t.text, "tiệt ")
+
+        // Xoá hết rồi gõ lại
+        let u = Shell()
+        u.type("dd")
+        u.backspace()
+        XCTAssertEqual(u.text, "")
+        u.type("ddi")
+        XCTAssertEqual(u.text, "đi")
+    }
+
+    /// Phím đặc biệt (mũi tên, Ctrl+…) giữa từ: bộ gõ thôi theo dõi từ, không xoá nhầm chữ của shell.
+    func testTerminalModeNeverDeletesShellText() {
+        let t = Shell()
+        t.line = Array("echo ")
+        t.type("vie")
+        _ = t.other()                 // vd. Ctrl+A rồi Ctrl+E, shell đổi chỗ con trỏ
+        t.type("6")
+        XCTAssertEqual(t.text, "echo vie6")
     }
 }

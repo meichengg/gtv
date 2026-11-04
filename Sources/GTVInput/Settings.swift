@@ -135,6 +135,10 @@ final class Settings {
         alwaysMarked || markedApps.contains(bundleID)
     }
 
+    /// Cách gõ trong ứng dụng terminal (danh sách `markedApps`): "inline" (mặc định), "inlineBare",
+    /// "marked" (gạch chân như trước), "direct" (thay chữ như ứng dụng thường). Đọc mỗi lần để đổi được ngay.
+    var terminalMode: String { defaults.string(forKey: "terminalStyle") ?? TerminalStyle.inline.rawValue }
+
     func toggleMarked(for bundleID: String) {
         guard !bundleID.isEmpty else { return }
         if markedApps.contains(bundleID) { markedApps.remove(bundleID) } else { markedApps.insert(bundleID) }

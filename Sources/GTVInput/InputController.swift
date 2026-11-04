@@ -150,9 +150,17 @@ final class GTVInputController: IMKInputController {
 
         adapter.client = client
         defer { adapter.client = nil }
-        let handled = session.handle(key, adapter, options: settings.options,
-                                     forceMarked: settings.useMarked(for: bundleID),
-                                     qtApp: QtDetector.isQt(bundleID))
+        var forceMarked = settings.alwaysMarked
+        var terminal: TerminalStyle?
+        if settings.markedApps.contains(bundleID) {
+            switch settings.terminalMode {
+            case "marked": forceMarked = true
+            case "direct": break
+            case let mode: terminal = TerminalStyle(rawValue: mode) ?? .inline
+            }
+        }
+        let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
+                                     qtApp: QtDetector.isQt(bundleID), terminal: terminal)
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng")")
         return handled
     }

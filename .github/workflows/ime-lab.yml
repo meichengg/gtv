@@ -14,6 +14,10 @@ on:
         description: "Kiểu gõ (vni telex)"
         default: "vni telex"
         type: string
+      styles:
+        description: "Cách gõ trong terminal (marked inline inlineBare direct)"
+        default: "marked inline inlineBare direct"
+        type: string
   push:
     branches: ['lab/**']
 
@@ -29,6 +33,7 @@ jobs:
     env:
       TERMS: ${{ inputs.terms || 'terminal iterm2 ghostty kitty wezterm rex' }}
       METHODS: ${{ inputs.methods || 'vni telex' }}
+      STYLES: ${{ inputs.styles || 'marked inline inlineBare direct' }}
       OUT: ${{ github.workspace }}/lab-out
     steps:
       - uses: actions/checkout@v4

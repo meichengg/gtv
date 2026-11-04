@@ -6,7 +6,8 @@ Với từng terminal: mở ứng dụng, gõ phím giả qua HID (đi qua bộ 
 - fish:    gõ vào fish thật rồi đọc dòng lệnh (commandline) -> kiểm tra gợi ý lệnh / Ctrl+E.
 Mỗi bài chụp màn hình. Kết quả: $OUT/results.json, $OUT/summary.md (+ $GITHUB_STEP_SUMMARY).
 
-Biến môi trường: TERMS="terminal iterm2 ghostty kitty wezterm rex", METHODS="vni telex", OUT=lab-out
+Biến môi trường: TERMS="terminal iterm2 ghostty kitty wezterm rex", METHODS="vni telex",
+STYLES="marked inline inlineBare direct" (cách gõ trong terminal, xem Settings.terminalMode), OUT=lab-out
 """
 import json
 import os
@@ -35,12 +36,15 @@ TERMINALS = {
 }
 
 # (tên, kiểu gõ, phím, mong đợi, ms giữa 2 phím)
+TERMINAL_IDS = ["com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "io.alacritty",
+                "com.github.wez.wezterm", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "com.superlogical.rex",
+                "com.muxy.app"]
+
 CAPTURE = [
     ("vni-words", "vni", "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
     ("vni-fast", "vni", "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c.", "Việt Nam, tôi yêu tiếng Việt đại học.", 12),
     ("vni-backspace", "vni", "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 45),
     ("telex-words", "telex", "Vieetj Nam, tooi yeeu tieengs Vieetj ddaij hocj.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
-    ("telex-fast", "telex", "Vieetj Nam, tooi yeeu tieengs Vieetj ddaij hocj.", "Việt Nam, tôi yêu tiếng Việt đại học.", 12),
 ]
 FISH = [
     # Lỗi người dùng báo: gõ ./suo rồi Ctrl+E phải nhận gợi ý của fish.
@@ -79,8 +83,11 @@ def current_source():
     return sh([str(L / "is"), "get"]).stdout.strip()
 
 
-def set_method(method):
-    sh(["defaults", "write", "com.gtv.inputmethod.GTV", "method", "-int", "1" if method == "vni" else "0"])
+def configure(method, style):
+    d = "com.gtv.inputmethod.GTV"
+    sh(["defaults", "write", d, "method", "-int", "1" if method == "vni" else "0"])
+    sh(["defaults", "write", d, "terminalStyle", "-string", style])
+    sh(["defaults", "write", d, "markedApps", "-array", *TERMINAL_IDS])
     sh(["pkill", "-x", "GTVInput"])
     time.sleep(0.5)
     sh(["open", "-g", str(IM)])
@@ -151,6 +158,7 @@ def main():
     shutil.copy(HERE / "capture.py", L / "c.py")
     terms = os.environ.get("TERMS", "terminal iterm2 ghostty kitty wezterm").split()
     methods = os.environ.get("METHODS", "vni telex").split()
+    styles = os.environ.get("STYLES", "marked inline inlineBare direct").split()
     results = []
     for key in terms:
         if key not in TERMINALS or not pathlib.Path(TERMINALS[key][1]).exists():
@@ -160,31 +168,23 @@ def main():
         try:
             bid = open_terminal(key)
             shot(f"{key}-opened")
-            for method in methods:
-                set_method(method)
-                for name, m, keys, expect, ms in CAPTURE:
-                    if m != method:
-                        continue
-                    r = {"terminal": key, "test": name, "expect": expect}
-                    try:
-                        r.update(run_capture(key, bid, name, method, keys, expect, ms))
-                    except Exception as e:  # noqa: BLE001
-                        r["error"] = str(e)
-                        shot(f"{key}-{name}-error")
-                    results.append(r)
-                    print(json.dumps({k: v for k, v in r.items() if k != "raw"}, ensure_ascii=False), flush=True)
-                if shutil.which("fish"):
-                    for name, m, keys, expect, ms in FISH:
-                        if m != method:
-                            continue
-                        r = {"terminal": key, "test": name, "expect": expect}
+            for style in styles:
+                for method in methods:
+                    configure(method, style)
+                    tests = [("capture", t) for t in CAPTURE if t[1] == method]
+                    if shutil.which("fish"):
+                        tests += [("fish", t) for t in FISH if t[1] == method]
+                    for kind, (name, m, keys, expect, ms) in tests:
+                        label = f"{style}/{name}"
+                        r = {"terminal": key, "style": style, "test": name, "expect": expect}
                         try:
-                            r.update(run_fish(key, bid, name, method, keys, expect, ms))
+                            run = run_capture if kind == "capture" else run_fish
+                            r.update(run(key, bid, f"{style}-{name}", method, keys, expect, ms))
                         except Exception as e:  # noqa: BLE001
                             r["error"] = str(e)
-                            shot(f"{key}-{name}-error")
+                            shot(f"{key}-{style}-{name}-error")
                         results.append(r)
-                        print(json.dumps(r, ensure_ascii=False), flush=True)
+                        print(label, json.dumps({k: v for k, v in r.items() if k != "raw"}, ensure_ascii=False), flush=True)
         except Exception as e:  # noqa: BLE001
             results.append({"terminal": key, "test": "-", "error": str(e)})
             shot(f"{key}-fatal")
@@ -192,12 +192,12 @@ def main():
             close_terminal(key)
 
     (OUT / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1))
-    rows = ["| terminal | bài | kết quả | shell nhận | xoá tách rời | ghi chú |", "|---|---|---|---|---|---|"]
+    rows = ["| terminal | kiểu | bài | kết quả | shell nhận | xoá tách rời | ghi chú |", "|---|---|---|---|---|---|---|"]
     for r in results:
         ok = "lỗi" if "error" in r else ("✅" if r.get("pass") else "❌")
         split = f"{r.get('edits_split', '')}/{r.get('edits', '')}" if "edits" in r else ""
         note = r.get("error", "") or ("mong đợi: " + r["expect"] if not r.get("pass") and "expect" in r else "")
-        rows.append(f"| {r['terminal']} | {r['test']} | {ok} | `{r.get('final', '')}` | {split} | {note} |")
+        rows.append(f"| {r['terminal']} | {r.get('style', '')} | {r['test']} | {ok} | `{r.get('final', '')}` | {split} | {note} |")
     md = "\n".join(rows)
     (OUT / "summary.md").write_text(md + "\n")
     if os.environ.get("GITHUB_STEP_SUMMARY"):
