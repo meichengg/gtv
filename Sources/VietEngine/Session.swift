@@ -311,7 +311,8 @@ public final class Session {
             log?("có phím / click bộ gõ không thấy: bỏ từ \((onLine ?? engine.displayed).debugDescription)")
             resetTerminalWord()
         }
-        let handled = handleTerminalKey(key, client, options: options, style: style, repeatDelay: repeatDelay, gap: gap)
+        let handled = handleTerminalKey(key, client, options: options, style: style, repeatDelay: repeatDelay, gap: gap,
+                                        legacy: legacy)
         if let ch = carry, !handled {
             client.insertText(String(ch))
             return true
@@ -320,7 +321,7 @@ public final class Session {
     }
 
     private func handleTerminalKey(_ key: Key, _ client: TextClient, options: EngineOptions,
-                                   style: TerminalStyle, repeatDelay: Double?, gap: KeyGap) -> Bool {
+                                   style: TerminalStyle, repeatDelay: Double?, gap: KeyGap, legacy: String?) -> Bool {
         var unsure = gap == .unsure || gap == .unsureSteady
         let now = client.currentTime()
         if let repeatDelay, let bs = lastBackspaceAt, now - bs >= repeatDelay * 0.9 {
@@ -368,12 +369,17 @@ public final class Session {
             }
             termLastWrite = client.currentTime()
             let line = onLine ?? engine.displayed      // chữ của từ đang nằm ngay trước con trỏ
+            let rawLine = onLine != nil
             onLine = nil
             guard engine.process(ch) != nil else {
                 // Hết từ (dấu cách, dấu câu…): khôi phục từ không phải tiếng Việt trước ký tự này.
                 let finished = engine.finishWord()
                 var target = finished.text
                 if case let .replace(_, new) = finished.action { target = new }
+                if rawLine, !unsure, !Self.isPrintable(ch),
+                   let handled = fixLineWithKey(line, finished.text, legacy: legacy, client, style) {
+                    return handled
+                }
                 guard Self.isPrintable(ch), !unsure, !Self.same(line, target) else { return false }
                 emit(line, target, typed: ch, then: String(ch), client, style)
                 return true
@@ -394,6 +400,32 @@ public final class Session {
     private func resetTerminalWord() {
         engine.reset()
         onLine = nil
+    }
+
+    /// Phím chắc chắn (sổ phím) kết thúc từ mà không in được (⏎, ⇥, ⎋) khi dòng còn giữ phím đi nguyên văn lúc chưa chắc
+    /// (`onLine`): sửa cả từ và gửi luôn byte của phím trong một lần ghi, bộ gõ giữ phím (iTerm2 coi phím đã xử lý khi có
+    /// insertText trong keyDown). Mở đầu bằng ký tự thường: Ghostty bỏ chữ mở đầu bằng ký tự điều khiển trong keyDown,
+    /// và với ⏎ thì ghi nguyên văn chữ đó (phím khác Ghostty tự mã hoá, bỏ chữ: từ giữ nguyên văn như trước).
+    /// nil: không làm gì (phím đi thẳng, từ giữ nguyên văn).
+    private func fixLineWithKey(_ old: String, _ new: String, legacy: String?, _ client: TextClient,
+                                _ style: TerminalStyle) -> Bool? {
+        guard !Self.same(old, new), let legacy, legacy.unicodeScalars.count == 1 else { return nil }
+        var oi = old.startIndex, ni = new.startIndex
+        while oi < old.endIndex, ni < new.endIndex, old[oi] == new[ni] {
+            oi = old.index(after: oi)
+            ni = new.index(after: ni)
+        }
+        let deletes = old[oi...].unicodeScalars.count
+        let word = String(new[ni...])
+        let dels = String(repeating: "\u{7f}", count: deletes)
+        switch style {
+        case .inlineBare:
+            client.insertText(dels + word + legacy)
+        case .inline, .deferred:
+            client.insertText(deletes == 0 ? word + legacy : String(word.first ?? "x") + "\u{7f}" + dels + word + legacy)
+        }
+        log?("sửa \(old.debugDescription) → \(new.debugDescription) cùng phím \(legacy.debugDescription)")
+        return true
     }
 
     private static func same(_ a: String, _ b: String) -> Bool {

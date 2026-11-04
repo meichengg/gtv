@@ -978,6 +978,18 @@ final class SessionTests: XCTestCase {
         XCTAssertTrue(h.mark.isEmpty)
     }
 
+    /// Ghostty: từ có phím đi nguyên văn lúc chưa chắc rồi Enter (đã chắc): sửa cả từ cùng Enter trong keyDown — Ghostty
+    /// ghi chữ của phím Enter mở đầu bằng ký tự thường.
+    func testGhosttyUnsureWordFixedWithEnter() {
+        let g = GhosttySim()
+        g.options = EngineOptions(method: .vni)
+        g.type("echo to")
+        g.press(.char("6"), ledger: .unsure)
+        g.press(.enter)
+        XCTAssertEqual(g.text, "echo tô")
+        XCTAssertEqual(g.controls, ["\r"])
+    }
+
     /// Ghostty: lần sửa còn chờ, người dùng dán (⌘V, đi vòng bộ gõ) rồi bấm Enter: bỏ lần sửa (không xoá chữ dán), gỡ
     /// marked text — Enter lần này bị nuốt (hiếm), nhưng không kẹt: các phím sau tới bình thường.
     func testGhosttyStaleEditDroppedNoStuckMark() {

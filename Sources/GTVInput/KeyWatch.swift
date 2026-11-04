@@ -55,19 +55,19 @@ final class KeyWatch {
 
     /// Gọi với mọi keyDown bộ gõ nhận (cả ở chế độ E, ứng dụng loại trừ), trước khi xử lý phím: giữa phím trước
     /// mà bộ gõ thấy và phím này có phím / click nào bộ gõ không thấy không.
-    /// `quietChecks`: hẹn kiểm tra lúc yên tay (terminal có phím thường đi vòng bộ gõ: Terminal.app, iTerm2, Muxy…). Ở
-    /// Ghostty, Rex mọi phím đều tới bộ gõ trừ phím tắt (đã có quy tắc ⌘/⌃/⌥): kiểm tra chỉ có thể tính nhầm phím đang
-    /// xếp hàng khi ứng dụng bận.
+    /// `quietChecks`: hẹn kiểm tra lúc yên tay (terminal: chỉ ở đó sổ phím được dùng).
     func observe(_ event: NSEvent, quietChecks: Bool) -> KeyGap {
         readings += 1
         checkTimer?.cancel()
         checkTimer = nil
+        let since = Self.secondsSinceKeyDown()           // trước bộ đếm
         let count = Self.keyDownCount()
         let modifier = modifierPressed
         modifierPressed = false
         let keyModifier = !event.modifierFlags.isDisjoint(with: [.command, .control, .option])
         let verdict = ledger.observe(KeyReading(keyDownCount: count, timestamp: event.timestamp, keyCode: event.keyCode,
-                                                isRepeat: event.isARepeat, readAt: ProcessInfo.processInfo.systemUptime),
+                                                isRepeat: event.isARepeat, readAt: ProcessInfo.processInfo.systemUptime,
+                                                sinceLastKeyDown: since),
                                      modifierPressed: modifier, keyHasModifier: keyModifier)
         let clicks = Self.pointerCount()
         clicksAtLastKey = clicks
@@ -96,7 +96,8 @@ final class KeyWatch {
             self.checkTimer = nil
             let count = Self.keyDownCount()
             let since = Self.secondsSinceKeyDown()           // sau bộ đếm
-            let result = self.ledger.check(keyDownCount: count, secondsSinceLastKeyDown: since)
+            let result = self.ledger.check(keyDownCount: count, secondsSinceLastKeyDown: since,
+                                           now: ProcessInfo.processInfo.systemUptime)
             switch result {
             case .resolved:
                 #if DEBUG

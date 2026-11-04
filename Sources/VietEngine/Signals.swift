@@ -31,13 +31,18 @@ public struct KeyReading: Equatable, Sendable {
     public var isRepeat: Bool
     /// Lúc đọc xong bộ đếm (`ProcessInfo.systemUptime`). Mặc định: `timestamp`.
     public var readAt: Double
+    /// `CGEventSourceSecondsSinceLastEventType(.keyDown)`, đọc TRƯỚC bộ đếm: phím này vừa được bấm (ứng dụng đưa tới
+    /// ngay) hay đã nằm chờ trong ứng dụng (ứng dụng bận). nil: không biết.
+    public var sinceLastKeyDown: Double?
 
-    public init(keyDownCount: UInt32, timestamp: Double, keyCode: UInt16, isRepeat: Bool, readAt: Double? = nil) {
+    public init(keyDownCount: UInt32, timestamp: Double, keyCode: UInt16, isRepeat: Bool, readAt: Double? = nil,
+                sinceLastKeyDown: Double? = nil) {
         self.keyDownCount = keyDownCount
         self.timestamp = timestamp
         self.keyCode = keyCode
         self.isRepeat = isRepeat
         self.readAt = readAt ?? timestamp
+        self.sinceLastKeyDown = sinceLastKeyDown
     }
 }
 
@@ -83,15 +88,15 @@ public enum GapVerdict: Equatable, Sendable {
 public struct KeyLedger {
     /// Hẹn kiểm tra lại sau bấy nhiêu giây khi còn phím chưa thấy; chỉ kết luận khi đã bấy nhiêu giây không có phím
     /// nào được bấm (phím đang tới lúc đó, nếu có, phải tới trong khoảng này — trừ khi ứng dụng treo lâu hơn).
-    public var quietTime = 0.3
-    /// Loạt "chưa biết" kéo dài quá bấy nhiêu giây (gõ liền tay, không có lúc nào ngừng đủ lâu) thì tính là lỡ.
-    public var maxUnknownAge = 0.6
+    public var quietTime = 0.15
     /// `.unavailable` liên tiếp bấy nhiêu lần thì coi là hệ thống không đếm các phím bộ gõ nhận (`.uncounted`).
     public var uncountedAfter = 6
-    /// Lần tính phím lỡ lúc đọc phím k có thể gồm cả phím bấm ngay sau k còn đang tới. Phím tới tiếp theo mà ứng dụng
-    /// nhận trong khoảng này (giây) sau lần đọc đó thì có thể chính là phím ấy: không biết (bỏ từ), lấy mốc lại — không
-    /// bao giờ "trừ lại", vì một phím đi vòng thật có thể bù đúng vào đó.
-    public var inFlightWindow = 0.03
+    /// Mọi lần tính phím lỡ (lúc kiểm tra hẹn giờ, hay lúc đọc phím có phím tắt) chỉ là tạm: có thể nó gồm cả phím
+    /// đang nằm chờ trong ứng dụng (treo) hay phím bấm gần như cùng lúc còn đang tới. Chỉ giữ nếu phím tới tiếp theo là
+    /// phím duy nhất được bấm từ lần tính đó và tới ngay (phím mới nhất bấm cách đây không quá ngần này, giây); không thì
+    /// huỷ, như chưa từng tính — các phím đó lại là "chưa thấy" (sổ "chưa biết": không DEL), một phím đi vòng thật không
+    /// bao giờ bị "bù" mất.
+    public var promptWindow = 0.02
 
     private var lastRaw: UInt32?
     private var unwrapped: Int64 = 0
@@ -99,22 +104,29 @@ public struct KeyLedger {
     private var base: Int64?
     private var missedExact: Int64 = 0
     private var last: (timestamp: Double, keyCode: UInt16)?
-    /// Loạt phím "chưa biết" hiện tại: số phím của loạt, thời điểm phím đầu.
+    /// Loạt phím "chưa biết" hiện tại: số phím của loạt, lúc đọc phím đầu (đồng hồ của bộ gõ: phím dồn ra sau khi ứng
+    /// dụng hết treo mang thời điểm cũ).
     private var run: (keys: Int, startedAt: Double)?
     /// Kết luận của lần kiểm tra hẹn giờ, báo ở phím kế tiếp.
     private var resolved: GapVerdict?
-    /// Lúc đọc phím có lần tính phím lỡ gần nhất (xem `inFlightWindow`).
-    private var bookedAt: Double?
+    /// Lần tính phím lỡ chưa được xác nhận (`promptWindow`): bộ đếm lúc đó, số phím đã tính, lúc tính (đồng hồ của bộ gõ).
+    private var provisional: (count: Int64, excess: Int64, at: Double)?
     /// Bộ đếm và số dư (sau khi đã kết luận) ở lần đọc trước, cho `.unknownSteady`.
     private var previous: (count: Int64, excess: Int64)?
     /// Số lần `.unavailable` liên tiếp.
     public private(set) var unavailableRun = 0
 
+    /// Chẩn đoán (test, IME Lab): bộ đếm, số phím đã thấy, mốc, số đã tính là lỡ, lần tính còn chờ xác nhận.
+    public var debugState: String {
+        "đếm \(unwrapped) thấy \(seen) mốc \(base.map(String.init) ?? "-") lỡ \(missedExact)"
+            + (provisional.map { " tạm(\($0.count),\($0.excess))" } ?? "") + (resolved != nil ? " chờ-báo" : "")
+    }
+
     public init() {}
 
     /// Các lần kiểm tra hẹn giờ sau mỗi phím (giây kể từ phím đó): phím đi vòng bộ gõ lúc người dùng dừng tay (Tab tự
     /// hoàn thành, mũi tên…) được biết trước khi gõ tiếp.
-    public static let checkDelays: [Double] = [0.32, 0.6, 1.2, 2.4, 4.8]
+    public static let checkDelays: [Double] = [0.16, 0.3, 0.6, 1.2, 2.4]
 
     /// Lấy mốc tại đây (bộ gõ vừa gắn vào ô nhập liệu, click…): những gì xảy ra trước đó không còn liên quan.
     public mutating func rebase(keyDownCount: UInt32) {
@@ -123,7 +135,7 @@ public struct KeyLedger {
         missedExact = 0
         run = nil
         resolved = nil
-        bookedAt = nil
+        provisional = nil
         previous = nil
     }
 
@@ -146,32 +158,47 @@ public struct KeyLedger {
         let duplicate = last.map { $0.timestamp == r.timestamp && $0.keyCode == r.keyCode } ?? false
         if !r.isRepeat && !duplicate { seen += 1 }
         last = (r.timestamp, r.keyCode)
-        let resolution = resolved
+        var resolution = resolved
         resolved = nil
-        let surplus = u - seen
-        if let booked = bookedAt {
-            bookedAt = nil
-            if r.timestamp - booked <= inFlightWindow { base = nil }
+        // Phím này vừa được bấm và ứng dụng đưa tới ngay (không có phím nào đang nằm chờ trong ứng dụng).
+        let prompt = !r.isRepeat && !duplicate && (r.sinceLastKeyDown ?? 0) <= promptWindow
+        if let p = provisional {
+            provisional = nil
+            // Phím xác nhận phải là phím bấm sau lần tính: duy nhất được đếm thêm, tới ngay, và (nếu thời điểm sự kiện là
+            // lúc bấm) có thời điểm sau lần tính — phím cũ nằm chờ trong ứng dụng thì không.
+            if !(prompt && u - p.count == 1 && r.timestamp > p.at) {
+                missedExact -= p.excess        // như chưa từng tính: các phím đó vẫn là "chưa thấy"
+                resolution = nil
+            }
         }
+        let surplus = u - seen
 
         guard let base else {
             self.base = surplus
+            missedExact = 0
             return unavailable()
         }
         let excess = surplus - base - missedExact
         if excess < 0 {
-            // Bộ gõ thấy nhiều hơn hệ thống đếm (phím đang tới bị tính là lỡ, phím giả không được đếm): mốc mới.
-            self.base = surplus
+            // Bộ gõ thấy nhiều phím hơn số phím chưa được tính (phím đã tính là lỡ, hay đã nằm trong mốc, mà thật ra đang
+            // tới; phím do chương trình khác gõ không được đếm): sửa đúng phần thừa — huỷ phần đã tính là lỡ trước, rồi
+            // tới mốc. Không lấy mốc mới: mốc lúc này sẽ nuốt luôn các phím khác còn đang tới, rồi bù mất phím đi vòng.
+            let deficit = -excess
+            let unbook = min(deficit, missedExact)
+            missedExact -= unbook
+            self.base = base - (deficit - unbook)
             return unavailable()
         }
         unavailableRun = 0
         if modifierPressed && (excess > 0 || !keyHasModifier) {
             // Phím tắt có ⌘/⌃/⌥ kể từ phím trước (⌘V, Ctrl+A…): đi vòng bộ gõ hay không, con trỏ có thể đã đổi chỗ.
-            return book(excess, surplus: surplus, base: base, at: r.readAt)
+            if prompt { return book(excess, surplus: surplus, base: base, at: r.timestamp) }
+            return .missed(Int(excess))        // bỏ từ; số dư để lần kiểm tra lúc yên tay kết luận
         }
         if excess > 0 && resolution != nil {
             // Lại có phím chưa thấy sau lần kiểm tra: tính hết là lỡ.
-            return book(excess, surplus: surplus, base: base, at: r.readAt)
+            if prompt { return book(excess, surplus: surplus, base: base, at: r.timestamp) }
+            return .missed(Int(excess))
         }
         if let resolution {
             run = nil
@@ -183,22 +210,19 @@ public struct KeyLedger {
         }
         if var current = run {
             current.keys += 1
-            if r.timestamp - current.startedAt > maxUnknownAge {
-                return book(excess, surplus: surplus, base: base, at: r.readAt)
-            }
             run = current
         } else {
-            run = (1, r.timestamp)
+            run = (1, r.readAt)
         }
         // Không thêm phím nào chưa thấy kể từ phím trước: số dư như cũ và hệ thống chỉ đếm thêm đúng phím này.
         if let prior, prior.excess == excess, u - prior.count == 1 { return .unknownSteady }
         return .unknown
     }
 
-    private mutating func book(_ excess: Int64, surplus: Int64, base: Int64, at readAt: Double) -> GapVerdict {
+    private mutating func book(_ excess: Int64, surplus: Int64, base: Int64, at: Double) -> GapVerdict {
         missedExact = surplus - base
         run = nil
-        if excess > 0 { bookedAt = readAt }
+        if excess > 0 { provisional = (unwrapped, excess, at) }
         return .missed(Int(excess))
     }
 
@@ -215,14 +239,18 @@ public struct KeyLedger {
     /// không có phím nào được bấm, thì đó là phím đi vòng bộ gõ.
     /// `secondsSinceLastKeyDown`: `CGEventSourceSecondsSinceLastEventType(.keyDown)`, đọc SAU bộ đếm: phím bấm xen giữa hai
     /// lần đọc thì không được đếm mà lại làm "chưa yên" — không bao giờ bị tính nhầm là phím lỡ.
-    public mutating func check(keyDownCount: UInt32, secondsSinceLastKeyDown: Double) -> CheckResult {
-        guard let base, resolved == nil else { return .none }
+    /// `now`: lúc kiểm tra (`ProcessInfo.systemUptime`, cùng đồng hồ với `NSEvent.timestamp`).
+    public mutating func check(keyDownCount: UInt32, secondsSinceLastKeyDown: Double,
+                               now: Double = -.infinity) -> CheckResult {
+        // Còn một lần tính phím lỡ chờ phím sau xác nhận: không tính chồng lên (phím sau sẽ giữ hay huỷ nó).
+        guard let base, resolved == nil, provisional == nil else { return .none }
         let u = advance(keyDownCount)
         let excess = u - seen - base - missedExact
         guard excess > 0 else { return .none }
         guard secondsSinceLastKeyDown >= quietTime else { return .wait }
         run = nil
         missedExact = u - seen - base
+        provisional = (u, excess, now)
         // Không nói được phím lỡ được bấm trước hay sau phím "chưa biết" (phím bấm ngay sau một phím vẫn có thể được
         // đếm trước lúc bộ gõ đọc phím đó): chỉ báo là có phím lỡ.
         resolved = .missed(Int(excess))
@@ -240,9 +268,8 @@ public struct KeyLedger {
     }
 
     private mutating func unavailable() -> GapVerdict {
-        missedExact = 0
         run = nil
-        bookedAt = nil
+        provisional = nil
         unavailableRun += 1
         return unavailableRun >= uncountedAfter ? .uncounted : .unavailable
     }

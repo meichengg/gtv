@@ -12,7 +12,9 @@ STYLES="marked inline deferred direct" (cách gõ trong terminal, xem Settings.t
 import json
 import os
 import pathlib
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -56,6 +58,9 @@ CAPTURE = [
     ("telex-words", "telex", "Vieetj Nam, tooi yeeu tieengs Vieetj ddaij hocj.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
     # ⌘V giữa từ: phím đi vòng bộ gõ (sổ phím phải thấy), chữ dán không được bị xoá. Bộ nhớ tạm: PASTE.
     ("vni-paste", "vni", "tie{CMDV}{WAIT300}6 to6i", "tie/tmp6 tôi", 45),
+    # Ứng dụng treo (SIGSTOP) giữa từ: phím dồn lại rồi tới cùng lúc — không bỏ từ oan, chữ vẫn đúng. Log: thời điểm
+    # sự kiện của phím dồn lại là lúc bấm hay lúc ứng dụng nhận ("tới sau … ms" trong GTV-debug.log).
+    ("vni-stall", "vni", "Vi{STOP}e65t{WAIT600}{CONT}{WAIT800} Nam", "Việt Nam", 120),
 ]
 PASTE = "/tmp"
 # Phím đặc biệt có tới bộ gõ không (khi không có marked text) — xem GTV-debug.log, dòng "phím <mã>".
@@ -194,6 +199,42 @@ def ime_seen(mark, bid):
     return {"ime_keys": len(keys), "ime_handled": sum("bộ gõ xử lý" in l for l in keys)}
 
 
+def app_pid(key):
+    _, path = TERMINALS[key]
+    out = sh(["pgrep", "-f", f"{path}/Contents/MacOS/"]).stdout.split()
+    return int(out[0]) if out else None
+
+
+def type_keys(key, bid, keys, ms):
+    """Gõ `keys`; {STOP} / {CONT}: tạm dừng / chạy tiếp tiến trình terminal (giả lập ứng dụng treo)."""
+    for part in re.split(r"(\{STOP\}|\{CONT\})", keys):
+        if part == "{STOP}":
+            pid = app_pid(key)
+            if pid:
+                os.kill(pid, signal.SIGSTOP)
+        elif part == "{CONT}":
+            pid = app_pid(key)
+            if pid:
+                os.kill(pid, signal.SIGCONT)
+        elif part:
+            drv(bid, part, ms)
+
+
+def deliveries(mark):
+    """"tới sau … ms" của các phím GTV nhận kể từ `mark` (GTV-debug.log, dòng sổ phím)."""
+    if not GTV_LOG.exists():
+        return []
+    with open(GTV_LOG, "rb") as f:
+        f.seek(mark)
+        new = f.read().decode("utf-8", "replace").splitlines()
+    out = []
+    for l in new:
+        m = re.search(r"sổ phím: (\S+?)[, ].*tới sau (-?[\d.]+) ms", l)
+        if m:
+            out.append(f"{m.group(1)}@{m.group(2)}")
+    return out
+
+
 def run_capture(key, bid, name, method, keys, expect, ms):
     dismiss_dialogs()
     log = L / f"{key}-{name}.jsonl"
@@ -208,9 +249,11 @@ def run_capture(key, bid, name, method, keys, expect, ms):
         raise RuntimeError("capture.py không chạy")
     ensure_mode(bid, "vi")
     mark = log_mark()
-    drv(bid, keys, ms)
+    type_keys(key, bid, keys, ms)
     time.sleep(0.6)
     seen = ime_seen(mark, bid)
+    if "{STOP}" in keys:
+        seen["deliveries"] = deliveries(mark)
     img = shot(f"{key}-{name}")
     source = current_source()
     ensure_mode(bid, "en")

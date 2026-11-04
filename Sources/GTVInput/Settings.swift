@@ -178,9 +178,6 @@ final class Settings {
     static let terminalApps: Set<String> = knownTerminals.union(defaultMarkedApps)
         .union(["co.zeit.hyper", "org.tabby", "dev.warp.Warp-Preview"])
 
-    /// Terminal đưa mọi phím cho bộ gõ trừ phím tắt có ⌘/⌃/⌥ (IME Lab): không cần kiểm tra phím đi vòng lúc yên tay.
-    static let bypassFreeTerminals: Set<String> = ["com.mitchellh.ghostty", "com.superlogical.rex"]
-
     /// Terminal có ô văn bản (thanh Find) mà khi gõ vào bộ gõ không được gắn lại (không có `activateServer`), nên không
     /// phân biệt được qua thuộc tính marked text; view terminal của chúng luôn báo con trỏ ở 0 (IME Lab, Muxy 2.3), ô văn
     /// bản thì báo vị trí thật.
