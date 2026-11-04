@@ -71,6 +71,8 @@ FISH = [
     ("fish-backspace", "vni", "echo tie61ng{BS}{BS}{BS}{WAIT300}e65t", "echo tiệt", 45),
     ("fish-ctrl-a", "vni", "echo vie65t tie{CA}{WAIT300}6", "6echo việt tie", 45),
     ("fish-paste", "vni", "echo vie65t tie{CMDV}{WAIT300}6 to6i", "echo việt tie/tmp6 tôi", 45),
+    # Tab tự hoàn thành (Muxy, Terminal.app: đi vòng bộ gõ) rồi dừng tay, gõ tiếp một từ có dấu.
+    ("fish-tab", "vni", "cd suo{TAB}{WAIT500}ta1", "cd suoddms-quickstart-6.0.23.tar/tá", 45),
 ]
 
 
@@ -107,8 +109,7 @@ def current_source():
 def ensure_mode(bid, target):
     """Đưa GTV về chế độ `target` ("vi"/"en"). LAB_SWITCH=hotkey: bấm ⌘⇧ như người dùng (mặc định);
     =tis: chọn input source bằng TISSelectInputSource từ tiến trình khác."""
-    # Terminal.app: ở chế độ E phím (kể cả ⌘⇧) có lúc không tới bộ gõ (lab 41871623817) — chọn thẳng input source.
-    if os.environ.get("LAB_SWITCH", "hotkey") == "tis" or bid == "com.apple.Terminal":
+    if os.environ.get("LAB_SWITCH", "hotkey") == "tis":
         drv(bid, "{IS:" + target + "}", 20)
         return
     for _ in range(3):

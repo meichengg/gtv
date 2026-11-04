@@ -28,9 +28,23 @@ private final class Pty: TextClient {
     func selectedRange() -> (location: Int, length: Int)? { (0, 0) }   // như Ghostty, Muxy: không cho biết con trỏ
     func text(location: Int, length: Int) -> String? { nil }
     func replaceText(location: Int, length: Int, with text: String) { XCTFail("terminal: không thay được chữ") }
-    func setMarkedText(_ text: String) { XCTFail("terminal: không được gạch chân (\(text))") }
-    func insertText(_ text: String) { write(text) }
+    /// Kiểu `.deferred` (Ghostty): chỉ được dùng marked text rỗng U+200B để giữ phím.
+    func setMarkedText(_ text: String) {
+        if text == "\u{200B}" { markActive = true } else { XCTFail("terminal: không được gạch chân (\(text))") }
+    }
+    func insertText(_ text: String) {
+        markActive = false
+        write(text)
+    }
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
+    var markActive = false
+    func hasMarkedText() -> Bool { markActive }
+    /// false: lần gửi hẹn giờ (kiểu `.deferred`) chưa chạy — như khi Ghostty bỏ lần gửi ngoài keyDown.
+    var runScheduledNow = true
+    private var later: [() -> Void] = []
+    func schedule(after delay: Double, _ work: @escaping () -> Void) {
+        if runScheduledNow { work() } else { later.append(work) }
+    }
 
     func write(_ s: String) {
         for scalar in s.unicodeScalars {
@@ -64,12 +78,54 @@ private final class Pty: TextClient {
     func bypassPaste(_ s: String) { write(s) }
 }
 
+/// Lịch kiểm tra hẹn giờ như `KeyWatch.scheduleCheck`: sau mỗi phím, ở các mốc `KeyLedger.checkDelays`; vừa có phím
+/// được bấm thì thử lại khi đã yên (tối đa 2 lần mỗi mốc); phím mới tới thì bỏ lịch cũ.
+private struct Checks {
+    var keyTime: Double?
+    var step = 0
+    var waits = 0
+    var next: Double?
+
+    mutating func start(after t: Double) {
+        keyTime = t
+        step = 0
+        waits = 0
+        next = t + KeyLedger.checkDelays[0]
+    }
+
+    mutating func run(until t: Double, _ l: inout KeyLedger, reading: (Double) -> (UInt32, Double),
+                      resolved: () -> Void) {
+        while let at = next, at < t, let keyTime {
+            let (count, since) = reading(at)
+            switch l.check(keyDownCount: count, secondsSinceLastKeyDown: since) {
+            case .resolved:
+                resolved()
+                next = nil
+            case .wait where waits < 2:
+                waits += 1
+                next = at + max(0.02, l.quietTime - since)
+            case .wait, .none:
+                step += 1
+                waits = 0
+                next = step < KeyLedger.checkDelays.count ? keyTime + KeyLedger.checkDelays[step] : nil
+                if let n = next, n <= at { next = at + 0.01 }
+            }
+        }
+    }
+}
+
 final class SignalsTests: XCTestCase {
     // MARK: - Sổ phím
 
-    private func reading(_ count: UInt32, at t: Double, newest: Double? = nil, code: UInt16 = 0,
-                         repeat isRepeat: Bool = false) -> KeyReading {
-        KeyReading(keyDownCount: count, timestamp: t, keyCode: code, isRepeat: isRepeat, lastKeyDownAt: newest ?? t)
+    private func reading(_ count: UInt32, at t: Double, code: UInt16 = 0, repeat isRepeat: Bool = false) -> KeyReading {
+        KeyReading(keyDownCount: count, timestamp: t, keyCode: code, isRepeat: isRepeat)
+    }
+
+    /// Sổ đã có mốc ở bộ đếm `count` (như lúc bộ gõ vừa gắn vào ô nhập liệu).
+    private func ledger(at count: UInt32) -> KeyLedger {
+        var l = KeyLedger()
+        l.rebase(keyDownCount: count)
+        return l
     }
 
     func testLedgerCleanWhenEveryKeySeen() {
@@ -80,38 +136,93 @@ final class SignalsTests: XCTestCase {
         }
     }
 
-    func testLedgerMissedWhenKeyBypassesIME() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
-        XCTAssertEqual(l.observe(reading(11, at: 1.1, code: 1)), .clean)
-        // ⌘V (đi vòng bộ gõ) rồi một phím chữ
-        XCTAssertEqual(l.observe(reading(13, at: 1.3, code: 2)), .missed(1))
-        XCTAssertEqual(l.observe(reading(14, at: 1.4, code: 3)), .clean)
-        // ba phím đi vòng
-        XCTAssertEqual(l.observe(reading(18, at: 1.8, code: 4)), .missed(3))
-        XCTAssertEqual(l.observe(reading(19, at: 1.9, code: 5)), .clean)
+    /// Phím kế tiếp đã bấm nhưng chưa tới bộ gõ (gõ nhanh, ứng dụng bận): chưa biết, rồi sạch khi nó tới.
+    func testLedgerKeyInFlight() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
+        XCTAssertEqual(l.observe(reading(12, at: 1.01, code: 2)), .clean)
+        // ứng dụng treo: bốn phím dồn lại
+        XCTAssertEqual(l.observe(reading(16, at: 1.5, code: 3)), .unknown)
+        XCTAssertEqual(l.observe(reading(16, at: 1.51, code: 4)), .unknown)
+        XCTAssertEqual(l.observe(reading(16, at: 1.52, code: 5)), .unknown)
+        XCTAssertEqual(l.observe(reading(16, at: 1.53, code: 6)), .clean)
     }
 
-    /// Phím kế tiếp đã bấm nhưng chưa tới bộ gõ: chưa biết, rồi rõ ở phím sau.
-    func testLedgerUnknownWhileNextKeyInFlight() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
-        XCTAssertEqual(l.observe(reading(12, at: 1.1, newest: 1.112, code: 1)), .unknown)
-        XCTAssertEqual(l.observe(reading(12, at: 1.112, code: 2)), .clean)
+    /// Phím đi vòng bộ gõ (mũi tên ở iTerm2, Tab ở Muxy…) rồi một phím: chưa biết; lúc yên tĩnh thì kiểm tra thấy vẫn
+    /// còn phím chưa tới → phím sau được báo là có phím lỡ.
+    func testLedgerBypassResolvedByQuietCheck() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        XCTAssertEqual(l.observe(reading(13, at: 1.3, code: 2)), .unknown)        // 1 phím đi vòng trước phím 2
+        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.01), .wait)   // vừa có phím: chờ
+        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.16), .resolved)
+        XCTAssertEqual(l.observe(reading(14, at: 1.6, code: 3)), .missed(1))
+        XCTAssertEqual(l.observe(reading(15, at: 1.7, code: 4)), .clean)
     }
 
-    /// Một phím đi vòng trong lúc có phím đang tới: chưa biết, rồi thành phím lỡ ở phím mới nhất.
-    func testLedgerMissedResolvedAfterUnknown() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
-        XCTAssertEqual(l.observe(reading(13, at: 1.1, newest: 1.15, code: 1)), .unknown)
-        XCTAssertEqual(l.observe(reading(13, at: 1.15, code: 2)), .missed(1))
-        XCTAssertEqual(l.observe(reading(14, at: 1.3, code: 3)), .clean)
+    /// Phím đi vòng bấm SAU phím "chưa biết" (bộ đếm tăng thêm sau lần đọc): không biết phím lỡ ở đâu → lỡ.
+    func testLedgerBypassAfterUnsureKey() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
+        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.2), .resolved)
+        XCTAssertEqual(l.observe(reading(14, at: 1.5, code: 2)), .missed(2))
+    }
+
+    /// Phím đi vòng lúc người dùng dừng tay (Tab tự hoàn thành, mũi tên…): lần kiểm tra sau phím trước đã biết, phím
+    /// kế tiếp được báo ngay là có phím lỡ — gõ tiếp bình thường, không phải đi nguyên văn.
+    func testLedgerBypassFoundBeforeNextKey() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        XCTAssertEqual(l.check(keyDownCount: 11, secondsSinceLastKeyDown: 0.1), .none)     // chưa có gì
+        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.03), .wait)    // Tab vừa bấm
+        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.3), .resolved)
+        XCTAssertEqual(l.observe(reading(13, at: 2.0, code: 2)), .missed(1))
+        XCTAssertEqual(l.observe(reading(14, at: 2.1, code: 3)), .clean)
+    }
+
+    /// Nhiều phím "chưa biết" liền nhau rồi mới yên tĩnh: không biết phím lỡ trước phím nào → lỡ.
+    func testLedgerLongUnsureRunIsMissed() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
+        XCTAssertEqual(l.observe(reading(13, at: 1.05, code: 2)), .unknown)
+        XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.2), .resolved)
+        XCTAssertEqual(l.observe(reading(14, at: 1.3, code: 3)), .missed(1))
+    }
+
+    /// Phím tắt có ⌘/⌃/⌥ (⌘V, Ctrl+A đi vòng bộ gõ): lỡ ngay, không chờ.
+    func testLedgerModifierShortcutIsMissedAtOnce() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        XCTAssertEqual(l.observe(reading(13, at: 1.4, code: 2), modifierPressed: true), .missed(1))
+        XCTAssertEqual(l.observe(reading(14, at: 1.5, code: 3)), .clean)
+        // phím tắt tới bộ gõ (không đi vòng): vẫn bỏ từ — con trỏ có thể đã đổi chỗ
+        XCTAssertEqual(l.observe(reading(15, at: 1.6, code: 4), modifierPressed: true), .missed(0))
+        XCTAssertEqual(l.observe(reading(16, at: 1.7, code: 5)), .clean)
+    }
+
+    /// Gõ liền tay sau một phím đi vòng, không lúc nào ngừng đủ lâu: không "chưa biết" mãi.
+    func testLedgerUnsureRunGivesUp() {
+        var l = ledger(at: 10)
+        var verdicts: [GapVerdict] = []
+        for i in 0..<12 { verdicts.append(l.observe(reading(12 + UInt32(i), at: 1.0 + Double(i) * 0.06, code: UInt16(i)))) }
+        XCTAssertEqual(verdicts.first, .unknown)
+        XCTAssertTrue(verdicts.contains(.missed(1)), "\(verdicts)")
+        let m = verdicts.firstIndex(of: .missed(1))!
+        XCTAssertTrue(verdicts[(m + 1)...].allSatisfy { $0 == .clean }, "\(verdicts)")
+    }
+
+    /// Phím đang tới bị lần kiểm tra tính là lỡ (ứng dụng treo lâu): khi nó tới, sổ thấy bộ gõ thấy nhiều hơn hệ thống
+    /// đếm → không biết (bỏ từ), không bao giờ "trừ lại".
+    func testLedgerStalledKeyBookedThenArrives() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
+        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.2), .resolved)
+        XCTAssertEqual(l.observe(reading(12, at: 1.2, code: 2)), .unavailable)
+        XCTAssertEqual(l.observe(reading(13, at: 1.3, code: 3)), .clean)
     }
 
     func testLedgerRepeatsAreNotCounted() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
+        var l = ledger(at: 10)
         XCTAssertEqual(l.observe(reading(11, at: 1.1, code: 1)), .clean)
         for i in 1...5 {   // hệ thống không đếm phím lặp
             XCTAssertEqual(l.observe(reading(11, at: 1.1 + Double(i) * 0.03, code: 1, repeat: true)), .clean)
@@ -120,118 +231,132 @@ final class SignalsTests: XCTestCase {
     }
 
     func testLedgerDuplicateDeliveryCountedOnce() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
+        var l = ledger(at: 10)
         XCTAssertEqual(l.observe(reading(11, at: 1.1, code: 7)), .clean)
         XCTAssertEqual(l.observe(reading(11, at: 1.1, code: 7)), .clean)
         XCTAssertEqual(l.observe(reading(12, at: 1.2, code: 8)), .clean)
     }
 
     func testLedgerCounterWraps() {
-        var l = KeyLedger()
-        _ = l.observe(reading(UInt32.max - 1, at: 1.0))
+        var l = ledger(at: UInt32.max - 1)
         XCTAssertEqual(l.observe(reading(UInt32.max, at: 1.1, code: 1)), .clean)
         XCTAssertEqual(l.observe(reading(0, at: 1.2, code: 2)), .clean)
-        XCTAssertEqual(l.observe(reading(2, at: 1.3, code: 3)), .missed(1))
+        XCTAssertEqual(l.observe(reading(2, at: 1.3, code: 3)), .unknown)
     }
 
-    /// Bộ gõ thấy nhiều hơn hệ thống đếm (phím giả gửi thẳng vào tiến trình): không biết, lấy mốc lại.
-    func testLedgerSeenMoreThanCountedRebases() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
-        XCTAssertEqual(l.observe(reading(10, at: 1.1, code: 1)), .unavailable)
-        XCTAssertEqual(l.observe(reading(11, at: 1.2, code: 2)), .unavailable)   // mốc mới
-        XCTAssertEqual(l.observe(reading(12, at: 1.3, code: 3)), .clean)
-    }
-
-    /// Đồng hồ lệch (không bao giờ thấy "phím mới nhất"): không kẹt ở "chưa biết", sau vài phím thành phím lỡ.
-    func testLedgerUnknownDoesNotLastForever() {
-        var l = KeyLedger()
+    /// Hệ thống không đếm các phím bộ gõ nhận (phím do chương trình khác gõ): sau vài phím thì sổ chuyển sang
+    /// `.uncounted` (chỉ còn dựa vào phím bổ trợ), rồi trở lại bình thường khi phím lại được đếm.
+    func testLedgerUncountedKeys() {
+        var l = ledger(at: 10)
         var verdicts: [GapVerdict] = []
-        for i in 0..<40 {
-            let t = 1.0 + Double(i) * 0.1
-            verdicts.append(l.observe(reading(100 + UInt32(i) + (i >= 25 ? 1 : 0), at: t, newest: t + 0.01, code: UInt16(i))))
-        }
-        // có mốc (sau 20 lần), sạch khi không lỡ phím, rồi phím lỡ ở i = 25 được báo trong vài phím, không có lần
-        // "sạch" nào trước đó
-        XCTAssertTrue(verdicts[20..<25].allSatisfy { $0 == .clean }, "\(verdicts)")
-        guard let m = verdicts.firstIndex(of: .missed(1)) else { return XCTFail("\(verdicts)") }
-        XCTAssertTrue(m > 25 && m < 34, "\(verdicts)")
-        XCTAssertTrue(verdicts[25..<m].allSatisfy { $0 == .unknown }, "\(verdicts)")
-        XCTAssertTrue(verdicts[(m + 1)...].allSatisfy { $0 == .clean }, "\(verdicts)")
+        for i in 0..<10 { verdicts.append(l.observe(reading(10, at: 1.0 + Double(i) * 0.1, code: UInt16(i)))) }
+        XCTAssertEqual(verdicts.prefix(5).filter { $0 == .unavailable }.count, 5, "\(verdicts)")
+        XCTAssertTrue(verdicts[5...].allSatisfy { $0 == .uncounted }, "\(verdicts)")
+        XCTAssertEqual(GapVerdict.uncounted.gap(modifierPressed: false), .none)
+        XCTAssertEqual(GapVerdict.uncounted.gap(modifierPressed: true), .interrupted)
+        XCTAssertEqual(l.observe(reading(11, at: 3.0, code: 50)), .clean)
     }
 
-    /// Hai phím bấm gần như cùng lúc: phím đầu tưởng là mới nhất nên phím sau (đang tới) bị tính là lỡ. Phím đi vòng
-    /// ngay sau đó không được bị "trừ lại" thành sạch.
-    func testLedgerNearSimultaneousKeysNeverHideBypass() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
-        XCTAssertEqual(l.observe(reading(11, at: 1.1, code: 1)), .clean)
-        // phím 2 bấm ở 1.2, phím 3 ở 1.2005 (đang tới), phím đi vòng ở 1.201
-        XCTAssertEqual(l.observe(reading(13, at: 1.2, newest: 1.2005, code: 2)), .missed(1))
-        XCTAssertNotEqual(l.observe(reading(14, at: 1.2005, newest: 1.201, code: 3)), .clean)
+    /// Bộ gõ vừa gắn vào ô nhập liệu: mọi thứ trước đó (phím gõ ở app khác…) không tính.
+    func testLedgerRebase() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        l.rebase(keyDownCount: 40)               // 29 phím ở app khác
+        XCTAssertEqual(l.observe(reading(41, at: 5.0, code: 2)), .clean)
     }
 
-    /// Đồng hồ đã khớp (nhiều lần đọc sạch với phím mới nhất trùng phím này): dư đúng 1 mà có một phím mới hơn → phím
-    /// dư là phím mới hơn đó, không phím nào đi vòng trước phím này.
-    func testLedgerCleanBeforeOnceClocksAgree() {
-        var l = KeyLedger()
-        _ = l.observe(reading(10, at: 1.0))
-        for i in 1...10 { XCTAssertEqual(l.observe(reading(10 + UInt32(i), at: 1.0 + Double(i) * 0.1, code: UInt16(i))), .clean) }
-        XCTAssertEqual(l.observe(reading(22, at: 2.1, newest: 2.112, code: 20)), .cleanBefore)
-        XCTAssertEqual(l.observe(reading(22, at: 2.112, code: 21)), .clean)
-        // phím mới hơn hoá ra là phím đi vòng: phím sau biết ngay
-        XCTAssertEqual(l.observe(reading(24, at: 2.3, newest: 2.31, code: 22)), .cleanBefore)
-        XCTAssertEqual(l.observe(reading(25, at: 2.5, code: 23)), .missed(1))
-        // dư 2 thì không đoán được
-        XCTAssertEqual(l.observe(reading(28, at: 2.7, newest: 2.72, code: 24)), .unknown)
-    }
-
-    /// Mô phỏng: phím bấm theo nhịp ngẫu nhiên (có cả hai phím gần như cùng lúc), hệ thống đếm lúc bấm, phím qua bộ gõ
-    /// tới theo thứ tự sau độ trễ ngẫu nhiên, ~6 % phím đi vòng; đồng hồ của sự kiện phím lệch đủ kiểu so với đồng hồ
-    /// của hệ thống. Mỗi lần sổ báo sạch thì mọi phím đi vòng (từ lần bỏ từ trước) đều đã được báo; báo "sạch tới phím
-    /// này" thì không có phím đi vòng nào bấm trước phím này.
-    func testLedgerNeverReportsCleanAfterBypassFuzz() {
-        for offset in [0, 0.0005, -0.0005, 0.005, -0.005, 0.04, -0.04] {
-            var stats = [String: Int]()
-            for seed in 0..<150 {
-                var rng = SplitMix(state: UInt64(seed) &* 7919 &+ UInt64(abs(offset) * 1e5))
-                var ledger = KeyLedger()
-                var presses: [(t: Double, seen: Bool)] = []
-                var t = 5.0
-                for _ in 0..<250 {
-                    let r = rng.unit()
-                    t += r < 0.05 ? rng.range(0, 0.002) : r < 0.3 ? rng.range(0.005, 0.05) : rng.range(0.05, 0.3)
-                    presses.append((t, rng.unit() >= 0.06))
-                }
-                let start = UInt32.max - 100   // cho bộ đếm quay vòng giữa chừng
-                var delivered = 0.0
-                var forgivenUpTo = -Double.infinity
-                for (i, p) in presses.enumerated() where p.seen {
-                    let latency = rng.unit() < 0.05 ? rng.range(0.02, 0.06) : rng.range(0.0003, 0.015)
-                    delivered = max(p.t + latency, delivered + 0.0001)
-                    let counted = presses.filter { $0.t <= delivered }
-                    let r = KeyReading(keyDownCount: start &+ UInt32(counted.count), timestamp: p.t + offset,
-                                       keyCode: UInt16(i % 50), isRepeat: false, lastKeyDownAt: counted.last!.t,
-                                       readAt: delivered)
-                    let v = ledger.observe(r)
-                    stats["\(v)", default: 0] += 1
-                    switch v {
-                    case .clean:
-                        let hidden = presses.filter { !$0.seen && $0.t > forgivenUpTo && $0.t <= delivered }
-                        XCTAssertTrue(hidden.isEmpty, "lệch \(offset) seed \(seed) phím \(i): báo sạch, có \(hidden.count) phím đi vòng")
-                    case .cleanBefore:
-                        let hidden = presses.filter { !$0.seen && $0.t > forgivenUpTo && $0.t < p.t }
-                        XCTAssertTrue(hidden.isEmpty, "lệch \(offset) seed \(seed) phím \(i): báo sạch tới phím này, có \(hidden.count) phím đi vòng trước nó")
-                    case .missed, .unavailable:
-                        forgivenUpTo = counted.last!.t
-                    case .unknown:
-                        break
-                    }
-                }
+    /// Mô phỏng theo thời gian: phím bấm theo nhịp ngẫu nhiên (có lúc hai phím gần như cùng lúc), hệ thống đếm lúc
+    /// bấm; phím qua bộ gõ tới theo thứ tự sau độ trễ ngẫu nhiên (có lúc ứng dụng treo 20–150 ms); ~6 % phím đi vòng
+    /// (một nửa có ⌘/⌃/⌥); bộ gõ hẹn kiểm tra `quietTime` sau mỗi lần đọc còn dư. Mỗi kết luận phải đúng:
+    /// sạch ở phím k thì không có phím đi vòng nào bấm trước k mà chưa được báo.
+    func testLedgerVerdictsAreSoundFuzz() {
+        var stats = [String: Int]()
+        for seed in 0..<300 {
+            var rng = SplitMix(state: UInt64(seed) &* 7919 &+ 17)
+            var l = KeyLedger()
+            struct Press { var t: Double; var seen: Bool; var modifier: Bool; var arrive = 0.0 }
+            var presses: [Press] = []
+            var t = 5.0
+            for _ in 0..<250 {
+                let r = rng.unit()
+                t += r < 0.04 ? rng.range(0, 0.003) : r < 0.3 ? rng.range(0.01, 0.06) : rng.range(0.06, 0.35)
+                let bypass = rng.unit() < 0.06
+                presses.append(Press(t: t, seen: !bypass, modifier: bypass && rng.unit() < 0.5))
             }
-            print("sổ phím (mô phỏng, đồng hồ lệch \(offset * 1000) ms):", stats.sorted { $0.key < $1.key })
+            var lastArrive = 0.0
+            for i in presses.indices where presses[i].seen {
+                let stall = rng.unit() < 0.04 ? rng.range(0.02, 0.15) : 0
+                lastArrive = max(presses[i].t + rng.range(0.0005, 0.006) + stall, lastArrive + 0.0002)
+                presses[i].arrive = lastArrive
+            }
+            func counted(by time: Double) -> UInt32 { UInt32(1000 + presses.filter { $0.t <= time }.count) }
+            l.rebase(keyDownCount: counted(by: 0))
+            var forgivenUpTo = -Double.infinity
+            var previousSeen: Press?
+            var checks = Checks()
+            let seenOrder = presses.filter(\.seen)
+            for (n, p) in seenOrder.enumerated() {
+                // các lần kiểm tra hẹn giờ tới trước phím này
+                checks.run(until: p.arrive, &l) { at in
+                    (counted(by: at), at - (presses.last { $0.t <= at }?.t ?? -1))
+                } resolved: { stats["kiểm tra: lỡ", default: 0] += 1 }
+                let modifier = presses.contains { $0.modifier && $0.t > (previousSeen?.t ?? -1) && $0.t < p.t }
+                let v = l.observe(KeyReading(keyDownCount: counted(by: p.arrive), timestamp: p.arrive,
+                                             keyCode: UInt16(n % 50), isRepeat: false), modifierPressed: modifier)
+                stats["\(v)", default: 0] += 1
+                let hidden = { (from: Double, to: Double) in
+                    presses.filter { !$0.seen && $0.t > max(from, forgivenUpTo) && $0.t < to }.count
+                }
+                switch v {
+                case .clean:
+                    XCTAssertEqual(hidden(-.infinity, p.t), 0, "seed \(seed) phím \(n): báo sạch nhưng có phím đi vòng")
+                case .missed, .unavailable, .uncounted:
+                    // Lần tính phím lỡ lúc đọc phím k gồm mọi phím đã đếm tới lúc đó, kể cả phím đi vòng bấm trong vài
+                    // mili giây giữa lúc bấm k và lúc ứng dụng nhận k (rủi ro còn lại, chấp nhận: cần hai phím gần như
+                    // cùng lúc ngay tại phím có lần tính phím lỡ).
+                    forgivenUpTo = p.arrive
+                case .unknown:
+                    break
+                }
+                checks.start(after: p.arrive)
+                previousSeen = p
+            }
         }
+        print("sổ phím (mô phỏng theo thời gian):", stats.sorted { $0.key < $1.key })
+    }
+
+    /// Gõ bình thường (không phím nào đi vòng, có lúc ứng dụng treo): sổ không bao giờ báo lỡ, chỉ "chưa biết" khi có
+    /// phím đang tới.
+    func testLedgerNoFalseMissesWhenNothingBypasses() {
+        var stats = [String: Int]()
+        for seed in 0..<200 {
+            var rng = SplitMix(state: UInt64(seed) &* 104729 &+ 3)
+            var l = KeyLedger()
+            var presses: [Double] = []
+            var t = 5.0
+            for _ in 0..<300 { t += rng.unit() < 0.3 ? rng.range(0.008, 0.05) : rng.range(0.05, 0.25); presses.append(t) }
+            var arrive: [Double] = []
+            var lastArrive = 0.0
+            for p in presses {
+                let stall = rng.unit() < 0.03 ? rng.range(0.02, 0.07) : 0
+                lastArrive = max(p + rng.range(0.0005, 0.006) + stall, lastArrive + 0.0002)
+                arrive.append(lastArrive)
+            }
+            func counted(by time: Double) -> UInt32 { UInt32(presses.filter { $0 <= time }.count) }
+            l.rebase(keyDownCount: 0)
+            var checks = Checks()
+            for i in presses.indices {
+                checks.run(until: arrive[i], &l) { at in
+                    (counted(by: at), at - (presses.last { $0 <= at } ?? -1))
+                } resolved: {}
+                let v = l.observe(KeyReading(keyDownCount: counted(by: arrive[i]), timestamp: arrive[i],
+                                             keyCode: UInt16(i % 40), isRepeat: false))
+                stats["\(v)", default: 0] += 1
+                XCTAssertTrue(v == .clean || v == .unknown, "seed \(seed) phím \(i): \(v) khi không có phím nào đi vòng")
+                checks.start(after: arrive[i])
+            }
+        }
+        print("sổ phím (gõ thường, có lúc treo):", stats.sorted { $0.key < $1.key })
     }
 
     // MARK: - Loại ô
@@ -346,6 +471,23 @@ final class SignalsTests: XCTestCase {
         p.bypassLeft()
         p.key("n", .interrupted)
         XCTAssertEqual(p.text, "tien6")
+    }
+
+    /// Ghostty: lần sửa chưa tới (marked text rỗng còn đó) mà người dùng dán (⌘V, đi vòng bộ gõ): bỏ lần sửa, không
+    /// được xoá chữ dán; phím chữ kế tiếp tự gửi (Ghostty nuốt phím khi đang soạn mà bộ gõ không đưa chữ).
+    func testDeferredStaleEditDroppedAfterBypass() {
+        let p = Pty()
+        p.style = .deferred
+        p.type("tie")
+        p.runScheduledNow = false
+        p.key("6", .none)
+        XCTAssertTrue(p.markActive)
+        XCTAssertEqual(p.text, "tie")
+        p.bypassPaste("/tmp")
+        XCTAssertTrue(p.session.handle(.char("x"), p, options: p.options, forceMarked: false, terminal: .deferred,
+                                       gap: .interrupted))
+        XCTAssertEqual(p.text, "tie/tmpx")
+        XCTAssertFalse(p.markActive)
     }
 
     /// Ghostty (`.deferred`): chưa chắc thì cũng không đặt marked text hay hẹn gửi gì.

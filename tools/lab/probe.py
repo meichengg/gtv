@@ -21,7 +21,10 @@ def sh(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=kw.get("timeout", 60), env=kw.get("env"))
 
 def keylines():
-    return sum(1 for l in LOG.read_text(errors="replace").splitlines() if " phím " in l) if LOG.exists() else 0
+    """Số phím GTV nhận ở Terminal (dòng "phím <mã> '<ký tự>' <app>: …", không tính dòng "sổ phím")."""
+    if not LOG.exists():
+        return 0
+    return sum(1 for l in LOG.read_text(errors="replace").splitlines() if " phím " in l and BID in l)
 
 VARIANTS = [
     ("hid+unicode", {"DRIVER_UNICODE": "1"}),

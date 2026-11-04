@@ -101,6 +101,7 @@ final class GTVInputController: IMKInputController {
         clientKind = nil
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
+        KeyWatch.shared.rebase()
         if Settings.knownTerminals.contains(bundleID) { clientKind = Self.kind(of: client) }
         #if DEBUG
         // IME Lab: thuộc tính marked text ô nhập liệu nhận — phân biệt view terminal với ô văn bản thường (NSTextView).
@@ -120,6 +121,14 @@ final class GTVInputController: IMKInputController {
     private static func kind(of client: Client) -> ClientKind? {
         let kind = ClientKind.classify(markedTextAttributes(client))
         return kind == .placeholder ? nil : kind
+    }
+
+    /// Terminal mà view terminal luôn báo con trỏ ở 0 (`Settings.cursorlessTerminals`): báo vị trí khác 0 là đang gõ trong
+    /// một ô văn bản của app (Muxy: thanh Find không làm bộ gõ được gắn lại nên không thấy qua `activateServer`).
+    private static func inTextField(_ client: Client, _ bundleID: String) -> Bool {
+        guard Settings.cursorlessTerminals.contains(bundleID) else { return false }
+        let sel = client.selectedRange()
+        return sel.location != NSNotFound && sel.location > 0
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -156,6 +165,7 @@ final class GTVInputController: IMKInputController {
 
         switch event.type {
         case .flagsChanged:
+            KeyWatch.shared.noteModifiers(flags)
             // Phím tắt chuyển Anh/Việt: nhấn rồi nhả tổ hợp phím bổ trợ, không kèm phím nào khác.
             if let hotkey = settings.hotkey.flags {
                 if flags == hotkey {
@@ -178,11 +188,12 @@ final class GTVInputController: IMKInputController {
             hotkeyArmedAt = nil
         default:                             // click chuột: con trỏ có thể đã đổi chỗ
             commit(client)
+            KeyWatch.shared.rebase()
             return false
         }
 
         // Sổ phím: mọi keyDown bộ gõ nhận đều phải vào sổ, kể cả khi phím đi thẳng ngay dưới đây.
-        let watch = KeyWatch.shared.observe(event)
+        let gap = KeyWatch.shared.observe(event)
 
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {
@@ -210,7 +221,7 @@ final class GTVInputController: IMKInputController {
         var earlyCommit = forceMarked && Settings.terminalApps.contains(bundleID)
         if Settings.knownTerminals.contains(bundleID) {
             if clientKind == nil { clientKind = Self.kind(of: client) }
-            if clientKind == .textView {
+            if clientKind == .textView || Self.inTextField(client, bundleID) {
                 // Ô văn bản trong app terminal (thanh Find, command palette, đổi tên tab…): gõ như ứng dụng thường —
                 // DEL của kiểu gõ terminal sẽ thành chữ rác ở đây.
                 terminal = nil
@@ -219,7 +230,6 @@ final class GTVInputController: IMKInputController {
             }
         }
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
-        let gap = watch.pointerMoved ? .interrupted : watch.verdict.gap(editsLater: terminal == .deferred)
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: QtDetector.isQt(bundleID), terminal: terminal, repeatDelay: repeatDelay,
                                      earlyCommit: earlyCommit, gap: gap)

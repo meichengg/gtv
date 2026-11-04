@@ -178,6 +178,11 @@ final class Settings {
     static let terminalApps: Set<String> = knownTerminals.union(defaultMarkedApps)
         .union(["co.zeit.hyper", "org.tabby", "dev.warp.Warp-Preview"])
 
+    /// Terminal có ô văn bản (thanh Find) mà khi gõ vào bộ gõ không được gắn lại (không có `activateServer`), nên không
+    /// phân biệt được qua thuộc tính marked text; view terminal của chúng luôn báo con trỏ ở 0 (IME Lab, Muxy 2.3), ô văn
+    /// bản thì báo vị trí thật.
+    static let cursorlessTerminals: Set<String> = ["com.muxy.app"]
+
     /// Terminal tự xử lý phím lặp (giữ phím) mà không qua bộ gõ, và không cho biết vị trí con trỏ.
     static let repeatBypassTerminals: Set<String> = ["com.superlogical.rex", "com.muxy.app"]
 

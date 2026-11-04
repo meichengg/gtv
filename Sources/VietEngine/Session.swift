@@ -253,12 +253,33 @@ public final class Session {
     private func handleTerminal(_ key: Key, _ client: TextClient, options: EngineOptions,
                                 style: TerminalStyle, repeatDelay: Double?, gap: KeyGap) -> Bool {
         continueWordOnNextChar = false
-        settlePending(client)       // lần sửa trước (kiểu .deferred) luôn tới shell trước phím này
+        // Lần sửa trước (kiểu .deferred) luôn tới shell trước phím này. Trừ khi nó còn chưa tới mà đã có phím / click đi
+        // vòng bộ gõ (vd. ⌘V): lần sửa đã lỗi thời (xoá nhầm chữ dán), bỏ đi; marked text rỗng còn đó thì phím chữ này
+        // phải tự gửi (Ghostty nuốt phím khi đang soạn mà bộ gõ không đưa chữ).
+        var carry: Character?
+        if gap == .interrupted, case let .char(ch) = key, Self.isPrintable(ch), pending != nil,
+           pendingClient === client, client.hasMarkedText() {
+            log?("deferred #\(pendingSerial): bỏ lần sửa chưa tới vì có phím / click đi vòng bộ gõ")
+            clearPending()
+            carry = ch
+        } else {
+            settlePending(client)
+        }
         if gap == .interrupted, !engine.isEmpty {
             log?("có phím / click bộ gõ không thấy: bỏ từ \((onLine ?? engine.displayed).debugDescription)")
             resetTerminalWord()
         }
-        let unsure = gap == .unsure
+        let handled = handleTerminalKey(key, client, options: options, style: style, repeatDelay: repeatDelay,
+                                        unsure: gap == .unsure)
+        if let ch = carry, !handled {
+            client.insertText(String(ch))
+            return true
+        }
+        return handled
+    }
+
+    private func handleTerminalKey(_ key: Key, _ client: TextClient, options: EngineOptions,
+                                   style: TerminalStyle, repeatDelay: Double?, unsure: Bool) -> Bool {
         let now = client.currentTime()
         if let repeatDelay, let bs = lastBackspaceAt, now - bs >= repeatDelay * 0.9 {
             resetTerminalWord()     // có thể Backspace đã được giữ (phím lặp không qua bộ gõ): không biết đã xoá bao nhiêu
