@@ -5,6 +5,14 @@ import json, os, pathlib, shutil, subprocess, sys, time
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from analyze import analyze  # noqa: E402
+
+# tools/lab/lab.env (nếu có) ghi đè TERMS/METHODS/STYLES — để chạy lab bằng push mà không cần input.
+_cfg = pathlib.Path(__file__).resolve().parent / "lab.env"
+if _cfg.exists():
+    for _line in _cfg.read_text().splitlines():
+        if "=" in _line and not _line.lstrip().startswith("#"):
+            _k, _v = _line.split("=", 1)
+            os.environ[_k.strip()] = _v.strip()
 L = pathlib.Path("/tmp/l"); OUT = pathlib.Path(os.environ.get("OUT", "lab-out")).resolve()
 LOG = pathlib.Path.home() / "Library/Logs/GTV-debug.log"
 BID = "com.apple.Terminal"

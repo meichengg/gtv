@@ -38,6 +38,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Lab config (tools/lab/lab.env ghi đè TERMS/METHODS/STYLES/MODE)
+        run: |
+          echo "MODE=full" >> "$GITHUB_ENV"
+          if [ -f tools/lab/lab.env ]; then grep -E '^(TERMS|METHODS|STYLES|MODE)=' tools/lab/lab.env >> "$GITHUB_ENV"; cat tools/lab/lab.env; fi
+
       - name: Select latest Xcode
         run: |
           latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
@@ -107,7 +112,7 @@ jobs:
         run: python3 tools/lab/probe.py
 
       - name: Run lab
-        if: ${{ (inputs.mode || 'full') == 'full' }}
+        if: env.MODE == 'full'
         run: python3 tools/lab/run.py
 
       - name: Diagnose IME restart
