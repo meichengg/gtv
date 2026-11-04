@@ -86,6 +86,8 @@ final class GTVInputController: IMKInputController {
     private let adapter = ClientAdapter()
     private var bundleID = ""
     private var hotkeyArmedAt: TimeInterval?
+    /// Ô đang gắn là ô văn bản hay view terminal (chỉ hỏi ở app terminal); nil: chưa biết, hỏi lại ở phím kế tiếp.
+    private var clientKind: ClientKind?
 
     // MARK: - Vòng đời
 
@@ -96,17 +98,28 @@ final class GTVInputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         session.reset()
         hotkeyArmedAt = nil
+        clientKind = nil
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
+        if Settings.knownTerminals.contains(bundleID) { clientKind = Self.kind(of: client) }
         #if DEBUG
         // IME Lab: thuộc tính marked text ô nhập liệu nhận — phân biệt view terminal với ô văn bản thường (NSTextView).
-        let attrs = (client.validAttributesForMarkedText() as? [Any] ?? []).map { "\($0)" }
-        DebugLog.write("activateServer \(bundleID) attrs=[\(attrs.joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
+        DebugLog.write("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-") attrs=[\(Self.markedTextAttributes(client).joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
         #else
         DebugLog.write("activateServer \(bundleID)")
         #endif
         Modes.shared.clientActivated(client, bundleID: bundleID)
         _ = QtDetector.isQt(bundleID)   // kiểm tra trước ở luồng nền, có kết quả trước khi cần
+    }
+
+    private static func markedTextAttributes(_ client: Client) -> [String] {
+        (client.validAttributesForMarkedText() as? [Any] ?? []).map { "\($0)" }
+    }
+
+    /// Loại ô; nil khi InputMethodKit chưa gắn ô thật (ô tạm).
+    private static func kind(of client: Client) -> ClientKind? {
+        let kind = ClientKind.classify(markedTextAttributes(client))
+        return kind == .placeholder ? nil : kind
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -168,6 +181,9 @@ final class GTVInputController: IMKInputController {
             return false
         }
 
+        // Sổ phím: mọi keyDown bộ gõ nhận đều phải vào sổ, kể cả khi phím đi thẳng ngay dưới đây.
+        let watch = KeyWatch.shared.observe(event)
+
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {
             DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): chế độ E, đi thẳng")
@@ -188,13 +204,25 @@ final class GTVInputController: IMKInputController {
 
         adapter.client = client
         defer { adapter.client = nil }
-        let terminal = settings.terminalStyle(for: bundleID)
-        let forceMarked = terminal == nil && (settings.useMarked(for: bundleID)
+        var terminal = settings.terminalStyle(for: bundleID)
+        var forceMarked = terminal == nil && (settings.useMarked(for: bundleID)
             || (Settings.knownTerminals.contains(bundleID) && settings.terminalMode == "marked"))
+        var earlyCommit = forceMarked && Settings.terminalApps.contains(bundleID)
+        if Settings.knownTerminals.contains(bundleID) {
+            if clientKind == nil { clientKind = Self.kind(of: client) }
+            if clientKind == .textView {
+                // Ô văn bản trong app terminal (thanh Find, command palette, đổi tên tab…): gõ như ứng dụng thường —
+                // DEL của kiểu gõ terminal sẽ thành chữ rác ở đây.
+                terminal = nil
+                forceMarked = settings.alwaysMarked
+                earlyCommit = false
+            }
+        }
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
+        let gap = watch.pointerMoved ? .interrupted : watch.verdict.gap(editsLater: terminal == .deferred)
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: QtDetector.isQt(bundleID), terminal: terminal, repeatDelay: repeatDelay,
-                                     earlyCommit: forceMarked && Settings.terminalApps.contains(bundleID))
+                                     earlyCommit: earlyCommit, gap: gap)
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled
     }

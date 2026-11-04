@@ -73,6 +73,9 @@ public final class Session {
     private var termLastWrite = 0.0
     /// Lúc bấm Backspace gần nhất (terminal có phím lặp không qua bộ gõ), xem `handle(repeatDelay:)`.
     private var lastBackspaceAt: Double?
+    /// Terminal: chữ của từ đang gõ thật sự nằm trên dòng, khi khác `engine.displayed` — phím đã đi nguyên văn vì
+    /// chưa chắc có phím nào đi vòng bộ gõ không (`KeyGap.unsure`). nil nếu khớp.
+    private var onLine: String?
     /// Chữ vừa gửi có thể chưa kịp hiện (shell chưa in lại): trong khoảng này con trỏ đứng sau là bình thường.
     private static let echoLag = 0.15
     /// Kiểu `.deferred` (Ghostty): gửi lần sửa sau bấy nhiêu giây kể từ lúc trả lời phím, không gửi ngay.
@@ -95,6 +98,7 @@ public final class Session {
 
     public func reset() {
         engine.reset()
+        onLine = nil
         endMarkedWord()
         continueWordOnNextChar = false
     }
@@ -113,14 +117,16 @@ public final class Session {
     /// khi phím lặp; sau Backspace mà phím kế tiếp tới muộn hơn thế thì có thể Backspace đã lặp: bắt đầu từ mới.
     /// `earlyCommit`: chế độ gạch chân trong terminal — chữ không còn đổi được thì chốt ngay cho shell thấy (xem
     /// `showMarked`). Ứng dụng thường giữ cả từ trong phần gạch chân để xoá lùi rồi thêm dấu vẫn đúng.
+    /// `gap`: terminal — giữa phím trước và phím này có phím / click / cuộn nào bộ gõ không thấy không (sổ phím của
+    /// GTVInput, xem `KeyLedger`).
     public func handle(_ key: Key, _ client: TextClient, options: EngineOptions, forceMarked: Bool,
                        qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil,
-                       earlyCommit: Bool = false) -> Bool {
+                       earlyCommit: Bool = false, gap: KeyGap = .none) -> Bool {
         self.qtApp = qtApp
         self.earlyCommit = earlyCommit
         if let terminal {
             if marked || literalTail { reset() }     // vừa đổi từ chế độ gạch chân
-            return handleTerminal(key, client, options: options, style: terminal, repeatDelay: repeatDelay)
+            return handleTerminal(key, client, options: options, style: terminal, repeatDelay: repeatDelay, gap: gap)
         }
         if literalTail {
             // Từ đã chốt (xem `showMarked`): chữ cái gõ tiếp đi thẳng, phím khác kết thúc từ. Xoá lùi vẫn ở trong
@@ -240,18 +246,27 @@ public final class Session {
     /// thêm dấu thì gửi một lần chuỗi xoá + chữ mới (`emit`). Không đọc được dòng lệnh của shell, nên bộ gõ
     /// chỉ dựa vào chính những gì nó đã gửi; mọi thao tác nó không theo dõi được (phím đặc biệt, click) kết
     /// thúc từ, không bao giờ xoá quá phần do nó gõ ra.
+    ///
+    /// Phím đi vòng bộ gõ (terminal tự xử lý: ⌘V, mũi tên / Ctrl+A ở iTerm2, Tab / Ctrl+A ở Muxy, mọi phím đặc biệt
+    /// ở Terminal.app) và click / cuộn được sổ phím báo qua `gap`: `.interrupted` thì bỏ từ (con trỏ có thể đã đổi
+    /// chỗ); `.unsure` thì chưa xoá gì, phím đi nguyên văn, phím sau khi đã chắc chắn sẽ sửa cả từ trong một lần.
     private func handleTerminal(_ key: Key, _ client: TextClient, options: EngineOptions,
-                                style: TerminalStyle, repeatDelay: Double?) -> Bool {
+                                style: TerminalStyle, repeatDelay: Double?, gap: KeyGap) -> Bool {
         continueWordOnNextChar = false
         settlePending(client)       // lần sửa trước (kiểu .deferred) luôn tới shell trước phím này
+        if gap == .interrupted, !engine.isEmpty {
+            log?("có phím / click bộ gõ không thấy: bỏ từ \((onLine ?? engine.displayed).debugDescription)")
+            resetTerminalWord()
+        }
+        let unsure = gap == .unsure
         let now = client.currentTime()
         if let repeatDelay, let bs = lastBackspaceAt, now - bs >= repeatDelay * 0.9 {
-            engine.reset()          // có thể Backspace đã được giữ (phím lặp không qua bộ gõ): không biết đã xoá bao nhiêu
+            resetTerminalWord()     // có thể Backspace đã được giữ (phím lặp không qua bộ gõ): không biết đã xoá bao nhiêu
         }
         lastBackspaceAt = nil
         switch key {
         case .other:
-            engine.reset()          // Enter, mũi tên, Ctrl+...: shell tự xử lý, không khôi phục từ sau phím này
+            resetTerminalWord()     // Enter, mũi tên, Ctrl+...: shell tự xử lý, không khôi phục từ sau phím này
             return false
         case .backspace:
             guard !engine.isEmpty else { return false }
@@ -259,25 +274,56 @@ public final class Session {
             guard !engine.isEmpty else { return false }
             termLastWrite = client.currentTime()
             lastBackspaceAt = termLastWrite
+            if let line = onLine {
+                // Dòng đang khác từ của engine (phím đã đi nguyên văn): shell xoá ký tự cuối của dòng, nạp lại phần
+                // còn lại để gõ tiếp (chữ dựng sẵn: mỗi chữ một code point).
+                var rest = line.unicodeScalars
+                rest.removeLast()
+                resetTerminalWord()
+                if !rest.isEmpty { engine.seed(String(rest)) }
+                return false
+            }
             if case .passThrough = engine.backspace() { return false }   // shell xoá 1 ký tự: vẫn khớp
             engine.reset()          // xoá làm dấu phải đặt lại chỗ khác: thôi theo dõi từ, xoá như thường
             return false
         case let .char(ch):
             if !engine.isEmpty { guardCursor(client) }
-            if engine.isEmpty { engine.options = Self.terminalOptions(options) }
+            if engine.isEmpty {
+                engine.options = Self.terminalOptions(options)
+                onLine = nil
+            }
             termLastWrite = client.currentTime()
-            guard let action = engine.process(ch) else {
+            let line = onLine ?? engine.displayed      // chữ của từ đang nằm ngay trước con trỏ
+            onLine = nil
+            guard engine.process(ch) != nil else {
                 // Hết từ (dấu cách, dấu câu…): khôi phục từ không phải tiếng Việt trước ký tự này.
-                if case let .replace(old, new) = engine.finishWord().action, Self.isPrintable(ch) {
-                    emit(old, new, typed: ch, then: String(ch), client, style)
-                    return true
-                }
+                let finished = engine.finishWord()
+                var target = finished.text
+                if case let .replace(_, new) = finished.action { target = new }
+                guard Self.isPrintable(ch), !unsure, !Self.same(line, target) else { return false }
+                emit(line, target, typed: ch, then: String(ch), client, style)
+                return true
+            }
+            let target = engine.displayed
+            if Self.same(line + String(ch), target) { return false }   // shell gõ đúng ký tự này
+            if unsure {
+                // Chưa chắc con trỏ còn ngay sau từ: không xoá gì, phím đi nguyên văn; khi chắc chắn thì sửa cả từ.
+                onLine = line + String(ch)
+                log?("chưa chắc có phím đi vòng bộ gõ không: \(ch) đi nguyên văn, dòng \(onLine!.debugDescription)")
                 return false
             }
-            guard case let .replace(old, new) = action else { return false }
-            emit(old, new, typed: ch, then: "", client, style)
+            emit(line, target, typed: ch, then: "", client, style)
             return true
         }
+    }
+
+    private func resetTerminalWord() {
+        engine.reset()
+        onLine = nil
+    }
+
+    private static func same(_ a: String, _ b: String) -> Bool {
+        a.unicodeScalars.elementsEqual(b.unicodeScalars)
     }
 
     /// Con trỏ có còn ngay sau từ bộ gõ đang theo dõi không (chỉ với terminal cho biết con trỏ và chữ trên
@@ -290,7 +336,7 @@ public final class Session {
     ///   đó chỉ xoá những gì gõ sau đó, luôn đúng dù shell in chậm.
     private func guardCursor(_ client: TextClient) {
         guard let sel = client.selectedRange(), sel.location > 0 else { return }
-        let word = Array(engine.displayed.utf16)
+        let word = Array((onLine ?? engine.displayed).utf16)
         let n = word.count, cursor = sel.location
         let beforeLen = min(n, cursor)
         let before = client.text(location: cursor - beforeLen, length: beforeLen).map { Array($0.utf16) } ?? []
@@ -299,11 +345,11 @@ public final class Session {
         // Con trỏ nằm giữa (hoặc ngay trước) từ đang hiện đầy đủ: trước con trỏ là word[..<k], sau là word[k...].
         for k in stride(from: min(n - 1, before.count), through: 0, by: -1)
         where before.suffix(k).elementsEqual(word[..<k]) && after.prefix(n - k).elementsEqual(word[k...]) {
-            engine.reset()
+            resetTerminalWord()
             if k > 0 { engine.seed(String(decoding: word[..<k], as: UTF16.self)) }
             return
         }
-        if client.currentTime() - termLastWrite >= Self.echoLag { engine.reset() }
+        if client.currentTime() - termLastWrite >= Self.echoLag { resetTerminalWord() }
     }
 
     /// Đổi `old` (đang nằm cuối dòng lệnh) thành `new` + `suffix`: một lần ghi xuống shell.
