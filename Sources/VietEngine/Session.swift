@@ -16,16 +16,16 @@ public protocol TextClient: AnyObject {
     func hasMarkedText() -> Bool
     /// Đồng hồ đơn điệu (giây).
     func currentTime() -> Double
-    /// Từ phím bộ gõ nhận gần nhất tới giờ không có phím hay click nào khác (sổ phím của GTVInput). Lần sửa gửi muộn
-    /// (kiểu `.deferred`) chỉ gửi khi đúng như vậy; không thì để phím kế tiếp quyết định.
-    func quietSinceLastKey() -> Bool
+    /// Từ phím bộ gõ nhận gần nhất tới giờ không có phím tắt (⌘/⌃/⌥) hay click nào (GTVInput). Lần sửa gửi muộn (kiểu
+    /// `.deferred`) chỉ gửi khi đúng như vậy; không thì để phím kế tiếp quyết định.
+    func lateEditSafe() -> Bool
 }
 
 public extension TextClient {
     func schedule(after delay: Double, _ work: @escaping () -> Void) { work() }
     func hasMarkedText() -> Bool { false }
     func currentTime() -> Double { 0 }
-    func quietSinceLastKey() -> Bool { true }
+    func lateEditSafe() -> Bool { true }
 }
 
 public enum Key: Equatable {
@@ -187,7 +187,13 @@ public final class Session {
 
     /// Chốt từ đang gõ (khi ô nhập liệu mất focus, click chuột...).
     public func commit(_ client: TextClient?) {
-        if let client { settlePending(client) }
+        if let client {
+            if client.lateEditSafe() {
+                settlePending(client)
+            } else {
+                clearPending()     // có phím tắt / click sau lần sửa (vd. ⌘V): lần sửa có thể đã lỗi thời
+            }
+        }
         if marked, !engine.isEmpty, let client {
             insertMarkedTail(engine.finishWord().text, client)
         }
@@ -265,21 +271,28 @@ public final class Session {
             // Lần sửa trước (kiểu .deferred, Ghostty) luôn tới shell trước phím này.
             clearPending()
             if client.hasMarkedText() {
-                // Nó chưa tới, và phím này tới khi marked text rỗng còn đó: trong keyDown này Ghostty chỉ ghi chữ bộ gõ
-                // đưa (phím Enter, ⌫, Tab, Esc, Ctrl+…, ← bị nuốt) — gửi phím kèm theo, cùng một lần ghi.
+                // Nó chưa tới, và phím này tới khi marked text rỗng còn đó. Trong keyDown này Ghostty (nhánh A) chỉ ghi
+                // chữ bộ gõ đưa — bỏ ký tự điều khiển đứng riêng — rồi chỉ phát lại ↑ ↓ →; phím khác bị nuốt.
                 var printable: Character?
                 if case let .char(ch) = key, Self.isPrintable(ch) { printable = ch }
                 if gap == .interrupted {
-                    // Đã có phím / click đi vòng bộ gõ sau lần sửa đó (vd. ⌘V): lần sửa lỗi thời (DEL sẽ xoá chữ dán), bỏ.
+                    // Đã có phím tắt / click đi vòng bộ gõ sau lần sửa đó (vd. ⌘V): lần sửa lỗi thời (DEL sẽ xoá chữ
+                    // dán), bỏ. Phím chữ thì tự gửi; phím có chuỗi điều khiển nhiều byte (←, Home…) thì gửi chuỗi đó;
+                    // còn lại chỉ gỡ marked text (Ghostty nuốt phím này — hiếm: lần sửa phải còn chờ đúng lúc đó).
                     log?("deferred: bỏ lần sửa chưa tới vì có phím / click đi vòng bộ gõ")
                     if let ch = printable {
                         carry = ch
-                    } else if let legacy {
+                    } else {
                         resetTerminalWord()
-                        client.insertText(legacy)
+                        if let legacy, legacy.unicodeScalars.count > 1 {
+                            client.insertText(legacy)
+                        } else {
+                            client.setMarkedText("")
+                        }
                         return true
                     }
                 } else if printable == nil, let legacy {
+                    // Gửi phím kèm lần sửa trong một lần ghi (không còn là ký tự điều khiển đứng riêng).
                     log?("deferred: gửi lần sửa kèm phím \(legacy.debugDescription)")
                     client.insertText(text + legacy)
                     if key == .backspace, onLine == nil, !engine.isEmpty, case .passThrough = engine.backspace() {
@@ -298,8 +311,7 @@ public final class Session {
             log?("có phím / click bộ gõ không thấy: bỏ từ \((onLine ?? engine.displayed).debugDescription)")
             resetTerminalWord()
         }
-        let handled = handleTerminalKey(key, client, options: options, style: style, repeatDelay: repeatDelay,
-                                        unsure: gap == .unsure, proven: gap == .none)
+        let handled = handleTerminalKey(key, client, options: options, style: style, repeatDelay: repeatDelay, gap: gap)
         if let ch = carry, !handled {
             client.insertText(String(ch))
             return true
@@ -307,9 +319,9 @@ public final class Session {
         return handled
     }
 
-    /// `proven`: sổ phím chứng minh không có phím nào đi vòng bộ gõ kể từ phím trước.
     private func handleTerminalKey(_ key: Key, _ client: TextClient, options: EngineOptions,
-                                   style: TerminalStyle, repeatDelay: Double?, unsure: Bool, proven: Bool) -> Bool {
+                                   style: TerminalStyle, repeatDelay: Double?, gap: KeyGap) -> Bool {
+        var unsure = gap == .unsure || gap == .unsureSteady
         let now = client.currentTime()
         if let repeatDelay, let bs = lastBackspaceAt, now - bs >= repeatDelay * 0.9 {
             resetTerminalWord()     // có thể Backspace đã được giữ (phím lặp không qua bộ gõ): không biết đã xoá bao nhiêu
@@ -321,9 +333,7 @@ public final class Session {
             return false
         case .backspace:
             guard !engine.isEmpty else { return false }
-            var unsure = unsure
-            let screen = guardCursor(client, proven: proven)
-            if screen == .matches || screen == .reseeded { unsure = false }   // màn hình chứng minh từ nằm trước con trỏ
+            if guardCursor(client, gap: gap) == .matches, gap == .unsureSteady { unsure = false }
             guard !engine.isEmpty else { return false }
             termLastWrite = client.currentTime()
             lastBackspaceAt = termLastWrite
@@ -348,13 +358,10 @@ public final class Session {
             engine.reset()          // xoá làm dấu phải đặt lại chỗ khác: thôi theo dõi từ, xoá như thường
             return false
         case let .char(ch):
-            var unsure = unsure
-            if !engine.isEmpty {
-                // iTerm2 / Terminal.app: màn hình cho thấy đúng từ nằm ngay trước con trỏ thì sửa được dù sổ phím chưa
-                // chắc (vd. ⌫ ở Terminal.app không qua bộ gõ, gõ tiếp liền tay).
-                let screen = guardCursor(client, proven: proven)
-                if screen == .matches || screen == .reseeded { unsure = false }
-            }
+            // iTerm2 / Terminal.app: sổ phím chưa chắc nhưng không có thêm phím nào chưa thấy kể từ phím trước, và màn
+            // hình (đã in lại phím trước, nên cả mọi thứ trước nó) cho thấy đúng từ nằm ngay trước con trỏ: sửa được
+            // (vd. ⌫ ở Terminal.app không qua bộ gõ, rồi gõ tiếp liền tay).
+            if !engine.isEmpty, guardCursor(client, gap: gap) == .matches, gap == .unsureSteady { unsure = false }
             if engine.isEmpty {
                 engine.options = Self.terminalOptions(options)
                 onLine = nil
@@ -413,21 +420,29 @@ public final class Session {
         case unconfirmed
     }
 
-    /// `proven`: sổ phím chứng minh không có phím nào đi vòng bộ gõ (màn hình lệch chỉ vì shell chưa in lại).
+    /// Đối chiếu từ đang theo dõi với màn hình (iTerm2, Terminal.app). Màn hình chỉ cho thấy những gì shell đã in lại,
+    /// nên lệch có thể chỉ vì chưa in kịp; tuỳ sổ phím (`gap`):
+    /// - không có phím nào đi vòng (`.none`): lệch là chưa in kịp (chữ sau con trỏ có thể là gợi ý của fish) — chỉ bỏ từ
+    ///   khi đã quá lâu không in lại (vim ở normal mode, ô mật khẩu);
+    /// - chưa chắc (`.unsure…`): có thể đã có phím đi vòng (⌫, mũi tên ở Terminal.app) — bỏ từ ngay, không đoán;
+    /// - sổ không dùng được (`.unverified`): như trước khi có sổ phím (con trỏ giữa từ thì nạp lại phần trước con trỏ).
     @discardableResult
-    private func guardCursor(_ client: TextClient, proven: Bool) -> ScreenCheck {
+    private func guardCursor(_ client: TextClient, gap: KeyGap) -> ScreenCheck {
         guard let sel = client.selectedRange(), sel.location > 0 else { return .unavailable }
         let word = Array((onLine ?? engine.displayed).utf16)
         let n = word.count, cursor = sel.location
         let beforeLen = min(n, cursor)
         let before = client.text(location: cursor - beforeLen, length: beforeLen).map { Array($0.utf16) } ?? []
         if before == word { return .matches }
-        if proven {
-            // Không có phím nào đi vòng bộ gõ (sổ phím): màn hình lệch chỉ vì shell chưa in lại (chữ sau con trỏ có thể
-            // là gợi ý của fish, không phải phần còn lại của từ) — trừ khi đã quá lâu (chương trình không in lại chữ:
-            // vim ở normal mode, ô mật khẩu).
+        switch gap {
+        case .none:
             if client.currentTime() - termLastWrite >= Self.echoLag { resetTerminalWord() }
             return .unconfirmed
+        case .unsure, .unsureSteady, .interrupted:
+            resetTerminalWord()
+            return .unconfirmed
+        case .unverified:
+            break
         }
         let after = client.text(location: cursor, length: n).map { Array($0.utf16) } ?? []
         // Con trỏ nằm giữa (hoặc ngay trước) từ đang hiện đầy đủ: trước con trỏ là word[..<k], sau là word[k...].
@@ -482,10 +497,10 @@ public final class Session {
     /// đã được xử lý xong: không bao giờ gửi trùng.
     private func sendPending(_ client: TextClient, serial: Int, attempt: Int) {
         guard let text = pending, pendingSerial == serial, pendingClient === client else { return }
-        guard client.quietSinceLastKey() else {
-            // Có phím / click sau phím này: nếu đó là phím đi vòng bộ gõ (⌘V) thì lần sửa đã lỗi thời. Để phím kế tiếp
-            // quyết định (gửi trong keyDown của nó, hoặc bỏ nếu sổ phím báo có phím đi vòng).
-            log?("deferred #\(serial): đã có phím / click khác, để phím kế tiếp quyết định")
+        guard client.lateEditSafe() else {
+            // Có phím tắt (⌘V…) / click sau phím này: lần sửa có thể đã lỗi thời. Để phím kế tiếp quyết định (gửi trong
+            // keyDown của nó, hoặc bỏ nếu sổ phím báo có phím đi vòng).
+            log?("deferred #\(serial): đã có phím tắt / click, để phím kế tiếp quyết định")
             return
         }
         log?("deferred #\(serial): gửi lần \(attempt) (ngoài keyDown)")

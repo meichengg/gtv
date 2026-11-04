@@ -143,6 +143,7 @@ final class Modes {
 
 
     private func systemInputSourceChanged() {
+        KeyWatch.shared.rebase()      // phím gõ ở bộ gõ khác / phím đổi bộ gõ không tới GTV
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
         DebugLog.write("bộ gõ đổi -> \(InputSources.currentID ?? "-"), front=\(front), tạm dừng=\(suspended)")
         let wasGTV = lastSourceIsGTV

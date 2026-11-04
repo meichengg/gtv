@@ -30,7 +30,13 @@ private final class Pty: TextClient {
     func replaceText(location: Int, length: Int, with text: String) { XCTFail("terminal: không thay được chữ") }
     /// Kiểu `.deferred` (Ghostty): chỉ được dùng marked text rỗng U+200B để giữ phím.
     func setMarkedText(_ text: String) {
-        if text == "\u{200B}" { markActive = true } else { XCTFail("terminal: không được gạch chân (\(text))") }
+        if text == "\u{200B}" {
+            markActive = true
+        } else if text.isEmpty {
+            markActive = false
+        } else {
+            XCTFail("terminal: không được gạch chân (\(text))")
+        }
     }
     func insertText(_ text: String) {
         markActive = false
@@ -39,9 +45,9 @@ private final class Pty: TextClient {
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
     var markActive = false
     func hasMarkedText() -> Bool { markActive }
-    /// Sổ phím: không có phím / click nào khác từ phím vừa rồi.
+    /// Sổ phím: không có phím tắt / click nào từ phím vừa rồi.
     var quiet = true
-    func quietSinceLastKey() -> Bool { quiet }
+    func lateEditSafe() -> Bool { quiet }
     /// false: lần gửi hẹn giờ (kiểu `.deferred`) chưa chạy — như khi Ghostty bỏ lần gửi ngoài keyDown.
     var runScheduledNow = true
     private var later: [() -> Void] = []
@@ -187,9 +193,29 @@ final class SignalsTests: XCTestCase {
     func testLedgerLongUnsureRunIsMissed() {
         var l = ledger(at: 10)
         XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
-        XCTAssertEqual(l.observe(reading(13, at: 1.05, code: 2)), .unknown)
+        XCTAssertEqual(l.observe(reading(13, at: 1.05, code: 2)), .unknownSteady)
         XCTAssertEqual(l.check(keyDownCount: 13, secondsSinceLastKeyDown: 0.2), .resolved)
         XCTAssertEqual(l.observe(reading(14, at: 1.3, code: 3)), .missed(1))
+    }
+
+    /// Phím có ⌘/⌃/⌥ mà bộ gõ nhận được (Ctrl+E ở Ghostty): phím bổ trợ là của chính nó — sạch nếu không có gì đi vòng.
+    func testLedgerModifierOfThisKeyIsNotABypass() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        XCTAssertEqual(l.observe(reading(12, at: 1.2, code: 14), modifierPressed: true, keyHasModifier: true), .clean)
+        // ⌘V đi vòng rồi Ctrl+E: có phím chưa thấy → lỡ
+        XCTAssertEqual(l.observe(reading(14, at: 1.5, code: 14), modifierPressed: true, keyHasModifier: true), .missed(1))
+    }
+
+    /// "Chưa biết" mà không có thêm phím nào chưa thấy kể từ phím trước: `.unknownSteady`.
+    func testLedgerUnknownSteady() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        XCTAssertEqual(l.observe(reading(15, at: 1.2, code: 2)), .unknown)          // 3 phím ⌫ đi vòng (Terminal.app)
+        XCTAssertEqual(l.observe(reading(16, at: 1.25, code: 3)), .unknownSteady)
+        XCTAssertEqual(l.observe(reading(17, at: 1.3, code: 4)), .unknownSteady)
+        XCTAssertEqual(l.observe(reading(19, at: 1.35, code: 5)), .unknown)         // thêm một phím chưa thấy
+        XCTAssertEqual(l.observe(reading(20, at: 1.4, code: 6)), .unknownSteady)
     }
 
     /// Phím tắt có ⌘/⌃/⌥ (⌘V, Ctrl+A đi vòng bộ gõ): lỡ ngay, không chờ.
@@ -313,6 +339,13 @@ final class SignalsTests: XCTestCase {
                 switch v {
                 case .clean:
                     XCTAssertEqual(hidden(-.infinity, p.t), 0, "seed \(seed) phím \(n): báo sạch nhưng có phím đi vòng")
+                case .unknownSteady:
+                    // Không có phím đi vòng nào bấm sau lần đọc phím trước — trừ khi chính phím này đã được bấm trước lúc
+                    // đó (đang tới), rủi ro còn lại đã biết.
+                    if let prev = previousSeen, p.t > prev.arrive {
+                        let after = presses.filter { !$0.seen && $0.t > prev.arrive && $0.t <= p.arrive }.count
+                        XCTAssertEqual(after, 0, "seed \(seed) phím \(n): báo không có gì mới nhưng có phím đi vòng")
+                    }
                 case .missed, .unavailable, .uncounted:
                     // Lần tính phím lỡ lúc đọc phím k gồm mọi phím đã đếm tới lúc đó, kể cả phím đi vòng bấm trong vài
                     // mili giây giữa lúc bấm k và lúc ứng dụng nhận k (rủi ro còn lại, chấp nhận: cần hai phím gần như
@@ -355,7 +388,8 @@ final class SignalsTests: XCTestCase {
                 let v = l.observe(KeyReading(keyDownCount: counted(by: arrive[i]), timestamp: arrive[i],
                                              keyCode: UInt16(i % 40), isRepeat: false))
                 stats["\(v)", default: 0] += 1
-                XCTAssertTrue(v == .clean || v == .unknown, "seed \(seed) phím \(i): \(v) khi không có phím nào đi vòng")
+                XCTAssertTrue(v == .clean || v == .unknown || v == .unknownSteady,
+                              "seed \(seed) phím \(i): \(v) khi không có phím nào đi vòng")
                 checks.start(after: arrive[i])
             }
         }
@@ -531,7 +565,7 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(p.text, "tiệt")
     }
 
-    /// Ghostty: lần sửa chưa tới, có ⌘V (đi vòng bộ gõ) rồi Enter: bỏ lần sửa, Enter vẫn tới shell.
+    /// Ghostty: lần sửa chưa tới, có ⌘V (đi vòng bộ gõ) rồi Enter: bỏ lần sửa (không xoá chữ dán), gỡ marked text.
     func testDeferredStaleEditDroppedBeforeEnter() {
         let p = Pty()
         p.style = .deferred
@@ -541,7 +575,8 @@ final class SignalsTests: XCTestCase {
         p.bypassPaste("/tmp")
         XCTAssertTrue(p.session.handle(.char("\r"), p, options: p.options, forceMarked: false, terminal: .deferred,
                                        gap: .interrupted, legacy: "\r"))
-        XCTAssertEqual(p.text, "tie/tmp\r")
+        XCTAssertEqual(p.text, "tie/tmp")
+        XCTAssertFalse(p.markActive)
     }
 
     /// Ghostty: lần gửi hẹn giờ không gửi nếu đã có phím / click khác (có thể là ⌘V đi vòng bộ gõ): phím kế tiếp quyết định.

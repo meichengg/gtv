@@ -61,8 +61,23 @@ func check() {
     }
 }
 
+/// Phím bổ trợ (mã phím, cờ) theo thứ tự nhấn, như bàn phím thật: nhấn ⌃ / ⌘ / ⌥ (flagsChanged) trước phím, nhả sau.
+let modifierKeys: [(CGEventFlags, CGKeyCode)] = [(.maskControl, 59), (.maskAlternate, 58), (.maskCommand, 55), (.maskShift, 56)]
+
+func postFlags(_ code: CGKeyCode, _ flags: CGEventFlags) {
+    guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true) else { return }
+    e.type = .flagsChanged
+    e.flags = flags
+    e.post(tap: tapLocation)
+    usleep(4000)
+}
+
 func post(_ code: CGKeyCode, _ flags: CGEventFlags, _ text: String?) {
     check()
+    // ⌃/⌥/⌘ (không tính ⇧ của chữ hoa) đi kèm flagsChanged như phím thật: GTV dựa vào đó để biết có phím tắt.
+    let held = modifierKeys.filter { flags.contains($0.0) && $0.0 != .maskShift }
+    var current = CGEventFlags()
+    for (flag, mcode) in held { current.insert(flag); postFlags(mcode, current) }
     for down in [true, false] {
         guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
         e.flags = flags
@@ -74,6 +89,7 @@ func post(_ code: CGKeyCode, _ flags: CGEventFlags, _ text: String?) {
         e.post(tap: tapLocation)
         if down { usleep(6000) }
     }
+    for (flag, mcode) in held.reversed() { current.remove(flag); postFlags(mcode, current) }
 }
 
 func selectInputSource(_ id: String) {

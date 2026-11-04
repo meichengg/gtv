@@ -16,8 +16,7 @@ final class KeyWatch {
     private var pointerCarry = false
     /// Số lần đọc: lần kiểm tra hẹn giờ chỉ chạy nếu không có phím nào tới sau lần đọc đã hẹn nó.
     private var readings = 0
-    /// Bộ đếm phím và click lúc đọc phím gần nhất (`quietSinceLastKey`).
-    private var keysAtLastKey: UInt32 = 0
+    /// Bộ đếm click lúc đọc phím gần nhất (`lateEditSafe`).
     private var clicksAtLastKey: UInt32 = 0
     private var checkTimer: DispatchSourceTimer?
 
@@ -43,9 +42,10 @@ final class KeyWatch {
         _ = pointer.changed(Self.pointerCount())
     }
 
-    /// Từ phím bộ gõ nhận gần nhất tới giờ hệ thống không đếm thêm phím hay click nào.
-    func quietSinceLastKey() -> Bool {
-        Self.keyDownCount() == keysAtLastKey && Self.pointerCount() == clicksAtLastKey
+    /// Từ phím bộ gõ nhận gần nhất tới giờ không có phím tắt (⌘/⌃/⌥ được nhấn) hay click nào: lần sửa gửi muộn của
+    /// Ghostty vẫn đúng chỗ (phím thường bấm sau đó sẽ tới bộ gõ và được xử lý theo thứ tự).
+    func lateEditSafe() -> Bool {
+        !modifierPressed && Self.pointerCount() == clicksAtLastKey
     }
 
     /// flagsChanged bộ gõ nhận. Phím tắt có ⌘/⌃/⌥ đi vòng bộ gõ (⌘V, Ctrl+A…): sổ phím tính là lỡ ngay, không chờ.
@@ -62,11 +62,11 @@ final class KeyWatch {
         let count = Self.keyDownCount()
         let modifier = modifierPressed
         modifierPressed = false
+        let keyModifier = !event.modifierFlags.isDisjoint(with: [.command, .control, .option])
         let verdict = ledger.observe(KeyReading(keyDownCount: count, timestamp: event.timestamp, keyCode: event.keyCode,
                                                 isRepeat: event.isARepeat, readAt: ProcessInfo.processInfo.systemUptime),
-                                     modifierPressed: modifier)
+                                     modifierPressed: modifier, keyHasModifier: keyModifier)
         let clicks = Self.pointerCount()
-        keysAtLastKey = count
         clicksAtLastKey = clicks
         let clicked = pointer.changed(clicks)
         let pointerMoved = clicked || pointerCarry
@@ -78,7 +78,7 @@ final class KeyWatch {
         let delivery = (ProcessInfo.processInfo.systemUptime - event.timestamp) * 1000
         DebugLog.write("sổ phím: \(verdict)\(pointerMoved ? ", có click" : "")\(modifier ? ", có ⌘/⌃/⌥" : "") phím \(event.keyCode)\(event.isARepeat ? " (lặp)" : "") đếm \(count), tới sau \(String(format: "%.2f", delivery)) ms")
         #endif
-        return pointerMoved ? .interrupted : verdict.gap(modifierPressed: modifier)
+        return pointerMoved ? .interrupted : verdict.gap(modifierPressed: modifier && !keyModifier)
     }
 
     /// Sau mỗi phím, kiểm tra vài lần (`KeyLedger.checkDelays`) xem có phím đi vòng bộ gõ không (còn phím đã đếm mà bộ

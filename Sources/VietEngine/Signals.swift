@@ -8,6 +8,10 @@ public enum KeyGap: Equatable, Sendable {
     /// Có thể có phím đi vòng bộ gõ (thường chỉ là phím kế tiếp đã bấm mà chưa tới): chưa được xoá gì cho tới khi
     /// chắc chắn.
     case unsure
+    /// Như `.unsure`, nhưng không có thêm phím nào chưa thấy kể từ phím trước: phím đi vòng (nếu có) đã được bấm trước
+    /// phím trước. Terminal cho đọc màn hình (iTerm2, Terminal.app): màn hình đã in lại phím trước thì cũng đã in lại
+    /// mọi thứ trước nó — khớp từ đang theo dõi là đủ chứng minh.
+    case unsureSteady
     /// Có phím hay click bộ gõ không thấy: con trỏ có thể đã đổi chỗ, bỏ từ đang theo dõi.
     case interrupted
     /// Sổ phím không dùng được (hệ thống không đếm các phím bộ gõ nhận): coi như không có gì, nhưng không phải bằng
@@ -42,6 +46,8 @@ public enum GapVerdict: Equatable, Sendable {
     case clean
     /// Hệ thống đã đếm nhiều phím hơn bộ gõ thấy: phím đang tới (gõ nhanh, ứng dụng bận) hay phím đi vòng — chưa biết.
     case unknown
+    /// Như `.unknown`, nhưng số dư không đổi và hệ thống chỉ đếm thêm đúng phím này kể từ phím trước.
+    case unknownSteady
     /// Có n phím đi vòng bộ gõ trước phím này (n = 0: có phím tắt ⌘/⌃/⌥, có thể đã tới bộ gõ).
     case missed(Int)
     /// Chưa có mốc, hoặc bộ gõ thấy nhiều phím hơn hệ thống đếm: không biết gì.
@@ -55,6 +61,7 @@ public enum GapVerdict: Equatable, Sendable {
         switch self {
         case .clean: return .none
         case .unknown: return .unsure
+        case .unknownSteady: return .unsureSteady
         case .missed, .unavailable: return .interrupted
         case .uncounted: return modifierPressed ? .interrupted : .unverified
         }
@@ -98,6 +105,8 @@ public struct KeyLedger {
     private var resolved: GapVerdict?
     /// Lúc đọc phím có lần tính phím lỡ gần nhất (xem `inFlightWindow`).
     private var bookedAt: Double?
+    /// Bộ đếm và số dư (sau khi đã kết luận) ở lần đọc trước, cho `.unknownSteady`.
+    private var previous: (count: Int64, excess: Int64)?
     /// Số lần `.unavailable` liên tiếp.
     public private(set) var unavailableRun = 0
 
@@ -115,9 +124,23 @@ public struct KeyLedger {
         run = nil
         resolved = nil
         bookedAt = nil
+        previous = nil
     }
 
-    public mutating func observe(_ r: KeyReading, modifierPressed: Bool = false) -> GapVerdict {
+    /// `modifierPressed`: ⌘/⌃/⌥ được nhấn kể từ phím trước. `keyHasModifier`: chính phím này có ⌘/⌃/⌥ (bộ gõ nhận được
+    /// phím tắt, vd. Ctrl+E ở Ghostty — phím bổ trợ đó là của nó, không phải của một phím tắt đi vòng).
+    public mutating func observe(_ r: KeyReading, modifierPressed: Bool = false, keyHasModifier: Bool = false) -> GapVerdict {
+        let verdict = classify(r, modifierPressed: modifierPressed, keyHasModifier: keyHasModifier)
+        switch verdict {
+        case .unknown, .unknownSteady: previous = (unwrapped, unwrapped - seen - (base ?? 0) - missedExact)
+        case .unavailable, .uncounted: previous = nil
+        default: previous = (unwrapped, 0)
+        }
+        return verdict
+    }
+
+    private mutating func classify(_ r: KeyReading, modifierPressed: Bool, keyHasModifier: Bool) -> GapVerdict {
+        let prior = previous
         let u = advance(r.keyDownCount)
         // Cùng một sự kiện tới bộ gõ hai lần thì chỉ tính một.
         let duplicate = last.map { $0.timestamp == r.timestamp && $0.keyCode == r.keyCode } ?? false
@@ -142,7 +165,7 @@ public struct KeyLedger {
             return unavailable()
         }
         unavailableRun = 0
-        if modifierPressed {
+        if modifierPressed && (excess > 0 || !keyHasModifier) {
             // Phím tắt có ⌘/⌃/⌥ kể từ phím trước (⌘V, Ctrl+A…): đi vòng bộ gõ hay không, con trỏ có thể đã đổi chỗ.
             return book(excess, surplus: surplus, base: base, at: r.readAt)
         }
@@ -167,6 +190,8 @@ public struct KeyLedger {
         } else {
             run = (1, r.timestamp)
         }
+        // Không thêm phím nào chưa thấy kể từ phím trước: số dư như cũ và hệ thống chỉ đếm thêm đúng phím này.
+        if let prior, prior.excess == excess, u - prior.count == 1 { return .unknownSteady }
         return .unknown
     }
 

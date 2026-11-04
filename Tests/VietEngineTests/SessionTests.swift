@@ -246,7 +246,7 @@ private final class GhosttySim: TextClient {
     func replaceText(location: Int, length: Int, with text: String) { XCTFail("Ghostty: không thay được chữ") }
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("Ghostty: marked text") }
     func setMarkedText(_ text: String) {
-        XCTAssertEqual(text, "\u{200B}", "Ghostty: không được gạch chân")
+        XCTAssertTrue(text == "\u{200B}" || text.isEmpty, "Ghostty: không được gạch chân (\(text))")
         mark = text
     }
     func insertText(_ text: String) {
@@ -277,19 +277,22 @@ private final class GhosttySim: TextClient {
         now = end
     }
 
-    func press(_ p: Press, gap: Double = 0.04) {
+    /// Phím người dùng bấm; `ledger`: sổ phím báo gì cho phím này; `gap`: thời gian tới phím sau.
+    func press(_ p: Press, gap: Double = 0.04, ledger: KeyGap = .none) {
         let markedBefore = !mark.isEmpty
         accumulator = []
         let key: Key
+        var legacy: String?
         switch p {
         case let .char(c): key = .char(c)
-        case .backspace: key = .backspace
-        case .enter: key = .char("\r")
+        case .backspace: key = .backspace; legacy = "\u{7f}"
+        case .enter: key = .char("\r"); legacy = "\r"
         case .up: key = .char("\u{F700}")
-        case .left: key = .char("\u{F702}")
-        case .ctrlE: key = .other
+        case .left: key = .char("\u{F702}"); legacy = "\u{1b}[D"
+        case .ctrlE: key = .other; legacy = "\u{05}"
         }
-        let handled = session.handle(key, self, options: options, forceMarked: false, terminal: .deferred)
+        let handled = session.handle(key, self, options: options, forceMarked: false, terminal: .deferred, gap: ledger,
+                                     legacy: legacy)
         runTimers(until: now + keyDownTail)          // vẫn trong keyDown
         if !handled, case let .char(c) = p { accumulator!.append(String(c)) }   // AppKit: insertText(c)
         let acc = accumulator!
@@ -329,18 +332,24 @@ private final class GhosttySim: TextClient {
     }
 
     private func write(_ s: String) {
-        if let v = s.unicodeScalars.first?.value, v == 0x1b || (v < 0x20 && s.unicodeScalars.count == 1) {
-            controls.append(s)
-            return
-        }
-        for scalar in s.unicodeScalars {
+        var scalars = Array(s.unicodeScalars)[...]
+        while let scalar = scalars.first {
+            scalars = scalars.dropFirst()
             if scalar == "\u{7f}" {
                 if !line.isEmpty { line.removeLast() }
+            } else if scalar == "\u{1b}" {
+                controls.append(String(String.UnicodeScalarView([scalar] + scalars)))   // chuỗi ESC tới hết
+                return
+            } else if scalar.value < 0x20 {
+                controls.append(String(scalar))
             } else {
                 line.append(Character(scalar))
             }
         }
     }
+
+    /// Phím terminal tự xử lý mà không qua bộ gõ (vd. ⌘V dán).
+    func bypassPaste(_ s: String) { write(s) }
 }
 
 /// Terminal giả có màn hình + con trỏ như iTerm2 / Terminal.app: báo vị trí con trỏ và cho đọc chữ trên màn
@@ -369,9 +378,13 @@ private final class ScreenTerminal: TextClient {
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
     func currentTime() -> Double { now }
 
-    /// Shell in lại mọi thứ đã nhận (DEL xoá ký tự trước con trỏ, chữ chèn tại con trỏ).
+    /// Shell in lại mọi thứ đã nhận (DEL xoá ký tự trước con trỏ, chữ chèn tại con trỏ, ESC[D dời con trỏ sang trái).
     func echo() {
         for chunk in inFlight {
+            if chunk == "\u{1b}[D" {
+                cursor = max(0, cursor - 1)
+                continue
+            }
             for scalar in chunk.unicodeScalars {
                 if scalar == "\u{7f}" {
                     if cursor > 0 { cells.remove(at: cursor - 1); cursor -= 1 }
@@ -382,6 +395,9 @@ private final class ScreenTerminal: TextClient {
         }
         inFlight = []
     }
+
+    /// ← không qua bộ gõ, shell chưa in lại (màn hình vẫn như cũ).
+    func bypassLeftNotEchoed() { inFlight.append("\u{1b}[D") }
 
     func tick(_ ms: Double) { now += ms / 1000 }
 
@@ -923,7 +939,8 @@ final class SessionTests: XCTestCase {
         t.type("tie61ng", ms: 45)
         XCTAssertEqual(t.line, "tiếng")
         t.bypassBackspace(); t.bypassBackspace(); t.bypassBackspace()
-        t.type("e65t ", ms: 45, gap: .unsure)
+        t.type("e", ms: 45, gap: .unsure)                  // phím đầu sau ⌫: có phím chưa thấy mới
+        t.type("65t ", ms: 45, gap: .unsureSteady)         // không có gì mới kể từ phím trước
         XCTAssertEqual(t.line, "tiệt ")
         // Mũi tên trái (không qua bộ gõ) rồi gõ liền: màn hình không khớp → bỏ từ, không xoá gì.
         let u = ScreenTerminal()
@@ -931,6 +948,59 @@ final class SessionTests: XCTestCase {
         u.bypassLeft()
         u.type("6", ms: 45, gap: .unsure)
         XCTAssertEqual(u.line, "ti6e")
+        // ← chưa được shell in lại (màn hình còn cũ, vẫn "khớp"): phím ngay sau đó có phím chưa thấy mới → không tin màn
+        // hình, không xoá gì (DEL sẽ rơi vào chỗ con trỏ mới).
+        let v = ScreenTerminal()
+        v.type("tie", ms: 45)
+        v.bypassLeftNotEchoed()
+        v.type("6", ms: 2, echoes: false, gap: .unsure)
+        v.echo()
+        XCTAssertEqual(v.line, "ti6e")
+    }
+
+    /// Ghostty: Enter / Ctrl+E bấm khi lần sửa dấu còn chờ (vài ms sau phím dấu): gửi kèm lần sửa trong một lần ghi —
+    /// Ghostty không nuốt phím, thứ tự đúng.
+    func testGhosttyPendingEditCarriesControlKeys() {
+        let g = GhosttySim()
+        g.options = EngineOptions(method: .vni)
+        g.type("echo to")
+        g.press(.char("6"), gap: 0.001)
+        g.press(.enter)
+        XCTAssertEqual(g.text, "echo tô")
+        XCTAssertEqual(g.controls, ["\r"])
+        let h = GhosttySim()
+        h.options = EngineOptions(method: .vni)
+        h.type("echo to")
+        h.press(.char("6"), gap: 0.001)
+        h.press(.ctrlE)                                     // ⌃ của chính phím này: sổ phím vẫn báo sạch
+        XCTAssertEqual(h.text, "echo tô")
+        XCTAssertEqual(h.controls, ["\u{05}"])
+        XCTAssertTrue(h.mark.isEmpty)
+    }
+
+    /// Ghostty: lần sửa còn chờ, người dùng dán (⌘V, đi vòng bộ gõ) rồi bấm Enter: bỏ lần sửa (không xoá chữ dán), gỡ
+    /// marked text — Enter lần này bị nuốt (hiếm), nhưng không kẹt: các phím sau tới bình thường.
+    func testGhosttyStaleEditDroppedNoStuckMark() {
+        let g = GhosttySim()
+        g.options = EngineOptions(method: .vni)
+        g.type("tie")
+        g.press(.char("6"), gap: 0.001)
+        g.bypassPaste("/tmp")
+        g.press(.enter, ledger: .interrupted)
+        XCTAssertEqual(g.text, "tie/tmp")
+        XCTAssertTrue(g.mark.isEmpty)
+        g.press(.enter)
+        g.press(.up)
+        XCTAssertEqual(g.controls, ["\r", "\u{1b}[A"])
+        // phím chữ thì tự gửi
+        let h = GhosttySim()
+        h.options = EngineOptions(method: .vni)
+        h.type("tie")
+        h.press(.char("6"), gap: 0.001)
+        h.bypassPaste("/tmp")
+        h.press(.char("x"), ledger: .interrupted)
+        XCTAssertEqual(h.text, "tie/tmpx")
+        XCTAssertTrue(h.mark.isEmpty)
     }
 
     /// Shell chưa kịp in lại chữ vừa gõ (gõ nhanh, ssh): con trỏ đứng sau là bình thường, vẫn thêm dấu đúng.

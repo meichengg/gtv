@@ -62,7 +62,7 @@ private final class ClientAdapter: TextClient {
 
     func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
 
-    func quietSinceLastKey() -> Bool { KeyWatch.shared.quietSinceLastKey() }
+    func lateEditSafe() -> Bool { KeyWatch.shared.lateEditSafe() }
 }
 
 /// Một controller cho mỗi ô nhập liệu.
@@ -120,8 +120,8 @@ final class GTVInputController: IMKInputController {
     }
 
     /// Byte terminal gửi xuống shell cho phím (kiểu cũ, không giao thức bàn phím kitty), cho các phím Ghostty nuốt khi
-    /// đang có marked text: Enter, Tab, ⌫, Esc, ←, Ctrl+chữ. nil cho phím khác (Ghostty tự phát lại ↑ ↓ →) và phím
-    /// có ⌘/⌥, ⇧ (trừ Esc).
+    /// đang có marked text: Enter, Tab, ⌫, Esc, ←, Home, End, PgUp, PgDn, ⌦, Ctrl+chữ. nil cho phím khác (Ghostty tự
+    /// phát lại ↑ ↓ →) và phím có ⌘/⌥, ⇧ (trừ Esc).
     private static func legacyBytes(_ event: NSEvent, _ flags: NSEvent.ModifierFlags) -> String? {
         guard flags.isDisjoint(with: [.command, .option]) else { return nil }
         switch event.keyCode {
@@ -130,6 +130,11 @@ final class GTVInputController: IMKInputController {
         case 48: return flags.isEmpty ? "\t" : nil               // Tab
         case 51: return flags.isEmpty ? "\u{7f}" : nil           // Delete
         case 123: return flags.isEmpty ? "\u{1b}[D" : nil        // ←
+        case 115: return flags.isEmpty ? "\u{1b}[H" : nil        // Home
+        case 119: return flags.isEmpty ? "\u{1b}[F" : nil        // End
+        case 116: return flags.isEmpty ? "\u{1b}[5~" : nil       // PgUp
+        case 121: return flags.isEmpty ? "\u{1b}[6~" : nil       // PgDn
+        case 117: return flags.isEmpty ? "\u{1b}[3~" : nil       // ⌦
         default:
             guard flags == [.control], let chars = event.characters, chars.unicodeScalars.count == 1,
                   let c = chars.unicodeScalars.first, c.value < 0x20 else { return nil }
@@ -167,6 +172,7 @@ final class GTVInputController: IMKInputController {
             return
         }
         commit(sender)
+        KeyWatch.shared.rebase()             // phím đổi chế độ (🌐, ⌃Space…) không tới bộ gõ
         Modes.shared.modeSelected(mode)
     }
 
@@ -243,7 +249,7 @@ final class GTVInputController: IMKInputController {
         var earlyCommit = forceMarked && Settings.terminalApps.contains(bundleID)
         if Settings.knownTerminals.contains(bundleID) {
             if clientKind == nil { clientKind = Self.kind(of: client) }
-            if clientKind == .textView || Self.inTextField(client, bundleID) {
+            if clientKind == .textView || (terminal != nil && Self.inTextField(client, bundleID)) {
                 // Ô văn bản trong app terminal (thanh Find, command palette, đổi tên tab…): gõ như ứng dụng thường —
                 // DEL của kiểu gõ terminal sẽ thành chữ rác ở đây.
                 terminal = nil
