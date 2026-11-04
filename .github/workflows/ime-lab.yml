@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       terms:
-        description: "Terminal (terminal iterm2 ghostty kitty wezterm rex)"
-        default: "terminal iterm2 ghostty kitty wezterm rex"
+        description: "Terminal (terminal ghostty kitty wezterm rex iterm2)"
+        default: "terminal ghostty kitty wezterm rex iterm2"
         type: string
       methods:
         description: "Kiểu gõ (vni telex)"
@@ -31,7 +31,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 50
     env:
-      TERMS: ${{ inputs.terms || 'terminal iterm2 ghostty kitty wezterm rex' }}
+      TERMS: ${{ inputs.terms || 'terminal ghostty kitty wezterm rex iterm2' }}
       METHODS: ${{ inputs.methods || 'vni telex' }}
       STYLES: ${{ inputs.styles || 'marked inline deferred direct' }}
       OUT: ${{ github.workspace }}/lab-out
@@ -53,7 +53,11 @@ jobs:
       - name: Install tools and terminals
         run: |
           brew install xcodegen fish >/dev/null
-          for c in ghostty iterm2 kitty wezterm; do brew install --cask "$c" >/dev/null || echo "::warning::không cài được $c"; done
+          for c in iterm2 kitty wezterm; do brew install --cask "$c" >/dev/null || echo "::warning::không cài được $c"; done
+          # Ghostty đúng bản người dùng đang dùng (1.4.0; cask có thể cũ hơn, khác hành vi insertText)
+          m="$(mktemp -d)"; curl -sfL https://release.files.ghostty.org/1.4.0/Ghostty.dmg -o "$RUNNER_TEMP/ghostty.dmg"
+          hdiutil attach -nobrowse -quiet -mountpoint "$m" "$RUNNER_TEMP/ghostty.dmg" && cp -R "$m/Ghostty.app" /Applications/ && hdiutil detach -quiet "$m"
+          defaults read /Applications/Ghostty.app/Contents/Info.plist CFBundleShortVersionString
           # Rex (libghostty, mã nguồn đóng): bản mới nhất từ feed Sparkle
           url="$(curl -sfL https://blob.superlogical.com/public/rex-app/preview-arm64/appcast.xml | grep -o 'url="[^"]*"' | head -1 | cut -d'"' -f2)" || true
           if [ -n "$url" ]; then

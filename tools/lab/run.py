@@ -54,6 +54,9 @@ CAPTURE = [
     ("vni-backspace", "vni", "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 45),
     ("telex-words", "telex", "Vieetj Nam, tooi yeeu tieengs Vieetj ddaij hocj.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
 ]
+# Phím đặc biệt có tới bộ gõ không (khi không có marked text) — xem GTV-debug.log, dòng "phím <mã>".
+KEYS_SEEN = "ab{LEFT}{RIGHT}{BS}{TAB}{CE}{CA}{UP}{DOWN}c"
+
 FISH = [
     # Lỗi người dùng báo: gõ ./suo rồi Ctrl+E phải nhận gợi ý của fish.
     ("fish-ctrl-e", "vni", "./suo{WAIT400}{CE}", "./suoddms-quickstart-6.0.23.tar/", 45),
@@ -121,6 +124,11 @@ def open_terminal(key):
     else:
         raise RuntimeError(f"{key} không lên phía trước (front={front()})")
     time.sleep(3)          # đợi shell sẵn sàng
+    if key == "rex":       # màn hình chào lần đầu: bấm Continue rồi mở cửa sổ terminal mới
+        for _ in range(6):
+            sh([DRV, bid, "10", "{RET}"]); time.sleep(0.6)
+        sh([DRV, bid, "10", "{CMDN}"]); time.sleep(2.5)
+        shot("rex-after-onboarding")
     dismiss_dialogs()
     if front() != bid:
         sh(["open", "-a", path])
@@ -179,7 +187,7 @@ def main():
     (OUT / "logs").mkdir(parents=True, exist_ok=True)
     (L / "fd" / "suoddms-quickstart-6.0.23.tar").mkdir(parents=True, exist_ok=True)
     shutil.copy(HERE / "capture.py", L / "c.py")
-    terms = os.environ.get("TERMS", "terminal iterm2 ghostty kitty wezterm").split()
+    terms = os.environ.get("TERMS", "terminal ghostty kitty wezterm rex iterm2").split()
     methods = os.environ.get("METHODS", "vni telex").split()
     styles = os.environ.get("STYLES", "marked inline deferred direct").split()
     results = []
@@ -195,6 +203,8 @@ def main():
                 for method in methods:
                     configure(method, style)
                     tests = [("capture", t) for t in CAPTURE if t[1] == method]
+                    if method == "vni":
+                        tests.append(("capture", ("keys-seen", "vni", KEYS_SEEN, None, 120)))
                     if shutil.which("fish"):
                         tests += [("fish", t) for t in FISH if t[1] == method]
                     for kind, (name, m, keys, expect, ms) in tests:
