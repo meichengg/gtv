@@ -40,8 +40,16 @@ private final class ClientAdapter: TextClient {
 
     /// Chạy sau khi ứng dụng xử lý xong phím hiện tại, với chính ô nhập liệu đó.
     func schedule(_ work: @escaping () -> Void) {
+        schedule(at: .now(), work)
+    }
+
+    func schedule(after delay: Double, _ work: @escaping () -> Void) {
+        schedule(at: .now() + delay, work)
+    }
+
+    private func schedule(at time: DispatchTime, _ work: @escaping () -> Void) {
         let target = client
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: time) { [weak self] in
             guard let self, let target else { return }
             let saved = self.client
             self.client = target
@@ -49,6 +57,13 @@ private final class ClientAdapter: TextClient {
             self.client = saved
         }
     }
+
+    func hasMarkedText() -> Bool {
+        guard let r = client?.markedRange() else { return false }
+        return r.location != NSNotFound && r.length > 0
+    }
+
+    func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
 }
 
 /// Một controller cho mỗi ô nhập liệu.

@@ -12,10 +12,19 @@ public protocol TextClient: AnyObject {
     func replaceViaMarkedText(location: Int, length: Int, with text: String)
     /// Chạy `work` ngay sau khi ứng dụng xử lý xong phím hiện tại (ngoài keyDown), với cùng ô nhập liệu.
     func schedule(_ work: @escaping () -> Void)
+    /// Chạy `work` sau `delay` giây, với cùng ô nhập liệu.
+    func schedule(after delay: Double, _ work: @escaping () -> Void)
+    /// Ô nhập liệu đang có marked text không.
+    func hasMarkedText() -> Bool
+    /// Đồng hồ đơn điệu (giây).
+    func currentTime() -> Double
 }
 
 public extension TextClient {
     func schedule(_ work: @escaping () -> Void) { work() }
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { work() }
+    func hasMarkedText() -> Bool { false }
+    func currentTime() -> Double { 0 }
 }
 
 public enum Key: Equatable {
@@ -54,9 +63,15 @@ public final class Session {
     /// Chế độ gạch chân: từ đang gõ đã chốt vì không còn thay đổi được nữa; các chữ cái còn lại của từ đi thẳng.
     private var literalTail = false
     /// Terminal kiểu `.deferred`: chuỗi xoá + chữ mới chờ gửi sau keyDown; `pendingSerial` bỏ lần gửi đã cũ.
+    /// Chỉ coi là xong khi marked text rỗng đã biến mất (ứng dụng đã nhận chuỗi): xem `settlePending`.
     private var pending: String?
     private weak var pendingClient: AnyObject?
     private var pendingSerial = 0
+    /// Lúc bộ gõ ghi xuống shell lần cuối (terminal). Dùng để phân biệt "chữ chưa kịp in lại" với "con trỏ đã
+    /// bị phím khác (không qua bộ gõ) dời đi" — xem `guardCursor`.
+    private var termLastWrite = 0.0
+    /// Chữ vừa gửi có thể chưa kịp hiện (shell chưa in lại): trong khoảng này con trỏ đứng sau là bình thường.
+    private static let echoLag = 0.15
     private var anchor = 0       // vị trí bắt đầu của từ đang gõ
     private var qtApp = false    // ô nhập liệu thuộc ứng dụng Qt (xem `replace`)
     /// Vừa xoá lùi khi không có từ nào đang gõ (vd. "hoir " → xoá " " và "r" → còn "hoi"): ở phím chữ tiếp
@@ -134,7 +149,7 @@ public final class Session {
 
     /// Chốt từ đang gõ (khi ô nhập liệu mất focus, click chuột...).
     public func commit(_ client: TextClient?) {
-        if let client { flushPending(client) }
+        if let client { settlePending(client) }
         if marked, !engine.isEmpty, let client {
             insertMarkedTail(engine.finishWord().text, client)
         }
@@ -201,18 +216,23 @@ public final class Session {
     private func handleTerminal(_ key: Key, _ client: TextClient, options: EngineOptions,
                                 style: TerminalStyle) -> Bool {
         continueWordOnNextChar = false
-        flushPending(client)        // lần sửa trước (kiểu .deferred) luôn tới shell trước phím này
+        settlePending(client)       // lần sửa trước (kiểu .deferred) luôn tới shell trước phím này
         switch key {
         case .other:
             engine.reset()          // Enter, mũi tên, Ctrl+...: shell tự xử lý, không khôi phục từ sau phím này
             return false
         case .backspace:
             guard !engine.isEmpty else { return false }
+            guardCursor(client)
+            guard !engine.isEmpty else { return false }
+            termLastWrite = client.currentTime()
             if case .passThrough = engine.backspace() { return false }   // shell xoá 1 ký tự: vẫn khớp
             engine.reset()          // xoá làm dấu phải đặt lại chỗ khác: thôi theo dõi từ, xoá như thường
             return false
         case let .char(ch):
+            if !engine.isEmpty { guardCursor(client) }
             if engine.isEmpty { engine.options = options }
+            termLastWrite = client.currentTime()
             guard let action = engine.process(ch) else {
                 // Hết từ (dấu cách, dấu câu…): khôi phục từ không phải tiếng Việt trước ký tự này.
                 if case let .replace(old, new) = engine.finishWord().action, Self.isPrintable(ch) {
@@ -225,6 +245,32 @@ public final class Session {
             emit(old, new, typed: ch, then: "", client, style)
             return true
         }
+    }
+
+    /// Con trỏ có còn ngay sau từ bộ gõ đang theo dõi không (chỉ với terminal cho biết con trỏ và chữ trên
+    /// màn hình: iTerm2, Terminal.app…; Ghostty báo con trỏ ở 0 — mọi phím đều qua bộ gõ nên không cần).
+    /// Terminal tự xử lý một số phím mà không qua bộ gõ (iTerm2: mũi tên, Ctrl+A/E; Terminal.app: mọi phím đặc
+    /// biệt kể cả Backspace); gửi DEL theo từ cũ khi đó sẽ xoá nhầm. Nguyên tắc: không bao giờ xoá mò.
+    /// - Màn hình khớp từ, con trỏ ở cuối: bình thường.
+    /// - Con trỏ nằm giữa từ đang hiện đầy đủ (mũi tên, Ctrl+A): đọc lại phần trước con trỏ rồi gõ tiếp.
+    /// - Khác đi mà chữ vừa gửi đã đủ lâu (không phải đang chờ shell in lại): bắt đầu từ mới tại con trỏ — từ
+    ///   đó chỉ xoá những gì gõ sau đó, luôn đúng dù shell in chậm.
+    private func guardCursor(_ client: TextClient) {
+        guard let sel = client.selectedRange(), sel.location > 0 else { return }
+        let word = Array(engine.displayed.utf16)
+        let n = word.count, cursor = sel.location
+        let beforeLen = min(n, cursor)
+        let before = client.text(location: cursor - beforeLen, length: beforeLen).map { Array($0.utf16) } ?? []
+        if before == word { return }
+        let after = client.text(location: cursor, length: n).map { Array($0.utf16) } ?? []
+        // Con trỏ nằm giữa (hoặc ngay trước) từ đang hiện đầy đủ: trước con trỏ là word[..<k], sau là word[k...].
+        for k in stride(from: min(n - 1, before.count), through: 0, by: -1)
+        where before.suffix(k).elementsEqual(word[..<k]) && after.prefix(n - k).elementsEqual(word[k...]) {
+            engine.reset()
+            if k > 0 { engine.seed(String(decoding: word[..<k], as: UTF16.self)) }
+            return
+        }
+        if client.currentTime() - termLastWrite >= Self.echoLag { engine.reset() }
     }
 
     /// Đổi `old` (đang nằm cuối dòng lệnh) thành `new` + `suffix`: một lần ghi xuống shell.
@@ -255,18 +301,40 @@ public final class Session {
             let serial = pendingSerial
             client.setMarkedText("\u{200B}")     // giữ phím lại (Ghostty), không hiện gì
             client.schedule { [weak self, weak client] in
-                guard let self, let client, self.pendingSerial == serial else { return }
-                self.flushPending(client)
+                guard let self, let client else { return }
+                self.sendPending(client, serial: serial, attempt: 1)
             }
         }
     }
 
-    /// Gửi lần sửa đang chờ (kiểu `.deferred`) — chỉ tới đúng ô nhập liệu đã gõ ra nó.
-    private func flushPending(_ client: TextClient) {
+    /// Gửi lần sửa đang chờ (ngoài keyDown) rồi kiểm tra: marked text rỗng còn đó nghĩa là ứng dụng chưa nhận
+    /// (Ghostty có lúc bỏ insertText ngoài keyDown) — gửi lại, tối đa 3 lần.
+    private func sendPending(_ client: TextClient, serial: Int, attempt: Int) {
+        guard let text = pending, pendingSerial == serial, pendingClient === client else { return }
+        if attempt > 1 && !client.hasMarkedText() { clearPending(); return }   // lần trước đã tới
+        client.insertText(text)
+        guard attempt < 3 else { clearPending(); return }
+        client.schedule(after: 0.03) { [weak self, weak client] in
+            guard let self, let client, self.pendingSerial == serial, self.pending != nil else { return }
+            if client.hasMarkedText() {
+                self.sendPending(client, serial: serial, attempt: attempt + 1)
+            } else {
+                self.clearPending()
+            }
+        }
+    }
+
+    /// Trước phím kế tiếp / khi chốt: lần sửa còn chờ (marked text rỗng vẫn còn) thì gửi ngay — lúc này
+    /// Ghostty đang xử lý phím bắt đầu khi còn marked text nên ghi nguyên văn; đã tới rồi thì thôi.
+    private func settlePending(_ client: TextClient) {
         guard let text = pending, pendingClient === client else { return }
+        clearPending()
+        if client.hasMarkedText() { client.insertText(text) }
+    }
+
+    private func clearPending() {
         pending = nil
         pendingClient = nil
-        client.insertText(text)
     }
 
     private static func isPrintable(_ ch: Character) -> Bool {

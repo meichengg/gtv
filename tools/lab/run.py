@@ -41,6 +41,7 @@ TERMINALS = {
     "kitty": ("net.kovidgoyal.kitty", "/Applications/kitty.app"),
     "wezterm": ("com.github.wez.wezterm", "/Applications/WezTerm.app"),
     "rex": ("com.superlogical.rex", "/Applications/Rex Beta.app"),
+    "muxy": ("com.muxy.app", "/Applications/Muxy.app"),
 }
 
 # (tên, kiểu gõ, phím, mong đợi, ms giữa 2 phím)
@@ -61,6 +62,10 @@ FISH = [
     # Lỗi người dùng báo: gõ ./suo rồi Ctrl+E phải nhận gợi ý của fish.
     ("fish-ctrl-e", "vni", "./suo{WAIT400}{CE}", "./suoddms-quickstart-6.0.23.tar/", 45),
     ("fish-vietnamese", "vni", "echo Vie65t Nam d9a5i ho5c", "echo Việt Nam đại học", 45),
+    # Phím terminal có thể tự xử lý không qua bộ gõ: không được xoá nhầm, gõ tiếp vẫn đúng.
+    ("fish-arrow", "vni", "echo tie{LEFT}{WAIT300}6", "echo ti6e", 45),
+    ("fish-backspace", "vni", "echo tie61ng{BS}{BS}{BS}{WAIT300}e65t", "echo tiệt", 45),
+    ("fish-ctrl-a", "vni", "echo tie{CA}{WAIT300}6", "6echo tie", 45),
 ]
 
 
@@ -215,7 +220,7 @@ def main():
     (OUT / "logs").mkdir(parents=True, exist_ok=True)
     (L / "fd" / "suoddms-quickstart-6.0.23.tar").mkdir(parents=True, exist_ok=True)
     shutil.copy(HERE / "capture.py", L / "c.py")
-    terms = os.environ.get("TERMS", "terminal ghostty kitty wezterm rex iterm2").split()
+    terms = os.environ.get("TERMS", "terminal ghostty rex muxy kitty wezterm iterm2").split()
     methods = os.environ.get("METHODS", "vni telex").split()
     styles = os.environ.get("STYLES", "marked inline deferred direct").split()
     results = []

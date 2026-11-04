@@ -140,9 +140,14 @@ private final class Shell: TextClient {
     func replaceText(location: Int, length: Int, with text: String) { XCTFail("terminal: không thay được chữ") }
     /// Kiểu `.deferred` (Ghostty): chỉ được dùng marked text rỗng U+200B (không hiện) để giữ phím.
     func setMarkedText(_ text: String) {
-        if text == "\u{200B}" { invisibleMarks += 1 } else { XCTFail("terminal: không được gạch chân (\(text))") }
+        if text == "\u{200B}" { invisibleMarks += 1; markActive = true } else { XCTFail("terminal: không được gạch chân (\(text))") }
     }
-    func insertText(_ text: String) { write(text) }
+    func insertText(_ text: String) {
+        markActive = false           // insertText thay marked text (như Ghostty)
+        write(text)
+    }
+    var markActive = false
+    func hasMarkedText() -> Bool { markActive }
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
 
     var invisibleMarks = 0
@@ -152,6 +157,7 @@ private final class Shell: TextClient {
     func schedule(_ work: @escaping () -> Void) {
         if runScheduledNow { work() } else { later.append(work) }
     }
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { later.append(work) }
     func runLater() {
         let works = later
         later = []
@@ -181,6 +187,64 @@ private final class Shell: TextClient {
 
     /// Phím đặc biệt (Ctrl+E, mũi tên…): bộ gõ không được giữ lại.
     func other() -> Bool { session.handle(.other, self, options: options, forceMarked: false, terminal: style) }
+}
+
+/// Terminal giả có màn hình + con trỏ như iTerm2 / Terminal.app: báo vị trí con trỏ và cho đọc chữ trên màn
+/// hình; chữ ghi xuống shell chỉ hiện sau khi shell in lại (`echo()`); một số phím terminal tự xử lý mà không
+/// qua bộ gõ (`bypass…`).
+private final class ScreenTerminal: TextClient {
+    var cells: [Character] = []
+    var cursor = 0
+    let base = 100                     // vị trí tuyệt đối của ô đầu dòng
+    var inFlight: [String] = []        // đã ghi xuống shell, chưa in lại lên màn hình
+    var now = 1000.0
+    let session = Session()
+    var options = EngineOptions(method: .vni)
+
+    var line: String { String(cells) }
+
+    func selectedRange() -> (location: Int, length: Int)? { (base + cursor, 0) }
+    func text(location: Int, length: Int) -> String? {
+        let from = location - base, to = from + length
+        guard from >= 0, to <= cells.count, from <= to else { return nil }
+        return String(cells[from..<to])
+    }
+    func replaceText(location: Int, length: Int, with text: String) { XCTFail("terminal: không thay được chữ") }
+    func setMarkedText(_ text: String) { XCTFail("terminal: không được gạch chân (\(text))") }
+    func insertText(_ text: String) { inFlight.append(text) }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
+    func currentTime() -> Double { now }
+
+    /// Shell in lại mọi thứ đã nhận (DEL xoá ký tự trước con trỏ, chữ chèn tại con trỏ).
+    func echo() {
+        for chunk in inFlight {
+            for scalar in chunk.unicodeScalars {
+                if scalar == "\u{7f}" {
+                    if cursor > 0 { cells.remove(at: cursor - 1); cursor -= 1 }
+                } else {
+                    cells.insert(Character(scalar), at: cursor); cursor += 1
+                }
+            }
+        }
+        inFlight = []
+    }
+
+    func tick(_ ms: Double) { now += ms / 1000 }
+
+    /// Gõ (mỗi phím cách nhau `ms`), shell in lại ngay sau mỗi phím nếu `echoes`.
+    func type(_ keys: String, ms: Double = 120, echoes: Bool = true) {
+        for k in keys {
+            if !session.handle(.char(k), self, options: options, forceMarked: false, terminal: .inline) {
+                insertText(String(k))
+            }
+            if echoes { echo() }
+            tick(ms)
+        }
+    }
+
+    func bypassLeft() { cursor -= 1; tick(120) }
+    func bypassLineStart() { cursor = 0; tick(120) }
+    func bypassBackspace() { cells.remove(at: cursor - 1); cursor -= 1; tick(120) }
 }
 
 final class SessionTests: XCTestCase {
@@ -525,5 +589,53 @@ final class SessionTests: XCTestCase {
         _ = t.other()                 // vd. Ctrl+A rồi Ctrl+E, shell đổi chỗ con trỏ
         t.type("6")
         XCTAssertEqual(t.text, "echo vie6")
+    }
+    // MARK: - Terminal: phím terminal tự xử lý, không qua bộ gõ
+
+    /// iTerm2: mũi tên không qua bộ gõ. Gõ "tie", ←, "6": không được xoá nhầm (chữ "e" sau con trỏ còn đó).
+    func testTerminalGuardArrowBypass() {
+        let t = ScreenTerminal()
+        t.type("tie")
+        t.bypassLeft()
+        t.type("6")
+        XCTAssertEqual(t.line, "ti6e")
+    }
+
+    /// Terminal.app: Backspace không qua bộ gõ. Gõ "tie61ng", xoá 3 lần, gõ tiếp "e65t ": đọc lại từ trên màn hình.
+    func testTerminalGuardBackspaceBypass() {
+        let t = ScreenTerminal()
+        t.type("tie61ng")
+        XCTAssertEqual(t.line, "tiếng")
+        t.bypassBackspace(); t.bypassBackspace(); t.bypassBackspace()
+        t.type("e65t ")
+        XCTAssertEqual(t.line, "tiệt ")
+    }
+
+    /// Ctrl+A không qua bộ gõ: con trỏ về đầu dòng, phím dấu tiếp theo không xoá chữ phía sau.
+    func testTerminalGuardLineStartBypass() {
+        let t = ScreenTerminal()
+        t.type("tie")
+        t.bypassLineStart()
+        t.type("6")
+        XCTAssertEqual(t.line, "6tie")
+    }
+
+    /// Shell chưa kịp in lại chữ vừa gõ (gõ nhanh, ssh): con trỏ đứng sau là bình thường, vẫn thêm dấu đúng.
+    func testTerminalGuardEchoLag() {
+        let t = ScreenTerminal()
+        t.type("tie6", ms: 30, echoes: false)
+        t.echo()
+        XCTAssertEqual(t.line, "tiê")
+        let u = ScreenTerminal()
+        u.type("Vie65t Nam to6i", ms: 20, echoes: false)
+        u.echo()
+        XCTAssertEqual(u.line, "Việt Nam tôi")
+    }
+
+    /// Gõ bình thường (shell in lại ngay): kết quả như không có kiểm tra con trỏ.
+    func testTerminalGuardNormalTyping() {
+        let t = ScreenTerminal()
+        t.type("To6i ye6u tie61ng Vie65t, d9e5p la81m!")
+        XCTAssertEqual(t.line, "Tôi yêu tiếng Việt, đẹp lắm!")
     }
 }
