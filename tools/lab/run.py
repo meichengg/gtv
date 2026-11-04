@@ -183,6 +183,34 @@ def run_fish(key, bid, name, method, keys, expect, ms):
     return {"final": final, "pass": final == expect, "shot": img, "source": source}
 
 
+def run_modes():
+    """Chế độ V/E phải cố định: đổi ứng dụng / hệ thống chọn lại GTV không được làm đổi chế độ;
+    người dùng tự đổi thì theo."""
+    out = []
+    def check(name, expect):
+        time.sleep(1.2)
+        got = current_source().rsplit(".", 1)[-1]
+        out.append({"terminal": "modes", "style": "-", "test": name, "expect": expect, "final": got,
+                    "pass": got == expect, "shot": shot(f"modes-{name}")})
+        print("modes", name, got, flush=True)
+    term = TERMINALS["terminal"]
+    sh(["open", "-a", term[1]]); time.sleep(2.5)
+    sh([DRV, "-", "20", "{IS:en}"])
+    check("start-en", "en")
+    for app in ["/System/Applications/TextEdit.app", "/System/Library/CoreServices/Finder.app", term[1]]:
+        sh(["open", "-a", app]); check("switch-" + pathlib.Path(app).stem, "en")
+    # Hệ thống chuyển sang ABC (ô mật khẩu, Spotlight…) rồi chọn lại GTV ở chế độ chính "vi"
+    sh([DRV, "-", "20", "{IS:abc}"]); time.sleep(0.8)
+    sh([DRV, "-", "20", "{IS:vi}"]); check("return-from-abc-keeps-en", "en")
+    # Người dùng tự đổi (không đổi ứng dụng): theo
+    time.sleep(1.0)
+    sh([DRV, "-", "20", "{IS:vi}"]); check("user-switch-to-vi", "vi")
+    for app in ["/System/Applications/TextEdit.app", term[1]]:
+        sh(["open", "-a", app]); check("switch-vi-" + pathlib.Path(app).stem, "vi")
+    sh(["pkill", "-x", "TextEdit"])
+    return out
+
+
 def main():
     (OUT / "logs").mkdir(parents=True, exist_ok=True)
     (L / "fd" / "suoddms-quickstart-6.0.23.tar").mkdir(parents=True, exist_ok=True)
@@ -224,6 +252,11 @@ def main():
         finally:
             close_terminal(key)
 
+    if os.environ.get("MODES_TEST", "1") == "1":
+        try:
+            results += run_modes()
+        except Exception as e:  # noqa: BLE001
+            results.append({"terminal": "modes", "test": "-", "error": str(e)})
     (OUT / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1))
     rows = ["| terminal | kiểu | bài | kết quả | shell nhận | xoá tách rời | ghi chú |", "|---|---|---|---|---|---|---|"]
     for r in results:
