@@ -56,16 +56,17 @@ CAPTURE = [
     ("telex-words", "telex", "Vieetj Nam, tooi yeeu tieengs Vieetj ddaij hocj.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
 ]
 # Phím đặc biệt có tới bộ gõ không (khi không có marked text) — xem GTV-debug.log, dòng "phím <mã>".
-KEYS_SEEN = "ab{LEFT}{RIGHT}{BS}{TAB}{CE}{CA}{UP}{DOWN}c"
+KEYS_SEEN = "ab{LEFT}{RIGHT}{BS}{TAB}{CE}{CA}{UP}{DOWN}{ESC}{CW}c"
 
 FISH = [
     # Lỗi người dùng báo: gõ ./suo rồi Ctrl+E phải nhận gợi ý của fish.
-    ("fish-ctrl-e", "vni", "./suo{WAIT400}{CE}", "./suoddms-quickstart-6.0.23.tar/", 45),
+    # Mỗi bài có một từ tiếng Việt làm đối chứng: GTV không xử lý phím thì bài không thể PASS.
+    ("fish-ctrl-e", "vni", "echo vie65t ./suo{WAIT400}{CE}", "echo việt ./suoddms-quickstart-6.0.23.tar/", 45),
     ("fish-vietnamese", "vni", "echo Vie65t Nam d9a5i ho5c", "echo Việt Nam đại học", 45),
     # Phím terminal có thể tự xử lý không qua bộ gõ: không được xoá nhầm, gõ tiếp vẫn đúng.
-    ("fish-arrow", "vni", "echo tie{LEFT}{WAIT300}6", "echo ti6e", 45),
+    ("fish-arrow", "vni", "echo vie65t tie{LEFT}{WAIT300}6", "echo việt ti6e", 45),
     ("fish-backspace", "vni", "echo tie61ng{BS}{BS}{BS}{WAIT300}e65t", "echo tiệt", 45),
-    ("fish-ctrl-a", "vni", "echo tie{CA}{WAIT300}6", "6echo tie", 45),
+    ("fish-ctrl-a", "vni", "echo vie65t tie{CA}{WAIT300}6", "6echo việt tie", 45),
 ]
 
 
@@ -168,6 +169,25 @@ def close_terminal(key):
     time.sleep(1.5)
 
 
+GTV_LOG = pathlib.Path.home() / "Library/Logs/GTV-debug.log"
+
+
+def log_mark():
+    return GTV_LOG.stat().st_size if GTV_LOG.exists() else 0
+
+
+def ime_seen(mark, bid):
+    """Số phím GTV thấy (và tự xử lý) ở ứng dụng `bid` kể từ `mark`: bài nào GTV không thấy phím nào là lỗi hạ
+    tầng (phím đi vòng bộ gõ, sai chế độ…), không phải PASS/FAIL của GTV."""
+    if not GTV_LOG.exists():
+        return {"ime_keys": 0, "ime_handled": 0}
+    with open(GTV_LOG, "rb") as f:
+        f.seek(mark)
+        new = f.read().decode("utf-8", "replace").splitlines()
+    keys = [l for l in new if " phím " in l and bid in l and "chế độ E" not in l]
+    return {"ime_keys": len(keys), "ime_handled": sum("bộ gõ xử lý" in l for l in keys)}
+
+
 def run_capture(key, bid, name, method, keys, expect, ms):
     dismiss_dialogs()
     log = L / f"{key}-{name}.jsonl"
@@ -181,8 +201,10 @@ def run_capture(key, bid, name, method, keys, expect, ms):
     else:
         raise RuntimeError("capture.py không chạy")
     ensure_mode(bid, "vi")
+    mark = log_mark()
     drv(bid, keys, ms)
     time.sleep(0.6)
+    seen = ime_seen(mark, bid)
     img = shot(f"{key}-{name}")
     source = current_source()
     ensure_mode(bid, "en")
@@ -190,8 +212,12 @@ def run_capture(key, bid, name, method, keys, expect, ms):
     time.sleep(0.4)
     shutil.copy(log, OUT / "logs" / log.name)
     a = analyze(log)
-    return {"final": a["final"], "pass": a["final"] == expect, "chunks": a["chunks"], "edits": a["edits"],
-            "edits_split": a["edits_split"], "escapes": a["escapes"], "raw": a["raw"], "shot": img, "source": source}
+    r = {"final": a["final"], "pass": a["final"] == expect, "chunks": a["chunks"], "edits": a["edits"],
+         "edits_split": a["edits_split"], "escapes": a["escapes"], "raw": a["raw"], "shot": img, "source": source,
+         **seen}
+    if seen["ime_keys"] == 0:
+        r["error"] = "GTV không thấy phím nào (lỗi hạ tầng)"
+    return r
 
 
 def run_fish(key, bid, name, method, keys, expect, ms):
@@ -202,8 +228,10 @@ def run_fish(key, bid, name, method, keys, expect, ms):
     drv(bid, f"cd /tmp/l/fd && fish -N -C \"bind ctrl-x 'commandline > {out}'\"{{RET}}", 15)
     time.sleep(3)
     ensure_mode(bid, "vi")
+    mark = log_mark()
     drv(bid, keys, ms)
     time.sleep(0.8)
+    seen = ime_seen(mark, bid)
     img = shot(f"{key}-{name}")
     source = current_source()
     drv(bid, "{CX}", 40)
@@ -213,7 +241,34 @@ def run_fish(key, bid, name, method, keys, expect, ms):
     ensure_mode(bid, "en")
     drv(bid, "exit{RET}", 30)
     time.sleep(0.8)
-    return {"final": final, "pass": final == expect, "shot": img, "source": source}
+    r = {"final": final, "pass": final == expect, "shot": img, "source": source, **seen}
+    if seen["ime_keys"] == 0:
+        r["error"] = "GTV không thấy phím nào (lỗi hạ tầng)"
+    return r
+
+
+def probe_fields(key, bid):
+    """Ô văn bản thường bên trong app terminal (thanh Find ⌘F, command palette): GTV-debug.log ghi thuộc tính
+    marked text của từng ô (activateServer … attrs=[…]) để phân biệt với view terminal; chụp chữ gõ vào."""
+    out = []
+    for name, keys in [("find", "{CMDF}"), ("palette", "{CMDSP}")]:
+        if key != "ghostty" and name == "palette":
+            continue
+        try:
+            dismiss_dialogs()
+            drv(bid, keys, 30)
+            time.sleep(1.0)
+            ensure_mode(bid, "vi")
+            drv(bid, "Vie65t Nam ", 60)
+            time.sleep(0.6)
+            img = shot(f"{key}-field-{name}")
+            ensure_mode(bid, "en")
+            drv(bid, "{ESC}", 30)
+            time.sleep(0.5)
+            out.append({"terminal": key, "style": "-", "test": f"field-{name}", "expect": None, "final": "", "shot": img})
+        except Exception as e:  # noqa: BLE001
+            out.append({"terminal": key, "test": f"field-{name}", "error": str(e)})
+    return out
 
 
 def run_modes():
@@ -232,14 +287,21 @@ def run_modes():
     check("start-en", "en")
     for app in ["/System/Applications/TextEdit.app", "/System/Library/CoreServices/Finder.app", term[1]]:
         sh(["open", "-a", app]); check("switch-" + pathlib.Path(app).stem, "en")
-    # Hệ thống chuyển sang ABC (ô mật khẩu, Spotlight…) rồi chọn lại GTV ở chế độ chính "vi"
-    sh([DRV, "-", "20", "{IS:abc}"]); time.sleep(0.8)
-    sh([DRV, "-", "20", "{IS:vi}"]); check("return-from-abc-keeps-en", "en")
+    # Ô mật khẩu: secure input bật, hệ thống chuyển sang ABC; rời ô mật khẩu thì hệ thống chọn lại GTV ở chế độ
+    # chính "vi" -> GTV giữ "en"
+    sh([DRV, "-", "20", "{SECURE:on}{IS:abc}{WAIT800}{SECURE:off}{IS:vi}"]); check("password-return-keeps-en", "en")
+    # Người dùng tự chọn ABC rồi tự chọn "Tiếng Việt (GTV)" trong menu bộ gõ -> theo
+    sh([DRV, "-", "20", "{TAPSHIFT}{IS:abc}{WAIT1000}{TAPSHIFT}{IS:vi}"]); check("user-abc-then-vi", "vi")
+    # Chiều ngược lại: đang "vi", từ ABC chọn "English (GTV)" -> theo
+    sh([DRV, "-", "20", "{TAPSHIFT}{IS:abc}{WAIT1000}{TAPSHIFT}{IS:en}"]); check("user-abc-then-en", "en")
     # Người dùng tự đổi (không đổi ứng dụng): theo
     time.sleep(1.0)
-    sh([DRV, "-", "20", "{IS:vi}"]); check("user-switch-to-vi", "vi")
+    sh([DRV, "-", "20", "{TAPSHIFT}{IS:vi}"]); check("user-switch-to-vi", "vi")
     for app in ["/System/Applications/TextEdit.app", term[1]]:
         sh(["open", "-a", app]); check("switch-vi-" + pathlib.Path(app).stem, "vi")
+    # Đổi ứng dụng rồi 0,3 s sau người dùng chọn "English (GTV)" (⌃Space, 🌐…) -> theo, không bị đảo lại
+    sh(["open", "-a", "/System/Applications/TextEdit.app"]); time.sleep(0.3)
+    sh([DRV, "-", "20", "{TAPSHIFT}{IS:en}"]); check("user-switch-right-after-app-switch", "en")
     sh(["pkill", "-x", "TextEdit"])
     return out
 
@@ -292,6 +354,8 @@ def main():
                 for delay in (delays if key == "ghostty" and delays else [None]):
                     for method in methods:
                         results += run_suite(key, bid, style, delay, method, repeat)
+            if os.environ.get("FIELDS", "1") == "1":
+                results += probe_fields(key, bid)
         except Exception as e:  # noqa: BLE001
             results.append({"terminal": key, "test": "-", "error": str(e)})
             shot(f"{key}-fatal")

@@ -98,7 +98,13 @@ final class GTVInputController: IMKInputController {
         hotkeyArmedAt = nil
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
+        #if DEBUG
+        // IME Lab: thuộc tính marked text ô nhập liệu nhận — phân biệt view terminal với ô văn bản thường (NSTextView).
+        let attrs = (client.validAttributesForMarkedText() as? [Any] ?? []).map { "\($0)" }
+        DebugLog.write("activateServer \(bundleID) attrs=[\(attrs.joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
+        #else
         DebugLog.write("activateServer \(bundleID)")
+        #endif
         Modes.shared.clientActivated(client, bundleID: bundleID)
         _ = QtDetector.isQt(bundleID)   // kiểm tra trước ở luồng nền, có kết quả trước khi cần
     }

@@ -2,6 +2,8 @@
 //   driver <bundleID mong đợi> <ms giữa 2 phím> <chuỗi>
 // Phím đặc biệt: {BS} {RET} {TAB} {ESC} {LEFT} {RIGHT} {UP} {DOWN} {CA} {CE} {CU} {CX} {CQ}=Ctrl+\ {CMDN}
 // Lệnh: {WAIT<ms>}  {IS:vi} {IS:en} {IS:abc} (chọn input source)  {MS:<ms>} (đổi khoảng cách giữa 2 phím)
+//       {TOGGLE} (nhấn-nhả ⌘⇧)  {TAPSHIFT} (nhấn-nhả Shift: thao tác của người dùng trước khi chọn bộ gõ)
+//       {SECURE:on} {SECURE:off} (bật/tắt secure input như ô mật khẩu; tự tắt khi driver thoát)
 // Dừng ngay (mã 3) nếu ứng dụng phía trước không phải <bundleID> ("-" = không kiểm tra).
 import Carbon
 import Cocoa
@@ -35,9 +37,9 @@ let keys: [Character: (CGKeyCode, Bool)] = {
 let special: [String: (CGKeyCode, CGEventFlags, String?)] = [
     "BS": (51, [], "\u{7f}"), "RET": (36, [], "\r"), "TAB": (48, [], "\t"), "ESC": (53, [], "\u{1b}"),
     "LEFT": (123, [], nil), "RIGHT": (124, [], nil), "DOWN": (125, [], nil), "UP": (126, [], nil),
-    "CA": (0, .maskControl, "\u{01}"), "CE": (14, .maskControl, "\u{05}"), "CU": (32, .maskControl, "\u{15}"),
+    "CA": (0, .maskControl, "\u{01}"), "CE": (14, .maskControl, "\u{05}"), "CU": (32, .maskControl, "\u{15}"), "CW": (13, .maskControl, "\u{17}"),
     "CX": (7, .maskControl, "\u{18}"), "CQ": (42, .maskControl, "\u{1c}"), "CMDN": (45, .maskCommand, "n"),
-    "CMDT": (17, .maskCommand, "t"),
+    "CMDT": (17, .maskCommand, "t"), "CMDF": (3, .maskCommand, "f"), "CMDSP": (35, [.maskCommand, .maskShift], "P"),
 ]
 
 // Biến môi trường để dò cách phím giả đi qua bộ gõ: DRIVER_SOURCE=hid|combined|private,
@@ -118,6 +120,18 @@ func toggleHotkey() {
     usleep(300_000)
 }
 
+/// Nhấn rồi nhả Shift (phím bổ trợ, không gõ ra chữ): như người dùng vừa thao tác.
+func tapShift() {
+    check()
+    for (down, flags) in [(true, CGEventFlags.maskShift), (false, CGEventFlags())] {
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: 56, keyDown: down) else { continue }
+        e.type = .flagsChanged
+        e.flags = flags
+        e.post(tap: tapLocation)
+        usleep(30_000)
+    }
+}
+
 if ProcessInfo.processInfo.environment["DRIVER_VERBOSE"] != nil {
     FileHandle.standardError.write("AX trusted=\(AXIsProcessTrusted()) postEvent=\(CGPreflightPostEventAccess())\n".data(using: .utf8)!)
 }
@@ -131,6 +145,9 @@ while let c = s.first {
         if name.hasPrefix("MS:") { delay = useconds_t((Int(name.dropFirst(3)) ?? 50) * 1000); continue }
         if name.hasPrefix("IS:") { selectInputSource(String(name.dropFirst(3))); continue }
         if name == "TOGGLE" { toggleHotkey(); continue }
+        if name == "TAPSHIFT" { tapShift(); continue }
+        if name == "SECURE:on" { _ = EnableSecureEventInput(); usleep(100_000); continue }
+        if name == "SECURE:off" { _ = DisableSecureEventInput(); usleep(100_000); continue }
         guard let (k, f, t) = special[name] else { print("phím lạ: \(name)"); exit(2) }
         post(k, f, t)
     } else {
