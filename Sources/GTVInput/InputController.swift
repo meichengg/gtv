@@ -80,11 +80,13 @@ final class GTVInputController: IMKInputController {
         hotkeyArmedAt = nil
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
+        DebugLog.write("activateServer \(bundleID)")
         Modes.shared.clientActivated(client, bundleID: bundleID)
         _ = QtDetector.isQt(bundleID)   // kiểm tra trước ở luồng nền, có kết quả trước khi cần
     }
 
     override func deactivateServer(_ sender: Any!) {
+        DebugLog.write("deactivateServer \(bundleID)")
         commit(sender)
     }
 

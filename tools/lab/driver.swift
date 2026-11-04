@@ -39,7 +39,15 @@ let special: [String: (CGKeyCode, CGEventFlags, String?)] = [
     "CX": (7, .maskControl, "\u{18}"), "CQ": (42, .maskControl, "\u{1c}"), "CMDN": (45, .maskCommand, "n"),
 ]
 
-let source = CGEventSource(stateID: .hidSystemState)
+// Biến môi trường để dò cách phím giả đi qua bộ gõ: DRIVER_SOURCE=hid|combined|private,
+// DRIVER_TAP=hid|session|annotated, DRIVER_UNICODE=1|0, DRIVER_KBTYPE=<số>
+let env = ProcessInfo.processInfo.environment
+let source = CGEventSource(stateID: ["combined": .combinedSessionState, "private": .privateState][env["DRIVER_SOURCE"] ?? ""]
+                                    ?? .hidSystemState)
+let tapLocation: CGEventTapLocation = ["session": .cgSessionEventTap, "annotated": .cgAnnotatedSessionEventTap][env["DRIVER_TAP"] ?? ""]
+    ?? .cghidEventTap
+let setUnicode = env["DRIVER_UNICODE"] != "0"
+let keyboardType = env["DRIVER_KBTYPE"].flatMap { Int64($0) }
 
 func front() -> String { NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "" }
 
@@ -55,11 +63,12 @@ func post(_ code: CGKeyCode, _ flags: CGEventFlags, _ text: String?) {
     for down in [true, false] {
         guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
         e.flags = flags
-        if let text {
+        if let keyboardType { e.setIntegerValueField(.keyboardEventKeyboardType, value: keyboardType) }
+        if setUnicode, let text {
             let u = Array(text.utf16)
             e.keyboardSetUnicodeString(stringLength: u.count, unicodeString: u)
         }
-        e.post(tap: .cghidEventTap)
+        e.post(tap: tapLocation)
         if down { usleep(6000) }
     }
 }

@@ -93,8 +93,18 @@ def configure(method, style):
     time.sleep(0.4)
 
 
+def dismiss_dialogs():
+    """Hộp thoại hệ thống (vd. iTerm2 xin quyền mạng nội bộ) chiếm phía trước: bấm Esc (= Không cho phép)."""
+    for _ in range(5):
+        if front() not in ("com.apple.UserNotificationCenter", "com.apple.UserNotificationCenterAgent"):
+            return
+        sh([DRV, "-", "10", "{ESC}"])
+        time.sleep(0.8)
+
+
 def open_terminal(key):
     bid, path = TERMINALS[key]
+    dismiss_dialogs()
     sh(["open", "-a", path])
     for _ in range(150):
         if front() == bid:
@@ -103,6 +113,10 @@ def open_terminal(key):
     else:
         raise RuntimeError(f"{key} không lên phía trước (front={front()})")
     time.sleep(3)          # đợi shell sẵn sàng
+    dismiss_dialogs()
+    if front() != bid:
+        sh(["open", "-a", path])
+        time.sleep(1)
     return bid
 
 
@@ -113,6 +127,7 @@ def close_terminal(key):
 
 
 def run_capture(key, bid, name, method, keys, expect, ms):
+    dismiss_dialogs()
     log = L / f"{key}-{name}.jsonl"
     log.unlink(missing_ok=True)
     drv(bid, f"{{IS:en}}python3 /tmp/l/c.py {log} legacy{{RET}}", 15)
@@ -135,6 +150,7 @@ def run_capture(key, bid, name, method, keys, expect, ms):
 
 
 def run_fish(key, bid, name, method, keys, expect, ms):
+    dismiss_dialogs()
     out = L / f"{key}-{name}.txt"
     out.unlink(missing_ok=True)
     drv(bid, f"{{IS:en}}cd /tmp/l/fd && fish -N -C \"bind ctrl-x 'commandline > {out}'\"{{RET}}", 15)
