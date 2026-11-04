@@ -39,7 +39,7 @@ let special: [String: (CGKeyCode, CGEventFlags, String?)] = [
     "LEFT": (123, [], nil), "RIGHT": (124, [], nil), "DOWN": (125, [], nil), "UP": (126, [], nil),
     "CA": (0, .maskControl, "\u{01}"), "CE": (14, .maskControl, "\u{05}"), "CU": (32, .maskControl, "\u{15}"), "CW": (13, .maskControl, "\u{17}"),
     "CX": (7, .maskControl, "\u{18}"), "CQ": (42, .maskControl, "\u{1c}"), "CMDN": (45, .maskCommand, "n"),
-    "CMDT": (17, .maskCommand, "t"), "CMDF": (3, .maskCommand, "f"), "CMDSP": (35, [.maskCommand, .maskShift], "P"),
+    "CMDT": (17, .maskCommand, "t"), "CMDF": (3, .maskCommand, "f"), "CMDV": (9, .maskCommand, "v"), "CMDSP": (35, [.maskCommand, .maskShift], "P"),
 ]
 
 // Biến môi trường để dò cách phím giả đi qua bộ gõ: DRIVER_SOURCE=hid|combined|private,

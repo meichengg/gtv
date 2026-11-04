@@ -32,6 +32,26 @@ VARIANTS = [
     ("osascript", None),
 ]
 
+def e_mode_probe():
+    """Terminal.app: ở chế độ E (GTV.en) phím có còn tới GTV không, theo từng cách đổi chế độ (lab 41871623817: chọn
+    GTV.en bằng TISSelectInputSource thì GTV không thấy phím nào, kể cả ⌘⇧ để đổi lại)."""
+    def terminal_keys():
+        return sum(1 for l in LOG.read_text(errors="replace").splitlines() if " phím " in l and BID in l) if LOG.exists() else 0
+    rows = []
+    steps = [("e-tis", "{IS:en}", "x"), ("v-tis", "{IS:vi}", "a"), ("e-toggle", "{TOGGLE}", "y"),
+             ("v-toggle", "{TOGGLE}", "b"), ("e-tis-new-window", "{IS:en}{CMDN}{WAIT1500}", "z"),
+             ("v-tis-new-window", "{IS:vi}", "c")]
+    for name, switch, key in steps:
+        sh([str(L / "drv"), BID, "40", switch]); time.sleep(0.8)
+        before = terminal_keys()
+        sh([str(L / "drv"), BID, "60", key]); time.sleep(0.6)
+        source = sh([str(L / "is"), "get"]).stdout.strip()
+        rows.append({"variant": name, "gtv_saw_keys": terminal_keys() - before, "shell_got": source, "err": ""})
+        print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
+    sh([str(L / "drv"), BID, "30", "{IS:en}{CU}"])
+    return rows
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     shutil.copy(HERE / "capture.py", L / "c.py")
@@ -62,6 +82,7 @@ def main():
         a = analyze(log) if log.exists() else {"final": None}
         rows.append({"variant": name, "gtv_saw_keys": after - before, "shell_got": a.get("final"), "err": err})
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
+    rows += e_mode_probe()
     (OUT / "probe.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     md = "| cách tạo phím | GTV nhận | shell nhận | lỗi |\n|---|---|---|---|\n" + "\n".join(
         f"| {r['variant']} | {r['gtv_saw_keys']} | `{r['shell_got']}` | {r['err'][:80]} |" for r in rows)

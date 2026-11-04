@@ -54,7 +54,10 @@ CAPTURE = [
     ("vni-fast", "vni", "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c.", "Việt Nam, tôi yêu tiếng Việt đại học.", 12),
     ("vni-backspace", "vni", "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 45),
     ("telex-words", "telex", "Vieetj Nam, tooi yeeu tieengs Vieetj ddaij hocj.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
+    # ⌘V giữa từ: phím đi vòng bộ gõ (sổ phím phải thấy), chữ dán không được bị xoá. Bộ nhớ tạm: PASTE.
+    ("vni-paste", "vni", "tie{CMDV}{WAIT300}6 to6i", "tie/tmp6 tôi", 45),
 ]
+PASTE = "/tmp"
 # Phím đặc biệt có tới bộ gõ không (khi không có marked text) — xem GTV-debug.log, dòng "phím <mã>".
 KEYS_SEEN = "ab{LEFT}{RIGHT}{BS}{TAB}{CE}{CA}{UP}{DOWN}{ESC}{CW}c"
 
@@ -67,6 +70,7 @@ FISH = [
     ("fish-arrow", "vni", "echo vie65t tie{LEFT}{WAIT300}6", "echo việt ti6e", 45),
     ("fish-backspace", "vni", "echo tie61ng{BS}{BS}{BS}{WAIT300}e65t", "echo tiệt", 45),
     ("fish-ctrl-a", "vni", "echo vie65t tie{CA}{WAIT300}6", "6echo việt tie", 45),
+    ("fish-paste", "vni", "echo vie65t tie{CMDV}{WAIT300}6 to6i", "echo việt tie/tmp6 tôi", 45),
 ]
 
 
@@ -103,7 +107,8 @@ def current_source():
 def ensure_mode(bid, target):
     """Đưa GTV về chế độ `target` ("vi"/"en"). LAB_SWITCH=hotkey: bấm ⌘⇧ như người dùng (mặc định);
     =tis: chọn input source bằng TISSelectInputSource từ tiến trình khác."""
-    if os.environ.get("LAB_SWITCH", "hotkey") == "tis":
+    # Terminal.app: ở chế độ E phím (kể cả ⌘⇧) có lúc không tới bộ gõ (lab 41871623817) — chọn thẳng input source.
+    if os.environ.get("LAB_SWITCH", "hotkey") == "tis" or bid == "com.apple.Terminal":
         drv(bid, "{IS:" + target + "}", 20)
         return
     for _ in range(3):
@@ -335,6 +340,7 @@ def main():
     (OUT / "logs").mkdir(parents=True, exist_ok=True)
     (L / "fd" / "suoddms-quickstart-6.0.23.tar").mkdir(parents=True, exist_ok=True)
     shutil.copy(HERE / "capture.py", L / "c.py")
+    subprocess.run(["pbcopy"], input=PASTE, text=True, check=False)
     terms = os.environ.get("TERMS", "terminal ghostty rex muxy kitty wezterm iterm2").split()
     methods = os.environ.get("METHODS", "vni telex").split()
     styles = os.environ.get("STYLES", "marked inline deferred direct").split()
@@ -355,6 +361,7 @@ def main():
                     for method in methods:
                         results += run_suite(key, bid, style, delay, method, repeat)
             if os.environ.get("FIELDS", "1") == "1":
+                configure("vni", styles[0])
                 results += probe_fields(key, bid)
         except Exception as e:  # noqa: BLE001
             results.append({"terminal": key, "test": "-", "error": str(e)})
