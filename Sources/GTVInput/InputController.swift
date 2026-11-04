@@ -132,6 +132,7 @@ final class GTVInputController: IMKInputController {
 
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {
+            DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): chế độ E, đi thẳng")
             commit(client)
             return false
         }
@@ -149,9 +150,11 @@ final class GTVInputController: IMKInputController {
 
         adapter.client = client
         defer { adapter.client = nil }
-        return session.handle(key, adapter, options: settings.options,
-                              forceMarked: settings.useMarked(for: bundleID),
-                              qtApp: QtDetector.isQt(bundleID))
+        let handled = session.handle(key, adapter, options: settings.options,
+                                     forceMarked: settings.useMarked(for: bundleID),
+                                     qtApp: QtDetector.isQt(bundleID))
+        DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng")")
+        return handled
     }
 
     // MARK: - Menu trong biểu tượng bộ gõ của macOS

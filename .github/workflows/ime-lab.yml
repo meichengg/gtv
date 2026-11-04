@@ -1,0 +1,94 @@
+# IME Lab: kiểm thử gõ thật trên máy ảo macOS của GitHub (dùng một lần) — không đụng máy người dùng.
+# Build GTV (Debug, có log), cài GTV cùng các terminal, gõ phím giả qua HID (đi qua bộ gõ như bàn phím thật),
+# ghi byte shell nhận được, đọc dòng lệnh fish, chụp màn hình. Xem tools/lab/run.py.
+name: IME Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      terms:
+        description: "Terminal (terminal iterm2 ghostty kitty wezterm rex)"
+        default: "terminal iterm2 ghostty kitty wezterm rex"
+        type: string
+      methods:
+        description: "Kiểu gõ (vni telex)"
+        default: "vni telex"
+        type: string
+  push:
+    branches: ['lab/**']
+
+concurrency:
+  group: ime-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lab:
+    name: Lab
+    runs-on: macos-26
+    timeout-minutes: 50
+    env:
+      TERMS: ${{ inputs.terms || 'terminal iterm2 ghostty kitty wezterm rex' }}
+      METHODS: ${{ inputs.methods || 'vni telex' }}
+      OUT: ${{ github.workspace }}/lab-out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$latest" ] && sudo xcode-select -s "$latest"
+          xcodebuild -version
+          sw_vers
+
+      - name: Install tools and terminals
+        run: |
+          brew install xcodegen fish >/dev/null
+          for c in ghostty iterm2 kitty wezterm; do brew install --cask "$c" >/dev/null || echo "::warning::không cài được $c"; done
+          # Rex (libghostty, mã nguồn đóng): bản mới nhất từ feed Sparkle
+          url="$(curl -sfL https://blob.superlogical.com/public/rex-app/preview-arm64/appcast.xml | grep -o 'url="[^"]*"' | head -1 | cut -d'"' -f2)" || true
+          if [ -n "$url" ]; then
+            f="$RUNNER_TEMP/rex.${url##*.}"; curl -sfL "$url" -o "$f" || true
+            case "$f" in
+              *.dmg) m="$(mktemp -d)"; hdiutil attach -nobrowse -quiet -mountpoint "$m" "$f" && cp -R "$m"/*.app /Applications/ && hdiutil detach -quiet "$m" ;;
+              *.zip) ditto -x -k "$f" /Applications/ ;;
+            esac
+          fi
+          ls -d /Applications/*.app | grep -iE "ghostty|iterm|kitty|wezterm|rex" || true
+
+      - name: Build GTV (Debug)
+        run: |
+          xcodegen
+          set -o pipefail
+          xcodebuild -project GTV.xcodeproj -scheme GTV -configuration Debug -derivedDataPath build/dd build \
+            | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
+
+      - name: Install GTV
+        run: |
+          mkdir -p /tmp/l "$OUT/shots"
+          swiftc -O -o /tmp/l/is tools/lab/is.swift
+          swiftc -O -o /tmp/l/drv tools/lab/driver.swift
+          defaults write com.gtv.inputmethod.GTV method -int 1
+          cp -R build/dd/Build/Products/Debug/GTV.app /Applications/
+          open /Applications/GTV.app
+          sleep 15
+          screencapture -x "$OUT/shots/00-after-install.png"
+          /tmp/l/is list
+          echo "current: $(/tmp/l/is get)"
+          DRIVER_VERBOSE=1 /tmp/l/drv - 10 "" || true
+
+      - name: Run lab
+        run: python3 tools/lab/run.py
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p "$OUT"
+          cp ~/Library/Logs/GTV-debug.log "$OUT/" 2>/dev/null || true
+          defaults read com.gtv.inputmethod.GTV > "$OUT/gtv-defaults.txt" 2>&1 || true
+          screencapture -x "$OUT/shots/99-end.png" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ime-lab-${{ github.run_number }}
+          path: lab-out
