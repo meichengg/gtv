@@ -27,6 +27,15 @@ final class Modes {
     private var pendingLeaveGTV: DispatchWorkItem?
     /// Hạn chờ màn hình hết khoá (đang chờ nếu khác nil).
     private var unlockDeadline: Date?
+    /// Lúc GTV vừa được gắn vào một ô nhập liệu (đổi ứng dụng, hoặc quay lại GTV từ bộ gõ khác).
+    private var activatedAt: TimeInterval = 0
+    /// Ngay sau khi được gắn vào ô nhập liệu, macOS (hoặc ứng dụng) có thể tự chọn một chế độ khác của
+    /// GTV — thường là chế độ chính "vi" khi quay lại từ ABC (ô mật khẩu, Spotlight/Raycast, bộ gõ khác chạy
+    /// nền…). Đổi chế độ trong khoảng này không phải do người dùng: giữ nguyên chế độ của GTV.
+    private static let activationWindow: TimeInterval = 0.6
+    /// Bộ gõ đang chọn (theo thông báo gần nhất) có phải GTV không: quay lại GTV từ bộ gõ khác thì giữ chế
+    /// độ của GTV, không theo chế độ macOS tự chọn.
+    private var lastSourceIsGTV = InputSources.isGTVSelected
 
     private init() {
         vietnamese = InputSources.currentID != InputSources.englishID
@@ -123,6 +132,8 @@ final class Modes {
     private func systemInputSourceChanged() {
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
         DebugLog.write("bộ gõ đổi -> \(InputSources.currentID ?? "-"), front=\(front), tạm dừng=\(suspended)")
+        let wasGTV = lastSourceIsGTV
+        lastSourceIsGTV = InputSources.isGTVSelected
         if !suspended && front != "com.apple.loginwindow" && !Self.isScreenLocked {
             pendingLeaveGTV?.cancel()
             pendingLeaveGTV = nil
@@ -150,7 +161,24 @@ final class Modes {
             syncSystemMode()
             return
         }
-        set(id == InputSources.vietnameseID, updateSystem: false)
+        adopt(id == InputSources.vietnameseID, from: "thông báo đổi bộ gõ", returning: !wasGTV)
+    }
+
+    private var justActivated: Bool {
+        ProcessInfo.processInfo.systemUptime - activatedAt < Self.activationWindow
+    }
+
+    /// Hệ thống báo đang ở chế độ `on`: theo nếu do người dùng đổi (menu bộ gõ, ⌃Space, 🌐); chọn lại chế
+    /// độ của GTV nếu đổi ngay sau khi GTV được gắn vào ô nhập liệu (do hệ thống) — giữ chế độ cố định.
+    private func adopt(_ on: Bool, from source: String, returning: Bool) {
+        guard on != vietnamese else { return }
+        if justActivated || returning {
+            DebugLog.write("giữ chế độ \(vietnamese ? "vi" : "en"): bỏ qua \(on ? "vi" : "en") do hệ thống chọn (\(source), \(returning ? "quay lại từ bộ gõ khác" : "vừa gắn vào \(clientBundleID)"))")
+            syncSystemMode()
+            return
+        }
+        DebugLog.write("chế độ -> \(on ? "vi" : "en") (\(source))")
+        set(on, updateSystem: false)
     }
 
     private func isExcluded(_ bundleID: String) -> Bool {
@@ -161,6 +189,7 @@ final class Modes {
     func clientActivated(_ client: Client, bundleID: String) {
         self.client = client
         clientBundleID = bundleID
+        activatedAt = ProcessInfo.processInfo.systemUptime
         if isExcluded(bundleID) {
             if vietnamese {
                 restoreVietnamese = true
@@ -195,7 +224,7 @@ final class Modes {
             syncSystemMode()
             return
         }
-        set(on, updateSystem: false)
+        adopt(on, from: "setValue", returning: !lastSourceIsGTV)
     }
 
     /// Người dùng chuyển Anh/Việt (phím tắt, menu).
