@@ -103,8 +103,13 @@ enum AppMenu {
 
         menu.addItem(.separator())
         if !appBundleID.isEmpty {
-            let i = item("Dùng gạch chân cho \(appName(appBundleID))", Tag.markedApp.rawValue,
-                         s.markedApps.contains(appBundleID))
+            let terminal = Settings.knownTerminals.contains(appBundleID)
+            let i = item(terminal ? "Gạch chân khi gõ trong \(appName(appBundleID))"
+                                  : "Dùng gạch chân cho \(appName(appBundleID))",
+                         Tag.markedApp.rawValue, s.useMarked(for: appBundleID) && !s.alwaysMarked)
+            if terminal {
+                i.toolTip = "Mặc định GTV gõ thẳng xuống shell, không gạch chân. Bật nếu terminal này gõ sai."
+            }
             i.representedObject = appBundleID
             menu.addItem(i)
         }

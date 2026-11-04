@@ -109,6 +109,7 @@ final class Settings {
         alwaysMarked = defaults.bool(forKey: "alwaysMarked")
         hotkey = ToggleHotkey(rawValue: defaults.integer(forKey: "hotkey")) ?? .commandShift
         markedApps = Set(defaults.stringArray(forKey: "markedApps") ?? [])
+        underlineTerminals = Set(defaults.stringArray(forKey: "underlineTerminals") ?? [])
         showStatusIcon = defaults.bool(forKey: "showStatusIcon")
         playSwitchSound = defaults.bool(forKey: "playSwitchSound")
         selectAtLogin = defaults.bool(forKey: "selectAtLogin")
@@ -131,6 +132,7 @@ final class Settings {
         defaults.synchronize()
         alwaysMarked = defaults.bool(forKey: "alwaysMarked")
         markedApps = Set(defaults.stringArray(forKey: "markedApps") ?? [])
+        underlineTerminals = Set(defaults.stringArray(forKey: "underlineTerminals") ?? [])
         excludedApps = Set(defaults.stringArray(forKey: "excludedApps") ?? [])
         options = EngineOptions(
             method: InputMethod(rawValue: defaults.integer(forKey: "method")) ?? .telex,
@@ -153,12 +155,40 @@ final class Settings {
         defaults.set(options.autoRestore, forKey: "autoRestore")
     }
 
+    /// Gạch chân (marked text): bật cho mọi ứng dụng, cho ứng dụng thường người dùng chọn (`markedApps`), hoặc
+    /// cho terminal người dùng muốn gạch chân (`underlineTerminals`). Với terminal, `markedApps` (danh sách
+    /// mặc định cũ) không còn tác dụng: terminal gõ thẳng không gạch chân, xem `terminalStyle(for:)`.
     func useMarked(for bundleID: String) -> Bool {
-        alwaysMarked || markedApps.contains(bundleID)
+        if alwaysMarked { return true }
+        return Self.knownTerminals.contains(bundleID) ? underlineTerminals.contains(bundleID) : markedApps.contains(bundleID)
     }
 
-    /// Cách gõ trong ứng dụng terminal (danh sách `markedApps`): "inline" (mặc định), "inlineBare",
-    /// "marked" (gạch chân như trước), "direct" (thay chữ như ứng dụng thường). Đọc mỗi lần để đổi được ngay.
+    /// Terminal đã biết: gõ thẳng xuống shell, không gạch chân (xem `Session.handleTerminal`). Chỉ dùng cho
+    /// terminal thật: ở ứng dụng khác (vd. trình soạn thảo), ký tự xoá DEL sẽ thành chữ rác.
+    static let knownTerminals: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "net.kovidgoyal.kitty",
+        "io.alacritty", "org.alacritty", "com.github.wez.wezterm", "dev.warp.Warp-Stable", "dev.warp.Warp-Preview",
+        "dev.warp.Warp", "com.superlogical.rex", "com.muxy.app", "co.zeit.hyper", "org.tabby",
+        "dev.commandline.waveterm", "com.raphaelamorim.rio", "org.contourterminal.Contour",
+        "com.extraterm.extraterm", "com.termius-dmg.mac", "com.termius.mac", "com.vandyke.SecureCRT",
+        "com.emtec.zoc7", "com.emtec.zoc9", "com.panic.prompt.3", "com.yourcompany.cool-retro-term",
+        "org.electerm.electerm", "app.termix.Termix", "io.appmakes.otty", "io.coressh.shell", "com.cmuxterm.app",
+    ]
+
+    /// Terminal người dùng muốn gõ có gạch chân (như trước) thay vì gõ thẳng.
+    private(set) var underlineTerminals: Set<String>
+
+    /// Cách gõ trong terminal: nil nếu không phải terminal đã biết hoặc đang dùng gạch chân.
+    func terminalStyle(for bundleID: String) -> TerminalStyle? {
+        guard Self.knownTerminals.contains(bundleID), !useMarked(for: bundleID) else { return nil }
+        switch terminalMode {
+        case "marked", "direct": return nil
+        case let mode: return TerminalStyle(rawValue: mode) ?? Self.defaultTerminalStyle(for: bundleID)
+        }
+    }
+
+    /// Ghi đè cách gõ trong terminal (để thử nghiệm, IME Lab): "auto" (mặc định), "inline", "inlineBare",
+    /// "deferred", "marked" (gạch chân), "direct" (thay chữ như ứng dụng thường).
     var terminalMode: String { defaults.string(forKey: "terminalStyle") ?? "auto" }
 
     /// Terminal có lớp AppKit của Ghostty: trong keyDown bỏ chữ có ký tự điều khiển khi shell bật kitty
@@ -171,6 +201,11 @@ final class Settings {
 
     func toggleMarked(for bundleID: String) {
         guard !bundleID.isEmpty else { return }
+        if Self.knownTerminals.contains(bundleID) {
+            if underlineTerminals.contains(bundleID) { underlineTerminals.remove(bundleID) } else { underlineTerminals.insert(bundleID) }
+            defaults.set(underlineTerminals.sorted(), forKey: "underlineTerminals")
+            return
+        }
         if markedApps.contains(bundleID) { markedApps.remove(bundleID) } else { markedApps.insert(bundleID) }
         defaults.set(markedApps.sorted(), forKey: "markedApps")
     }
