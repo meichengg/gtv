@@ -99,6 +99,19 @@ def current_source():
     return sh([str(L / "is"), "get"]).stdout.strip()
 
 
+def ensure_mode(bid, target):
+    """Đưa GTV về chế độ `target` ("vi"/"en"). LAB_SWITCH=hotkey: bấm ⌘⇧ như người dùng (mặc định);
+    =tis: chọn input source bằng TISSelectInputSource từ tiến trình khác."""
+    if os.environ.get("LAB_SWITCH", "hotkey") == "tis":
+        drv(bid, "{IS:" + target + "}", 20)
+        return
+    for _ in range(3):
+        if current_source().endswith("." + target):
+            return
+        drv(bid, "{TOGGLE}", 20)
+        time.sleep(0.3)
+
+
 def configure(method, style):
     """Đổi kiểu gõ / cách gõ trong terminal mà không tắt bộ gõ (bản Debug nghe com.gtv.lab.reload)."""
     d = "com.gtv.inputmethod.GTV"
@@ -151,18 +164,21 @@ def run_capture(key, bid, name, method, keys, expect, ms):
     dismiss_dialogs()
     log = L / f"{key}-{name}.jsonl"
     log.unlink(missing_ok=True)
-    drv(bid, f"{{IS:en}}python3 /tmp/l/c.py {log} legacy{{RET}}", 15)
+    ensure_mode(bid, "en")
+    drv(bid, f"python3 /tmp/l/c.py {log} legacy{{RET}}", 15)
     for _ in range(100):
         if log.exists() and "ready" in log.read_text():
             break
         time.sleep(0.1)
     else:
         raise RuntimeError("capture.py không chạy")
-    drv(bid, "{IS:vi}" + keys, ms)
+    ensure_mode(bid, "vi")
+    drv(bid, keys, ms)
     time.sleep(0.6)
     img = shot(f"{key}-{name}")
     source = current_source()
-    drv(bid, "{IS:en}{CQ}", 30)
+    ensure_mode(bid, "en")
+    drv(bid, "{CQ}", 30)
     time.sleep(0.4)
     shutil.copy(log, OUT / "logs" / log.name)
     a = analyze(log)
@@ -174,16 +190,20 @@ def run_fish(key, bid, name, method, keys, expect, ms):
     dismiss_dialogs()
     out = L / f"{key}-{name}.txt"
     out.unlink(missing_ok=True)
-    drv(bid, f"{{IS:en}}cd /tmp/l/fd && fish -N -C \"bind ctrl-x 'commandline > {out}'\"{{RET}}", 15)
+    ensure_mode(bid, "en")
+    drv(bid, f"cd /tmp/l/fd && fish -N -C \"bind ctrl-x 'commandline > {out}'\"{{RET}}", 15)
     time.sleep(3)
-    drv(bid, "{IS:vi}" + keys, ms)
+    ensure_mode(bid, "vi")
+    drv(bid, keys, ms)
     time.sleep(0.8)
     img = shot(f"{key}-{name}")
     source = current_source()
     drv(bid, "{CX}", 40)
     time.sleep(0.8)
     final = out.read_text().rstrip("\n") if out.exists() else None
-    drv(bid, "{CU}{IS:en}exit{RET}", 30)
+    drv(bid, "{CU}", 30)
+    ensure_mode(bid, "en")
+    drv(bid, "exit{RET}", 30)
     time.sleep(0.8)
     return {"final": final, "pass": final == expect, "shot": img, "source": source}
 

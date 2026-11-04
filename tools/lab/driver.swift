@@ -74,8 +74,12 @@ func post(_ code: CGKeyCode, _ flags: CGEventFlags, _ text: String?) {
 }
 
 func selectInputSource(_ id: String) {
-    let full = ["vi": "com.gtv.inputmethod.GTV.vi", "en": "com.gtv.inputmethod.GTV.en",
-                "abc": "com.apple.keylayout.ABC"][id] ?? id
+    if id == "abc", let latin = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue() {
+        TISSelectInputSource(latin)     // bàn phím Latin của máy (ABC hoặc US)
+        usleep(250_000)
+        return
+    }
+    let full = ["vi": "com.gtv.inputmethod.GTV.vi", "en": "com.gtv.inputmethod.GTV.en"][id] ?? id
     let list = TISCreateInputSourceList([kTISPropertyInputSourceID as String: full] as CFDictionary, true)?
         .takeRetainedValue() as? [TISInputSource] ?? []
     guard let s = list.first else {
@@ -96,6 +100,23 @@ func selectInputSource(_ id: String) {
     usleep(250_000)
 }
 
+/// Nhấn rồi nhả ⌘⇧ (phím tắt chuyển Anh/Việt của GTV), như người dùng thật.
+func toggleHotkey() {
+    check()
+    let steps: [(CGKeyCode, Bool, CGEventFlags)] = [
+        (55, true, .maskCommand), (56, true, [.maskCommand, .maskShift]),
+        (56, false, .maskCommand), (55, false, []),
+    ]
+    for (code, down, flags) in steps {
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
+        e.type = .flagsChanged
+        e.flags = flags
+        e.post(tap: tapLocation)
+        usleep(30_000)
+    }
+    usleep(300_000)
+}
+
 if ProcessInfo.processInfo.environment["DRIVER_VERBOSE"] != nil {
     FileHandle.standardError.write("AX trusted=\(AXIsProcessTrusted()) postEvent=\(CGPreflightPostEventAccess())\n".data(using: .utf8)!)
 }
@@ -108,6 +129,7 @@ while let c = s.first {
         if name.hasPrefix("WAIT") { usleep(useconds_t(Int(name.dropFirst(4)) ?? 0) * 1000); continue }
         if name.hasPrefix("MS:") { delay = useconds_t((Int(name.dropFirst(3)) ?? 50) * 1000); continue }
         if name.hasPrefix("IS:") { selectInputSource(String(name.dropFirst(3))); continue }
+        if name == "TOGGLE" { toggleHotkey(); continue }
         guard let (k, f, t) = special[name] else { print("phím lạ: \(name)"); exit(2) }
         post(k, f, t)
     } else {
