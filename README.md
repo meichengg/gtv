@@ -21,7 +21,7 @@ Tài liệu kỹ thuật chi tiết (kiến trúc, lý do thiết kế, giải t
 - Tự khôi phục từ không phải tiếng Việt: gõ `windows`, `facebook`, `text`… ra đúng chữ mà không cần tắt bộ gõ
 - Kiểu viết thân mật: phụ âm đầu `z`, `dz`, `q` không có `u` — `zij` → `zị`, `zaayj` → `zậy`, `dzoo` → `dzô`, `qas` → `qá`. Đánh đổi: vài từ tiếng Anh trùng với cách gõ một âm tiết thân mật sẽ không được tự khôi phục (`zoom` → `zôm`, `zero` → `zẻo`)
 - Ứng dụng không gõ tiếng Việt (vd. IDE): khi chuyển sang, GTV tự đổi sang chế độ tiếng Anh; khi rời đi thì quay lại tiếng Việt nếu trước đó đang gõ tiếng Việt. Thêm/bỏ trong menu V/E: *Không gõ tiếng Việt trong …* (ứng dụng đang dùng) hoặc *Ứng dụng không gõ tiếng Việt → Thêm ứng dụng…*. Trong các ứng dụng này không gõ được tiếng Việt: nếu chọn lại tiếng Việt (⌘⇧, menu bộ gõ, phím 🌐) thì GTV tự chuyển về tiếng Anh
-- Chế độ gạch chân cho các ứng dụng không hỗ trợ thay thế văn bản (mặc định bật cho Terminal, iTerm2, kitty, Alacritty, WezTerm, Warp, Ghostty); bật/tắt cho từng ứng dụng trong menu
+- Chế độ gạch chân cho các ứng dụng không hỗ trợ thay thế văn bản (mặc định bật cho Terminal, iTerm2, kitty, Alacritty, WezTerm, Warp, Ghostty); bật/tắt cho từng ứng dụng trong menu. Chỉ phần còn có thể thêm dấu mới bị gạch chân: phụ âm đầu từ và từ không phải tiếng Việt (`ls`, `brew`, `git status`…) tới ứng dụng ngay khi gõ, nên trong terminal gợi ý lệnh của shell hiện ngay
 
 ## Chạy như một app riêng
 

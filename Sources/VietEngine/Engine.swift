@@ -20,6 +20,10 @@ public final class Engine {
 
     public var isEmpty: Bool { chars.isEmpty }
 
+    /// Từ hiện tại không còn bị biến đổi nữa (vừa huỷ dấu, hoặc không phải tiếng Việt và đã khôi phục):
+    /// chữ cái gõ tiếp chỉ được nối thêm nguyên văn, kết thúc từ cũng không khôi phục gì.
+    public var isFinal: Bool { literalOnly && tone == .none }
+
     public func reset() {
         chars.removeAll(keepingCapacity: true)
         tone = .none

@@ -88,6 +88,42 @@ private final class Field: TextClient {
     }
 }
 
+/// Terminal giả, dùng chế độ gạch chân: phím đi qua và chữ chốt (`insertText`) tới shell ngay, không sửa lại
+/// được nữa; marked text (gạch chân) chỉ hiện trên màn hình, chưa tới shell.
+private final class Terminal: TextClient {
+    var shell = ""            // những gì shell đã nhận
+    var marked = ""           // marked text đang hiện
+    let session = Session()
+    var options = EngineOptions()
+
+    var screen: String { shell + marked }
+
+    func selectedRange() -> (location: Int, length: Int)? { (0, 0) }
+    func text(location: Int, length: Int) -> String? { nil }
+    func replaceText(location: Int, length: Int, with text: String) {
+        XCTFail("terminal không sửa được chữ đã gửi (thay bằng \"\(text)\")")
+    }
+    func setMarkedText(_ text: String) { marked = text }
+    func insertText(_ text: String) { marked = ""; shell += text }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) {
+        XCTFail("terminal không sửa được chữ đã gửi (thay bằng \"\(text)\")")
+    }
+
+    func type(_ keys: String) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: true) {
+            // Bộ gõ phải chốt marked text trước khi để terminal tự xử lý phím.
+            XCTAssertEqual(marked, "", "phím \(k) đi thẳng khi còn marked text")
+            shell.append(k)
+        }
+    }
+
+    func backspace() {
+        if session.handle(.backspace, self, options: options, forceMarked: true) { return }
+        XCTAssertEqual(marked, "", "Backspace đi thẳng khi còn marked text")
+        if !shell.isEmpty { shell.removeLast() }
+    }
+}
+
 final class SessionTests: XCTestCase {
     func testTypingThroughSession() {
         let f = Field()
@@ -238,5 +274,101 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(f.text, "vi")
         f.type("eets")
         XCTAssertEqual(f.text, "viết")
+    }
+
+    // MARK: - Terminal (chế độ gạch chân)
+
+    func testTerminalVietnamese() {
+        let telex = Terminal()
+        telex.type("Tooi yeeu tieengs Vieetj, ddepj lawms! Nguowif, Ddaof, quys, gif, ww.")
+        XCTAssertEqual(telex.shell, "Tôi yêu tiếng Việt, đẹp lắm! Người, Đào, quý, gì, w.")
+        XCTAssertEqual(telex.marked, "")
+
+        let vni = Terminal()
+        vni.options.method = .vni
+        vni.type("To6i ye6u tie61ng Vie65t, d9e5p la81m! git commit -m \"Su73a lo64i\"")
+        XCTAssertEqual(vni.shell, "Tôi yêu tiếng Việt, đẹp lắm! git commit -m \"Sửa lỗi\"")
+        XCTAssertEqual(vni.marked, "")
+    }
+
+    /// Issue #2: lệnh tiếng Anh phải tới shell ngay khi gõ (để hiện gợi ý lệnh), không bị giữ trong phần
+    /// gạch chân tới khi gõ dấu cách. Chỉ phần còn có thể thêm dấu mới bị giữ lại.
+    func testTerminalSendsKeysEarly() {
+        // (kiểu gõ, phím, shell đã nhận, đang gạch chân)
+        let cases: [(InputMethod, String, String, String)] = [
+            (.telex, "ls -la", "ls -l", "a"),           // "la" có thể thành "là"
+            (.telex, "brew", "brew", ""),               // "br" không phải tiếng Việt: chốt ngay
+            (.telex, "cd ~/Downloads", "cd ~/Downloads", ""),
+            (.telex, "git st", "git st", ""),
+            (.telex, "git status", "git status", ""),
+            (.telex, "npm", "npm", ""),
+            (.telex, "echo", "echo", ""),
+            (.telex, "text", "text", ""),               // "tẽ" + t: khôi phục rồi chốt
+            (.telex, "make", "make", ""),
+            (.telex, "git", "g", "it"),                 // còn có thể thành "gít"
+            (.telex, "nguowif", "ng", "ười"),
+            (.telex, "dd", "", "đ"),                    // d có thể thành đ
+            (.telex, "w", "", "ư"),
+            (.vni, "ls -la", "ls -l", "a"),
+            (.vni, "cd ~/Downloads", "cd ~/Downloads", ""),
+            (.vni, "git checkout -b fix2", "git checkout -b fix2", ""),
+            (.vni, "nguo7i2", "ng", "ười"),
+        ]
+        for (method, keys, shell, marked) in cases {
+            let t = Terminal()
+            t.options.method = method
+            t.type(keys)
+            XCTAssertEqual(t.shell, shell, "\(method) \(keys)")
+            XCTAssertEqual(t.marked, marked, "\(method) \(keys)")
+        }
+    }
+
+    func testTerminalBackspace() {
+        let t = Terminal()
+        t.type("tooi")
+        XCTAssertEqual(t.shell, "t")
+        XCTAssertEqual(t.screen, "tôi")
+        t.backspace()                     // xoá trong phần gạch chân
+        XCTAssertEqual(t.screen, "tô")
+        t.type("s")
+        XCTAssertEqual(t.screen, "tố")
+        t.backspace()
+        XCTAssertEqual(t.screen, "t")
+        XCTAssertEqual(t.marked, "")
+        t.backspace()                     // "t" đã ở shell: terminal tự xoá
+        XCTAssertEqual(t.screen, "")
+        t.type("ddi ")
+        XCTAssertEqual(t.shell, "đi ")
+
+        // Xoá phụ âm đầu đã gửi rồi gõ tiếp
+        let u = Terminal()
+        u.type("thx")
+        XCTAssertEqual(u.shell, "thx")
+        let v = Terminal()
+        v.type("tr")
+        v.backspace()
+        v.type("hoaf")
+        XCTAssertEqual(v.shell, "th")
+        XCTAssertEqual(v.screen, "thòa")
+
+        // Từ đã chốt (không phải tiếng Việt), xoá lùi rồi gõ tiếp: không ghi sai chỗ
+        let w = Terminal()
+        w.type("dock")
+        XCTAssertEqual(w.shell, "dock")
+        w.backspace()
+        w.type("s ")
+        XCTAssertEqual(w.shell, "docs ")
+    }
+
+    /// Click chuột / mất focus: chỉ chốt phần đang gạch chân, không gửi lại phần đã tới shell.
+    func testTerminalCommit() {
+        let t = Terminal()
+        t.type("nguowif")
+        t.session.commit(t)
+        XCTAssertEqual(t.shell, "người")
+        XCTAssertEqual(t.marked, "")
+        t.type("ls")
+        t.session.commit(t)
+        XCTAssertEqual(t.shell, "ngườils")
     }
 }
