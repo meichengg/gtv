@@ -10,9 +10,7 @@ public protocol TextClient: AnyObject {
     func insertText(_ text: String)
     /// Thay một đoạn bằng `text` qua marked text rồi chốt ngay (dùng cho ứng dụng Qt, xem `replace`).
     func replaceViaMarkedText(location: Int, length: Int, with text: String)
-    /// Chạy `work` ngay sau khi ứng dụng xử lý xong phím hiện tại (ngoài keyDown), với cùng ô nhập liệu.
-    func schedule(_ work: @escaping () -> Void)
-    /// Chạy `work` sau `delay` giây, với cùng ô nhập liệu.
+    /// Chạy `work` sau `delay` giây (đúng hạn, không bị gộp với timer khác), với cùng ô nhập liệu.
     func schedule(after delay: Double, _ work: @escaping () -> Void)
     /// Ô nhập liệu đang có marked text không.
     func hasMarkedText() -> Bool
@@ -21,7 +19,6 @@ public protocol TextClient: AnyObject {
 }
 
 public extension TextClient {
-    func schedule(_ work: @escaping () -> Void) { work() }
     func schedule(after delay: Double, _ work: @escaping () -> Void) { work() }
     func hasMarkedText() -> Bool { false }
     func currentTime() -> Double { 0 }
@@ -74,6 +71,13 @@ public final class Session {
     private var lastBackspaceAt: Double?
     /// Chữ vừa gửi có thể chưa kịp hiện (shell chưa in lại): trong khoảng này con trỏ đứng sau là bình thường.
     private static let echoLag = 0.15
+    /// Kiểu `.deferred` (Ghostty): gửi lần sửa sau bấy nhiêu giây kể từ lúc trả lời phím, không gửi ngay.
+    /// Gửi ngay thì có lúc chuỗi tới Ghostty khi nó vẫn còn trong keyDown của chính phím đó (còn đang chờ trả
+    /// lời của bộ gõ): chuỗi bị gom làm chữ của phím, rồi bị bỏ vì mở đầu bằng DEL — IME Lab: mất 4 trên ~90
+    /// lần sửa khi gửi ngay, không mất lần nào khi gửi trễ ~1 ms. Phím kế tiếp tới trước hạn thì lần sửa được
+    /// gửi ở đầu phím đó (`settlePending`), nên trễ này không làm sai thứ tự.
+    public static let defaultDeferDelay = 0.005
+    public static var deferDelay = defaultDeferDelay   // IME Lab đổi được (bản Debug)
     private var anchor = 0       // vị trí bắt đầu của từ đang gõ
     private var qtApp = false    // ô nhập liệu thuộc ứng dụng Qt (xem `replace`)
     /// Vừa xoá lùi khi không có từ nào đang gõ (vd. "hoir " → xoá " " và "r" → còn "hoi"): ở phím chữ tiếp
@@ -314,29 +318,31 @@ public final class Session {
             let serial = pendingSerial
             client.setMarkedText("\u{200B}")     // giữ phím lại (Ghostty), không hiện gì
             log?("deferred #\(serial): chờ \(pending!.debugDescription)")
-            client.schedule { [weak self, weak client] in
+            client.schedule(after: Self.deferDelay) { [weak self, weak client] in
                 guard let self, let client else { return }
                 self.sendPending(client, serial: serial, attempt: 1)
             }
         }
     }
 
-    /// Gửi lần sửa đang chờ (ngoài keyDown) rồi kiểm tra: marked text rỗng còn đó nghĩa là ứng dụng chưa nhận
-    /// (Ghostty có lúc bỏ insertText ngoài keyDown) — gửi lại, tối đa 3 lần.
+    /// Gửi lần sửa đang chờ (ngoài keyDown) rồi kiểm tra: marked text rỗng còn đó nghĩa là ứng dụng đã bỏ chuỗi
+    /// (Ghostty bỏ insertText khi không có sự kiện nào đang xử lý) — gửi lại, tối đa 3 lần; sau đó để phím kế tiếp
+    /// gửi (`settlePending`). Ứng dụng nhận các lần gọi của bộ gõ theo thứ tự, nên lúc hỏi marked text thì chuỗi
+    /// đã được xử lý xong: không bao giờ gửi trùng.
     private func sendPending(_ client: TextClient, serial: Int, attempt: Int) {
         guard let text = pending, pendingSerial == serial, pendingClient === client else { return }
-        if attempt > 1 && !client.hasMarkedText() { clearPending(); return }   // lần trước đã tới
         log?("deferred #\(serial): gửi lần \(attempt) (ngoài keyDown)")
         client.insertText(text)
-        guard attempt < 3 else { clearPending(); return }
         client.schedule(after: 0.03) { [weak self, weak client] in
             guard let self, let client, self.pendingSerial == serial, self.pending != nil else { return }
-            if client.hasMarkedText() {
+            if !client.hasMarkedText() {
+                self.log?("deferred #\(serial): đã tới (mark đã mất)")
+                self.clearPending()
+            } else if attempt < 3 {
                 self.log?("deferred #\(serial): mark còn sau 30ms → gửi lại")
                 self.sendPending(client, serial: serial, attempt: attempt + 1)
             } else {
-                self.log?("deferred #\(serial): đã tới (mark đã mất)")
-                self.clearPending()
+                self.log?("deferred #\(serial): chưa tới sau \(attempt) lần, chờ phím kế tiếp")
             }
         }
     }

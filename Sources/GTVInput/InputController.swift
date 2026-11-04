@@ -38,24 +38,21 @@ private final class ClientAdapter: TextClient {
         client?.insertText(text, replacementRange: notFound)
     }
 
-    /// Chạy sau khi ứng dụng xử lý xong phím hiện tại, với chính ô nhập liệu đó.
-    func schedule(_ work: @escaping () -> Void) {
-        schedule(at: .now(), work)
-    }
-
+    /// Chạy `work` sau `delay` giây với chính ô nhập liệu hiện tại. Timer "strict": không bị hệ thống gộp với
+    /// timer khác cho đỡ tốn pin (lần sửa chữ trong Ghostty hẹn vài mili giây, trễ hơn là thấy chữ chậm).
     func schedule(after delay: Double, _ work: @escaping () -> Void) {
-        schedule(at: .now() + delay, work)
-    }
-
-    private func schedule(at time: DispatchTime, _ work: @escaping () -> Void) {
         let target = client
-        DispatchQueue.main.asyncAfter(deadline: time) { [weak self] in
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        timer.schedule(deadline: .now() + delay, leeway: .microseconds(500))
+        timer.setEventHandler { [weak self] in
+            timer.cancel()          // timer giữ chính nó tới lúc này
             guard let self, let target else { return }
             let saved = self.client
             self.client = target
             work()
             self.client = saved
         }
+        timer.resume()
     }
 
     func hasMarkedText() -> Bool {

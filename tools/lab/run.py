@@ -112,12 +112,17 @@ def ensure_mode(bid, target):
         time.sleep(0.3)
 
 
-def configure(method, style):
-    """Đổi kiểu gõ / cách gõ trong terminal mà không tắt bộ gõ (bản Debug nghe com.gtv.lab.reload)."""
+def configure(method, style, delay=None):
+    """Đổi kiểu gõ / cách gõ trong terminal mà không tắt bộ gõ (bản Debug nghe com.gtv.lab.reload).
+    `delay`: thời gian chờ (ms) trước khi gửi lần sửa của kiểu deferred (Ghostty); None = mặc định của GTV."""
     d = "com.gtv.inputmethod.GTV"
     sh(["defaults", "write", d, "method", "-int", "1" if method == "vni" else "0"])
     sh(["defaults", "write", d, "terminalStyle", "-string", style])
     sh(["defaults", "write", d, "markedApps", "-array", *TERMINAL_IDS])
+    if delay is None:
+        sh(["defaults", "delete", d, "deferDelayMs"])
+    else:
+        sh(["defaults", "write", d, "deferDelayMs", "-float", str(delay)])
     sh(["notifyutil", "-p", "com.gtv.lab.reload"])
     time.sleep(0.4)
 
@@ -239,6 +244,31 @@ def run_modes():
     return out
 
 
+def run_suite(key, bid, style, delay, method, repeat):
+    """Các bài của một kiểu gõ trên một terminal; bài capture có kết quả mong đợi thì chạy `repeat` lần."""
+    configure(method, style, delay)
+    tests = [("capture", t) for t in CAPTURE if t[1] == method]
+    if method == "vni":
+        tests.append(("capture", ("keys-seen", "vni", KEYS_SEEN, None, 120)))
+    if shutil.which("fish"):
+        tests += [("fish", t) for t in FISH if t[1] == method]
+    out = []
+    for kind, (name, _, keys, expect, ms) in tests:
+        reps = repeat if kind == "capture" and expect is not None else 1
+        for i in range(reps):
+            tag = name + (f"-d{delay}" if delay is not None else "") + (f"-r{i + 1}" if reps > 1 else "")
+            r = {"terminal": key, "style": style, "test": tag, "expect": expect}
+            try:
+                run = run_capture if kind == "capture" else run_fish
+                r.update(run(key, bid, f"{style}-{tag}", method, keys, expect, ms))
+            except Exception as e:  # noqa: BLE001
+                r["error"] = str(e)
+                shot(f"{key}-{style}-{tag}-error")
+            out.append(r)
+            print(f"{style}/{tag}", json.dumps({k: v for k, v in r.items() if k != "raw"}, ensure_ascii=False), flush=True)
+    return out
+
+
 def main():
     (OUT / "logs").mkdir(parents=True, exist_ok=True)
     (L / "fd" / "suoddms-quickstart-6.0.23.tar").mkdir(parents=True, exist_ok=True)
@@ -246,6 +276,9 @@ def main():
     terms = os.environ.get("TERMS", "terminal ghostty rex muxy kitty wezterm iterm2").split()
     methods = os.environ.get("METHODS", "vni telex").split()
     styles = os.environ.get("STYLES", "marked inline deferred direct").split()
+    # Lặp các bài capture để đo lỗi thỉnh thoảng mới gặp; Ghostty (kiểu deferred) chạy với từng độ trễ gửi.
+    repeat = int(os.environ.get("REPEAT", "1"))
+    delays = os.environ.get("DEFER_DELAYS", "").split()
     results = []
     for key in terms:
         if key not in TERMINALS or not pathlib.Path(TERMINALS[key][1]).exists():
@@ -256,24 +289,9 @@ def main():
             bid = open_terminal(key)
             shot(f"{key}-opened")
             for style in styles:
-                for method in methods:
-                    configure(method, style)
-                    tests = [("capture", t) for t in CAPTURE if t[1] == method]
-                    if method == "vni":
-                        tests.append(("capture", ("keys-seen", "vni", KEYS_SEEN, None, 120)))
-                    if shutil.which("fish"):
-                        tests += [("fish", t) for t in FISH if t[1] == method]
-                    for kind, (name, m, keys, expect, ms) in tests:
-                        label = f"{style}/{name}"
-                        r = {"terminal": key, "style": style, "test": name, "expect": expect}
-                        try:
-                            run = run_capture if kind == "capture" else run_fish
-                            r.update(run(key, bid, f"{style}-{name}", method, keys, expect, ms))
-                        except Exception as e:  # noqa: BLE001
-                            r["error"] = str(e)
-                            shot(f"{key}-{style}-{name}-error")
-                        results.append(r)
-                        print(label, json.dumps({k: v for k, v in r.items() if k != "raw"}, ensure_ascii=False), flush=True)
+                for delay in (delays if key == "ghostty" and delays else [None]):
+                    for method in methods:
+                        results += run_suite(key, bid, style, delay, method, repeat)
         except Exception as e:  # noqa: BLE001
             results.append({"terminal": key, "test": "-", "error": str(e)})
             shot(f"{key}-fatal")

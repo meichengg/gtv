@@ -139,7 +139,9 @@ final class Settings {
             charset: Charset(rawValue: defaults.integer(forKey: "charset")) ?? .unicode,
             modernToneStyle: defaults.bool(forKey: "modernToneStyle"),
             autoRestore: defaults.bool(forKey: "autoRestore"))
-        DebugLog.write("lab: nạp lại cài đặt, method=\(options.method), terminalStyle=\(terminalMode), markedApps=\(markedApps.count)")
+        Session.deferDelay = defaults.object(forKey: "deferDelayMs") == nil
+            ? Session.defaultDeferDelay : defaults.double(forKey: "deferDelayMs") / 1000
+        DebugLog.write("lab: nạp lại cài đặt, method=\(options.method), terminalStyle=\(terminalMode), markedApps=\(markedApps.count), deferDelay=\(Session.deferDelay)")
     }
     #endif
 

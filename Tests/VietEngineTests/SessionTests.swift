@@ -151,13 +151,12 @@ private final class Shell: TextClient {
     func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
 
     var invisibleMarks = 0
-    /// false: việc "sau keyDown" bị trễ (phím sau tới trước) — chạy bằng `runLater()`.
+    /// false: việc hẹn giờ bị trễ (phím sau tới trước) — chạy bằng `runLater()`.
     var runScheduledNow = true
     private var later: [() -> Void] = []
-    func schedule(_ work: @escaping () -> Void) {
+    func schedule(after delay: Double, _ work: @escaping () -> Void) {
         if runScheduledNow { work() } else { later.append(work) }
     }
-    func schedule(after delay: Double, _ work: @escaping () -> Void) { later.append(work) }
     func runLater() {
         let works = later
         later = []
@@ -209,6 +208,135 @@ private final class Shell: TextClient {
     func heldBackspaceRepeats(_ n: Int) {
         for _ in 0..<n { write("\u{7f}") }
         now += 0.5
+    }
+}
+
+/// Ghostty 1.4.0 (macos/Sources/Ghostty/Surface View/SurfaceView_AppKit.swift, src/input/key_encode.zig), phần nhập liệu:
+/// - keyDown nhớ có marked text từ trước không (`markedTextBefore`) và gom chữ `insertText` trong lúc chờ bộ gõ.
+///   Nhánh A (có marked text từ trước, có chữ gom được): ghi nguyên văn từng chữ (trừ ký tự điều khiển đứng riêng),
+///   chỉ phát lại ↑ ↓ →. Nhánh B (có chữ): chữ thành chữ của phím; mở đầu bằng ký tự điều khiển (C0, DEL) thì bị bỏ
+///   — phím chữ không ghi gì. Nhánh C (không có chữ): đang soạn (còn hoặc vừa hết marked text) thì phím bị nuốt,
+///   không thì mã hoá phím như thường.
+/// - `insertText` ngoài keyDown: ghi nguyên văn (Ghostty bỏ nếu không có sự kiện nào đang xử lý: `dropOutside`).
+/// - Marked text chỉ có ký tự rộng 0 (U+200B) thì không vẽ gì.
+/// Đồng hồ giả: Ghostty còn trong keyDown `keyDownTail` giây sau khi bộ gõ trả lời; việc hẹn giờ của bộ gõ tới hạn
+/// trong khoảng đó thì chạy trong keyDown — chỗ đua đã thấy ở IME Lab.
+private final class GhosttySim: TextClient {
+    enum Press { case char(Character), backspace, ctrlE, enter, up, left }
+
+    var line: [Character] = []
+    var controls: [String] = []     // phím điều khiển shell nhận được (Ctrl+E, Enter, mũi tên)
+    var mark = ""
+    let session = Session()
+    var options = EngineOptions()
+    var now = 0.0
+    var keyDownTail = 0.002
+    var dropOutside = 0
+    private var accumulator: [String]?
+    private var timers: [(at: Double, seq: Int, work: () -> Void)] = []
+    private var seq = 0
+
+    var text: String { String(String.UnicodeScalarView(line.flatMap { $0.unicodeScalars })) }
+
+    func selectedRange() -> (location: Int, length: Int)? { (0, 0) }
+    func text(location: Int, length: Int) -> String? { nil }
+    func replaceText(location: Int, length: Int, with text: String) { XCTFail("Ghostty: không thay được chữ") }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("Ghostty: marked text") }
+    func setMarkedText(_ text: String) {
+        XCTAssertEqual(text, "\u{200B}", "Ghostty: không được gạch chân")
+        mark = text
+    }
+    func insertText(_ text: String) {
+        if accumulator == nil && dropOutside > 0 { dropOutside -= 1; return }
+        mark = ""
+        if accumulator != nil { accumulator!.append(text); return }
+        write(text)
+    }
+    func hasMarkedText() -> Bool { !mark.isEmpty }
+    func currentTime() -> Double { now }
+    func schedule(after delay: Double, _ work: @escaping () -> Void) {
+        seq += 1
+        timers.append((now + delay, seq, work))
+    }
+
+    private func runTimers(until t: Double) {
+        while let next = timers.filter({ $0.at <= t }).min(by: { ($0.at, $0.seq) < ($1.at, $1.seq) }) {
+            timers.removeAll { $0.seq == next.seq }
+            now = max(now, next.at)
+            next.work()
+        }
+    }
+
+    /// Thời gian trôi, Ghostty rảnh (ngoài keyDown).
+    func wait(_ seconds: Double) {
+        let end = now + seconds
+        runTimers(until: end)
+        now = end
+    }
+
+    func press(_ p: Press, gap: Double = 0.04) {
+        let markedBefore = !mark.isEmpty
+        accumulator = []
+        let key: Key
+        switch p {
+        case let .char(c): key = .char(c)
+        case .backspace: key = .backspace
+        case .enter: key = .char("\r")
+        case .up: key = .char("\u{F700}")
+        case .left: key = .char("\u{F702}")
+        case .ctrlE: key = .other
+        }
+        let handled = session.handle(key, self, options: options, forceMarked: false, terminal: .deferred)
+        runTimers(until: now + keyDownTail)          // vẫn trong keyDown
+        if !handled, case let .char(c) = p { accumulator!.append(String(c)) }   // AppKit: insertText(c)
+        let acc = accumulator!
+        accumulator = nil
+        let composing = !mark.isEmpty || markedBefore
+        if markedBefore && !acc.isEmpty {
+            for t in acc where !(composing && t.unicodeScalars.count == 1 && t.unicodeScalars.first!.value < 0x20) {
+                write(t)
+            }
+            if case .up = p { write(encoded(p)) }
+        } else if !acc.isEmpty {
+            for t in acc where !Self.startsWithControl(t) { write(t) }
+        } else if !composing {
+            write(encoded(p))
+        }
+        wait(gap)
+    }
+
+    func type(_ keys: String, gap: Double = 0.04) {
+        for k in keys { press(.char(k), gap: gap) }
+    }
+
+    private static func startsWithControl(_ t: String) -> Bool {
+        guard let v = t.unicodeScalars.first?.value else { return false }
+        return v < 0x20 || v == 0x7f
+    }
+
+    private func encoded(_ p: Press) -> String {
+        switch p {
+        case let .char(c): return String(c)
+        case .backspace: return "\u{7f}"
+        case .ctrlE: return "\u{05}"
+        case .enter: return "\r"
+        case .up: return "\u{1b}[A"
+        case .left: return "\u{1b}[D"
+        }
+    }
+
+    private func write(_ s: String) {
+        if let v = s.unicodeScalars.first?.value, v == 0x1b || (v < 0x20 && s.unicodeScalars.count == 1) {
+            controls.append(s)
+            return
+        }
+        for scalar in s.unicodeScalars {
+            if scalar == "\u{7f}" {
+                if !line.isEmpty { line.removeLast() }
+            } else {
+                line.append(Character(scalar))
+            }
+        }
     }
 }
 
@@ -623,6 +751,78 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(u.text, "tiên")
         u.runLater()                        // lần gửi cũ đến muộn: không gửi lại
         XCTAssertEqual(u.text, "tiên")
+    }
+
+    /// Ghostty: lần sửa tới lúc Ghostty còn trong keyDown của chính phím đó thì bị bỏ (IME Lab: mất ~4% lần sửa khi
+    /// gửi ngay). Gửi trễ `deferDelay` thì luôn tới, kể cả khi Ghostty ra khỏi keyDown chậm vài mili giây.
+    func testGhosttyDeferredSendWaitsForKeyDownToEnd() {
+        let words = "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c."
+        let expect = "Việt Nam, tôi yêu tiếng Việt đại học."
+        for tail in [0.0002, 0.001, 0.004] {
+            let g = GhosttySim()
+            g.options.method = .vni
+            g.keyDownTail = tail
+            g.type(words)
+            XCTAssertEqual(g.text, expect, "Ghostty ra khỏi keyDown sau \(tail * 1000) ms")
+            XCTAssertEqual(g.mark, "")
+        }
+        // Gửi ngay như bản cũ: mô phỏng tái hiện đúng lỗi đã thấy ở IME Lab.
+        let saved = Session.deferDelay
+        defer { Session.deferDelay = saved }
+        Session.deferDelay = 0
+        let g = GhosttySim()
+        g.options.method = .vni
+        g.keyDownTail = 0.0002
+        g.type(words)
+        XCTAssertNotEqual(g.text, expect)
+    }
+
+    /// Ghostty, gõ rất nhanh (phím sau tới trước khi lần sửa kịp gửi): lần sửa đi cùng phím sau, đúng thứ tự.
+    func testGhosttyDeferredFastTyping() {
+        for method in [InputMethod.vni, .telex] {
+            let g = GhosttySim()
+            g.options.method = method
+            g.keyDownTail = 0.0005
+            g.type(method == .vni ? "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c."
+                                  : "Vieetj Nam, tooi yeeu tieengs Vieetj ddaij hocj.", gap: 0.001)
+            g.wait(0.1)
+            XCTAssertEqual(g.text, "Việt Nam, tôi yêu tiếng Việt đại học.", "\(method)")
+            XCTAssertEqual(g.mark, "")
+        }
+    }
+
+    /// Ghostty bỏ insertText ngoài keyDown khi không có sự kiện nào đang xử lý: marked text rỗng còn nguyên thì gửi
+    /// lại; bỏ cả 3 lần thì phím kế tiếp mang lần sửa tới (lúc đó Ghostty ghi nguyên văn).
+    func testGhosttyDeferredResendWhenDropped() {
+        let g = GhosttySim()
+        g.options.method = .vni
+        g.type("tie")
+        g.dropOutside = 1
+        g.press(.char("6"), gap: 0.1)
+        XCTAssertEqual(g.text, "tiê")
+        XCTAssertEqual(g.mark, "")
+        g.dropOutside = 10
+        g.press(.char("1"), gap: 0.2)
+        XCTAssertEqual(g.text, "tiê")
+        XCTAssertEqual(g.mark, "\u{200B}")
+        g.dropOutside = 0
+        g.type("ng")
+        XCTAssertEqual(g.text, "tiếng")
+        XCTAssertEqual(g.mark, "")
+    }
+
+    /// Ghostty: Ctrl+E, ↑, Enter sau chữ có dấu (gõ bình thường) tới shell, không bị nuốt.
+    func testGhosttyDeferredControlKeysPass() {
+        let g = GhosttySim()
+        g.options.method = .vni
+        g.type("./suo")
+        g.press(.ctrlE)
+        g.type(" tie6")
+        g.press(.ctrlE)
+        g.press(.up)
+        g.press(.enter)
+        XCTAssertEqual(g.text, "./suo tiê")
+        XCTAssertEqual(g.controls, ["\u{05}", "\u{05}", "\u{1b}[A", "\r"])
     }
 
     /// Phím đặc biệt (mũi tên, Ctrl+…) giữa từ: bộ gõ thôi theo dõi từ, không xoá nhầm chữ của shell.
