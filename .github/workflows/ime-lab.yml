@@ -53,6 +53,10 @@ jobs:
               *.zip) ditto -x -k "$f" /Applications/ ;;
             esac
           fi
+          # Bỏ cờ quarantine để lần mở đầu không bị Gatekeeper hỏi (hộp thoại chặn cả lab)
+          for a in /Applications/iTerm.app /Applications/Ghostty.app /Applications/kitty.app /Applications/WezTerm.app "/Applications/Rex Beta.app"; do
+            [ -d "$a" ] && xattr -dr com.apple.quarantine "$a" 2>/dev/null || true
+          done
           ls -d /Applications/*.app | grep -iE "ghostty|iterm|kitty|wezterm|rex" || true
 
       - name: Build GTV (Debug)
@@ -70,11 +74,21 @@ jobs:
           defaults write com.gtv.inputmethod.GTV method -int 1
           cp -R build/dd/Build/Products/Debug/GTV.app /Applications/
           open /Applications/GTV.app
-          sleep 15
+          # macOS hỏi "Allow GTV to enable GTV?" (System Settings); Allow là nút mặc định -> Return.
+          for i in 1 2 3 4 5 6; do
+            sleep 3
+            if /tmp/l/is list | grep -q "com.gtv.inputmethod.GTV.vi enabled=true"; then break; fi
+            screencapture -x "$OUT/shots/00-enable-prompt-$i.png"
+            /tmp/l/drv - 10 "{RET}" || true
+          done
+          for i in $(seq 1 30); do pgrep -x GTV >/dev/null || break; sleep 0.5; done   # đợi GTV.app (launcher) xong
+          pkill -x "System Settings" || true
+          sleep 1
           screencapture -x "$OUT/shots/00-after-install.png"
           /tmp/l/is list
           echo "current: $(/tmp/l/is get)"
           DRIVER_VERBOSE=1 /tmp/l/drv - 10 "" || true
+          /tmp/l/is list | grep -q "com.gtv.inputmethod.GTV.vi enabled=true" || { echo "::error::GTV chưa được bật"; exit 1; }
 
       - name: Run lab
         run: python3 tools/lab/run.py
