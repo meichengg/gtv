@@ -707,7 +707,8 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(p.text, "tiệt")
     }
 
-    /// Ghostty: lần sửa chưa tới, có ⌘V (đi vòng bộ gõ) rồi Enter: bỏ lần sửa (không xoá chữ dán), gỡ marked text.
+    /// Ghostty: lần sửa chưa tới, có ⌘V (đi vòng bộ gõ) rồi Enter: bỏ lần sửa (không xoá chữ dán), gỡ marked text, Enter
+    /// vẫn tới shell.
     func testDeferredStaleEditDroppedBeforeEnter() {
         let p = Pty()
         p.style = .deferred
@@ -717,7 +718,7 @@ final class SignalsTests: XCTestCase {
         p.bypassPaste("/tmp")
         XCTAssertTrue(p.session.handle(.char("\r"), p, options: p.options, forceMarked: false, terminal: .deferred,
                                        gap: .interrupted, legacy: "\r"))
-        XCTAssertEqual(p.text, "tie/tmp")
+        XCTAssertEqual(p.text, "tie/tmp\r")
         XCTAssertFalse(p.markActive)
     }
 
