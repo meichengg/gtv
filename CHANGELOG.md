@@ -4,7 +4,7 @@ Mỗi phiên bản là một mục `## <phiên bản> — <ngày>`. Nội dung c
 note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớp `MARKETING_VERSION` trong
 `project.yml`.
 
-## 1.12 — 2026-11-05
+## 1.12 — 2026-11-06
 
 ### Thay đổi
 - Terminal (Ghostty, iTerm2, Terminal.app, Rex, Muxy, kitty, WezTerm): gõ thẳng, không còn gạch chân. Phím tới shell
