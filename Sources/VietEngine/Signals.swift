@@ -8,15 +8,27 @@ public enum KeyGap: Equatable, Sendable {
     /// Có thể có phím đi vòng bộ gõ (thường chỉ là phím kế tiếp đã bấm mà chưa tới): chưa được xoá gì cho tới khi
     /// chắc chắn.
     case unsure
-    /// Như `.unsure`, nhưng không có thêm phím nào chưa thấy kể từ phím trước: phím đi vòng (nếu có) đã được bấm trước
-    /// phím trước. Terminal cho đọc màn hình (iTerm2, Terminal.app): màn hình đã in lại phím trước thì cũng đã in lại
-    /// mọi thứ trước nó — khớp từ đang theo dõi là đủ chứng minh.
+    /// Như `.unsure`, nhưng không có thêm phím nào chưa thấy kể từ phím trước, và phím này tới ngay: phím đi vòng (nếu
+    /// có) đã được ứng dụng xử lý ngay sau phím trước. Terminal cho đọc màn hình (iTerm2, Terminal.app): khi đã qua thời
+    /// gian shell in lại kể từ phím trước, màn hình cho thấy tác dụng của chúng (xem `Session.judgeSuspect`).
     case unsureSteady
     /// Có phím hay click bộ gõ không thấy: con trỏ có thể đã đổi chỗ, bỏ từ đang theo dõi.
     case interrupted
     /// Sổ phím không dùng được (hệ thống không đếm các phím bộ gõ nhận): coi như không có gì, nhưng không phải bằng
     /// chứng (giữ các kiểm tra khác, vd. đọc màn hình).
     case unverified
+    /// Như `.interrupted`, nhưng phím / click đó đã đủ lâu (`settledFor` giây trước phím này): terminal cho đọc màn hình
+    /// (iTerm2, Terminal.app) thì đọc lại từ đang nằm trước con trỏ để gõ tiếp, khi màn hình đã kịp in lại (vd. ⌫ ở
+    /// Terminal.app rồi gõ lại dấu).
+    case reread(settledFor: Double)
+
+    /// Bỏ từ đang theo dõi (`.interrupted`, `.reread`).
+    public var drops: Bool {
+        switch self {
+        case .interrupted, .reread: return true
+        default: return false
+        }
+    }
 }
 
 /// Một lần đọc bộ đếm phím của WindowServer, lấy lúc bộ gõ nhận một keyDown.
@@ -137,6 +149,17 @@ public struct KeyLedger {
         resolved = nil
         provisional = nil
         previous = nil
+        unavailableRun = 0
+    }
+
+    /// GTVInput thấy `n` phím đặc biệt được nhấn trước phím vừa đọc mà bộ gõ không nhận (`PressLog`): tính chúng là phím
+    /// lỡ ngay (không cần chờ lúc yên tay), phần chưa được tính.
+    public mutating func noteBypassed(_ n: Int) {
+        guard let base, n > 0 else { return }
+        let excess = unwrapped - seen - base - missedExact
+        missedExact += min(Int64(n), max(0, excess))
+        run = nil
+        previous = (unwrapped, 0)
     }
 
     /// `modifierPressed`: ⌘/⌃/⌥ được nhấn kể từ phím trước. `keyHasModifier`: chính phím này có ⌘/⌃/⌥ (bộ gõ nhận được
@@ -162,6 +185,9 @@ public struct KeyLedger {
         resolved = nil
         // Phím này vừa được bấm và ứng dụng đưa tới ngay (không có phím nào đang nằm chờ trong ứng dụng).
         let prompt = !r.isRepeat && !duplicate && (r.sinceLastKeyDown ?? 0) <= promptWindow
+        // Lần tính bị huỷ bởi một phím không được đếm mà lại tới ngay (phím do chương trình gõ): phím đó "bù" đúng phím đi
+        // vòng, số dư về 0 mà phím đi vòng chưa được báo — không được báo sạch.
+        var cancelledByUncounted = false
         if let p = provisional {
             provisional = nil
             // Phím xác nhận phải là phím bấm sau lần tính: duy nhất được đếm thêm, tới ngay, và (nếu thời điểm sự kiện là
@@ -169,6 +195,7 @@ public struct KeyLedger {
             if !(prompt && u - p.count == 1 && r.timestamp > p.at) {
                 missedExact -= p.excess        // như chưa từng tính: các phím đó vẫn là "chưa thấy"
                 resolution = nil
+                cancelledByUncounted = prompt && u == p.count
             }
         }
         let surplus = u - seen
@@ -181,13 +208,18 @@ public struct KeyLedger {
         let excess = surplus - base - missedExact
         if excess < 0 {
             // Bộ gõ thấy nhiều phím hơn số phím chưa được tính (phím đã tính là lỡ, hay đã nằm trong mốc, mà thật ra đang
-            // tới; phím do chương trình khác gõ không được đếm): sửa đúng phần thừa — huỷ phần đã tính là lỡ trước, rồi
-            // tới mốc. Không lấy mốc mới: mốc lúc này sẽ nuốt luôn các phím khác còn đang tới, rồi bù mất phím đi vòng.
+            // tới; phím do chương trình khác gõ không được đếm): sửa phần thừa — huỷ phần đã tính là lỡ trước, rồi tới mốc
+            // (về số dư, như lấy mốc mới). Chỉ phím tới ngay mới tính vào chuỗi "hệ thống không đếm" (`uncountedAfter`):
+            // phím dồn ra sau lúc ứng dụng treo (đã nằm trong mốc) thì không.
             let deficit = -excess
             let unbook = min(deficit, missedExact)
             missedExact -= unbook
             self.base = base - (deficit - unbook)
-            return unavailable()
+            return unavailable(countsTowardUncounted: prompt)
+        }
+        if cancelledByUncounted && excess == 0 {
+            run = nil
+            return .unavailable
         }
         unavailableRun = 0
         if modifierPressed && (excess > 0 || !keyHasModifier) {
@@ -215,7 +247,8 @@ public struct KeyLedger {
             run = (1, r.readAt)
         }
         // Không thêm phím nào chưa thấy kể từ phím trước: số dư như cũ và hệ thống chỉ đếm thêm đúng phím này.
-        if let prior, prior.excess == excess, u - prior.count == 1 { return .unknownSteady }
+        // Phím tới ngay (không nằm chờ lúc ứng dụng treo): phím đi vòng đếm từ lần đọc trước đã được xử lý ngay sau phím trước.
+        if let prior, prior.excess == excess, u - prior.count == 1, prompt { return .unknownSteady }
         return .unknown
     }
 
@@ -267,11 +300,174 @@ public struct KeyLedger {
         return unwrapped
     }
 
-    private mutating func unavailable() -> GapVerdict {
+    private mutating func unavailable(countsTowardUncounted: Bool = true) -> GapVerdict {
         run = nil
         provisional = nil
-        unavailableRun += 1
+        if countsTowardUncounted { unavailableRun += 1 }
         return unavailableRun >= uncountedAfter ? .uncounted : .unavailable
+    }
+}
+
+/// Terminal cho đọc màn hình (iTerm2, Terminal.app): shell in lại chữ bộ gõ gửi chậm bao lâu, đo từ chính các lần gõ. Màn
+/// hình lệch trong khoảng `bound` kể từ lần gửi cuối có thể chỉ là chưa in kịp; quá khoảng đó thì màn hình đã in hết những
+/// gì bộ gõ gửi (và mọi phím terminal tự xử lý trước đó), lệch là do thứ khác.
+///
+/// Chỉ học từ lần lệch về sau được màn hình cho thấy là chưa in kịp (lần đối chiếu kế tiếp khớp), không từ lần lệch vì
+/// phím đi vòng: nếu không, mỗi lần ⌫ ở Terminal.app sẽ làm `bound` dài ra và che mất các lần ⌫ sau.
+struct EchoClock {
+    /// Chưa đo được gì.
+    static let unknown = 0.15
+    /// Shell in lại ngay (máy local): vẫn chừa một khoảng cho lúc shell bận.
+    static let floor = 0.03
+    static let cap = 0.35
+
+    /// Số lần màn hình đã in hết sau không quá 0,12 s kể từ lần gửi cuối.
+    private var quickHits = 0
+    /// Các lần lệch về sau được biết là chưa in kịp (giây kể từ lần gửi cuối), mới nhất ở cuối.
+    private var lagSamples: [Double] = []
+    /// Lần lệch gần nhất, chờ lần đối chiếu sau để biết có phải chưa in kịp không.
+    private var pendingLag: Double?
+    /// Số lần lệch liền nhau dù đã lâu sau lần gửi cuối.
+    private var strikes = 0
+
+    var bound: Double {
+        if let worst = lagSamples.max() { return min(Self.cap, max(Self.floor, worst * 1.5 + 0.01)) }
+        return quickHits >= 3 ? Self.floor : Self.unknown
+    }
+
+    /// Màn hình có đang cho thấy chữ bộ gõ gửi trước con trỏ không. Không, khi ứng dụng toàn màn hình vẽ con trỏ riêng
+    /// và để con trỏ thật của terminal ở chỗ khác (Claude Code, vim…): đối chiếu với màn hình lúc đó vô nghĩa — coi như
+    /// terminal không cho đọc màn hình, cho tới khi màn hình lại khớp.
+    var tracking: Bool { strikes < 2 }
+
+    /// Một lần đối chiếu màn hình với chữ bộ gõ đã gửi: `visible` — màn hình cho thấy đúng như vậy; `after` — giây kể
+    /// từ lần gửi cuối.
+    mutating func observe(visible: Bool, after: Double) {
+        guard visible else {
+            pendingLag = max(pendingLag ?? 0, after)
+            if after >= 0.25 { strikes += 1 }
+            return
+        }
+        strikes = 0
+        if let lag = pendingLag {
+            lagSamples.append(lag)
+            if lagSamples.count > 12 { lagSamples.removeFirst() }
+            pendingLag = nil
+        }
+        if after <= 0.12 { quickHits += 1 }
+    }
+}
+
+/// Các lần nhấn phím đặc biệt (không phải ký tự) và nút chuột, đối chiếu với các phím bộ gõ nhận. GTVInput đọc trạng thái
+/// phím / nút chuột / phím bổ trợ của WindowServer liên tục lúc cần (`LiveInput`): các trạng thái này cập nhật ngay cho mọi
+/// tiến trình, không cần quyền — kể cả trên macOS 27, nơi bộ đếm và thời điểm sự kiện chỉ được công bố mỗi 0,5 s.
+///
+/// Phím đặc biệt được nhấn mà bộ gõ không nhận là phím terminal tự xử lý (⌫ / Tab / mũi tên ở Terminal.app, mũi tên ở
+/// iTerm2, Tab ở Muxy…); nút chuột là click. Ứng dụng xử lý phím theo đúng thứ tự bấm: phím bấm trước một phím bộ gõ
+/// nhận thì (nếu tới bộ gõ) phải tới trước nó.
+public struct PressLog {
+    public struct Press: Equatable, Sendable {
+        /// Mã phím; nil: nút chuột.
+        public var key: UInt16?
+        /// Lần đọc đầu tiên thấy đang giữ (muộn hơn lúc nhấn không quá một chu kỳ đọc).
+        public var at: Double
+    }
+
+    /// Lần nhấn chưa đối chiếu được với phím nào bộ gõ nhận (gồm mọi click).
+    public private(set) var pending: [Press] = []
+    /// Mọi lần nhấn gần đây (cho phím tắt đổi chế độ, thao tác của người dùng).
+    public private(set) var history: [Press] = []
+    /// Các lần đổi phím bổ trợ gần đây (lúc đọc).
+    public private(set) var flagChanges: [Double] = []
+    /// Đọc liên tục (không hở quá `maxGap`) từ lúc này tới lần đọc cuối; nil: chưa đọc.
+    public private(set) var coveredSince: Double?
+    public private(set) var lastSample: Double?
+    /// Hai lần đọc cách nhau quá bấy nhiêu giây thì coi là có khoảng hở (không biết gì xảy ra giữa chúng).
+    public var maxGap = 0.05
+    /// Giữ lại bấy nhiêu giây.
+    public var keep = 8.0
+
+    /// Phím bộ gõ đã nhận mà chưa thấy lần nhấn (phím tới bộ gõ trước lần đọc kế tiếp).
+    private var received: [(key: UInt16, at: Double)] = []
+    private var held: Set<UInt16> = []
+    private var button = false
+    private var flags: UInt64?
+
+    public init() {}
+
+    /// Một lần đọc lúc `t`: các phím đặc biệt đang giữ, có nút chuột nào đang giữ không, phím bổ trợ.
+    public mutating func sample(at t: Double, held keys: Set<UInt16>, button pressed: Bool, flags f: UInt64) {
+        if let last = lastSample, t - last <= maxGap {} else {
+            // Sau khoảng hở: không biết phím / nút đang giữ được nhấn lúc nào (vd. chính cú click làm đổi ứng dụng) — không
+            // tính là lần nhấn mới; ai cần biết khoảng hở thì hỏi `covered(since:)`.
+            coveredSince = t
+            lastSample = t
+            held = keys
+            button = pressed
+            flags = f
+            prune(before: t - keep)
+            return
+        }
+        lastSample = t
+        for k in keys.subtracting(held).sorted() {
+            let press = Press(key: k, at: t)
+            history.append(press)
+            if let i = received.firstIndex(where: { $0.key == k }) {
+                received.remove(at: i)          // bộ gõ đã nhận phím này rồi
+            } else {
+                pending.append(press)
+            }
+        }
+        held = keys
+        if pressed && !button {
+            let press = Press(key: nil, at: t)
+            history.append(press)
+            pending.append(press)
+        }
+        button = pressed
+        if let old = flags, old != f { flagChanges.append(t) }
+        flags = f
+        prune(before: t - keep)
+    }
+
+    /// Bộ gõ nhận keyDown `key` (lúc `at`, thời điểm sự kiện).
+    public mutating func keyReceived(_ key: UInt16, at: Double, isRepeat: Bool) {
+        if let i = pending.firstIndex(where: { $0.key == key }) {
+            pending.remove(at: i)
+        } else if !isRepeat {
+            received.append((key, at))
+        }
+        received.removeAll { $0.at < at - 1 }
+    }
+
+    /// Các lần nhấn (phím bộ gõ không nhận, click) trước phím vừa tới lúc `at` — sớm hơn `at - lead`, để không tính nhầm
+    /// phím bấm ngay sau phím này (ứng dụng xử lý sau nó) — lấy ra khỏi danh sách chờ.
+    public mutating func takeMissed(before at: Double, lead: Double = 0.01) -> [Press] {
+        let missed = pending.filter { $0.at <= at - lead }
+        pending.removeAll { $0.at <= at - lead }
+        return missed
+    }
+
+    /// Có lần nhấn phím đặc biệt / nút chuột nào trong [from, to] không.
+    public func pressed(from: Double, to: Double) -> Bool {
+        history.contains { $0.at >= from && $0.at <= to }
+    }
+
+    /// Có lần đổi phím bổ trợ nào trong [from, to] không.
+    public func flagsChanged(from: Double, to: Double) -> Bool {
+        flagChanges.contains { $0 >= from && $0 <= to }
+    }
+
+    /// Đã đọc liên tục từ trước `t` tới lần đọc cuối.
+    public func covered(since t: Double) -> Bool {
+        guard let from = coveredSince else { return false }
+        return from <= t
+    }
+
+    private mutating func prune(before t: Double) {
+        history.removeAll { $0.at < t }
+        pending.removeAll { $0.at < t }
+        flagChanges.removeAll { $0 < t }
     }
 }
 

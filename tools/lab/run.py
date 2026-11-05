@@ -391,33 +391,47 @@ def main():
     # Lặp các bài capture để đo lỗi thỉnh thoảng mới gặp; Ghostty (kiểu deferred) chạy với từng độ trễ gửi.
     repeat = int(os.environ.get("REPEAT", "1"))
     delays = os.environ.get("DEFER_DELAYS", "").split()
+    # COUNTER_MODES: "auto" = GTV tự nhận biết bộ đếm sự kiện (macOS 26: cập nhật ngay); "coarse" = ép chế độ của macOS 27
+    # (bộ đếm chỉ công bố mỗi 0,5 s: không dùng sổ phím, chỉ đọc trạng thái phím / nút chuột) — máy GitHub chưa có macOS 27.
+    counter_modes = os.environ.get("COUNTER_MODES", "auto").split()
     results = []
-    for key in terms:
-        if key not in TERMINALS or not pathlib.Path(TERMINALS[key][1]).exists():
-            results.append({"terminal": key, "test": "-", "error": "chưa cài"})
-            continue
-        bid = None
-        try:
-            bid = open_terminal(key)
-            shot(f"{key}-opened")
-            for style in styles:
-                for delay in (delays if key == "ghostty" and delays else [None]):
-                    for method in methods:
-                        results += run_suite(key, bid, style, delay, method, repeat)
-            if os.environ.get("FIELDS", "1") == "1":
-                configure("vni", styles[0])
-                results += probe_fields(key, bid)
-        except Exception as e:  # noqa: BLE001
-            results.append({"terminal": key, "test": "-", "error": str(e)})
-            shot(f"{key}-fatal")
-        finally:
-            close_terminal(key)
+    for counter_mode in counter_modes:
+        d = "com.gtv.inputmethod.GTV"
+        if counter_mode == "auto":
+            sh(["defaults", "delete", d, "counterMode"])
+        else:
+            sh(["defaults", "write", d, "counterMode", "-string", counter_mode])
+        suffix = "" if counter_mode == "auto" else f"·{counter_mode}"
+        part = []
+        for key in terms:
+            if key not in TERMINALS or not pathlib.Path(TERMINALS[key][1]).exists():
+                part.append({"terminal": key, "test": "-", "error": "chưa cài"})
+                continue
+            bid = None
+            try:
+                bid = open_terminal(key)
+                shot(f"{key}{suffix}-opened")
+                for style in styles:
+                    for delay in (delays if key == "ghostty" and delays else [None]):
+                        for method in methods:
+                            part += run_suite(key, bid, style, delay, method, repeat)
+                if os.environ.get("FIELDS", "1") == "1" and counter_mode == counter_modes[0]:
+                    configure("vni", styles[0])
+                    part += probe_fields(key, bid)
+            except Exception as e:  # noqa: BLE001
+                part.append({"terminal": key, "test": "-", "error": str(e)})
+                shot(f"{key}{suffix}-fatal")
+            finally:
+                close_terminal(key)
 
-    if os.environ.get("MODES_TEST", "1") == "1":
-        try:
-            results += run_modes()
-        except Exception as e:  # noqa: BLE001
-            results.append({"terminal": "modes", "test": "-", "error": str(e)})
+        if os.environ.get("MODES_TEST", "1") == "1":
+            try:
+                part += run_modes()
+            except Exception as e:  # noqa: BLE001
+                part.append({"terminal": "modes", "test": "-", "error": str(e)})
+        for r in part:
+            r["terminal"] = r.get("terminal", "") + suffix
+        results += part
     (OUT / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1))
     rows = ["| terminal | kiểu | bài | kết quả | shell nhận | xoá tách rời | ghi chú |", "|---|---|---|---|---|---|---|"]
     for r in results:

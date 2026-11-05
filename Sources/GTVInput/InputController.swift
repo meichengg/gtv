@@ -195,7 +195,10 @@ final class GTVInputController: IMKInputController {
             // Phím tắt chuyển Anh/Việt: nhấn rồi nhả tổ hợp phím bổ trợ, không kèm phím nào khác.
             if let hotkey = settings.hotkey.flags {
                 if flags == hotkey {
-                    if hotkeyArmedAt == nil { hotkeyArmedAt = ProcessInfo.processInfo.systemUptime }
+                    if hotkeyArmedAt == nil {
+                        hotkeyArmedAt = ProcessInfo.processInfo.systemUptime
+                        LiveInput.shared.keep(for: 3)            // phím / click lúc đang giữ: xem `Hotkey.isCleanTap`
+                    }
                 } else if flags.isEmpty {
                     // Phím tắt như ⌘⇧Z được ứng dụng xử lý trước, bộ gõ không thấy phím Z:
                     // hỏi hệ thống xem có phím/click nào xen vào không.
@@ -219,7 +222,7 @@ final class GTVInputController: IMKInputController {
         }
 
         // Sổ phím: mọi keyDown bộ gõ nhận đều phải vào sổ, kể cả khi phím đi thẳng ngay dưới đây.
-        let gap = KeyWatch.shared.observe(event, quietChecks: Settings.knownTerminals.contains(bundleID))
+        let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID))
 
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {

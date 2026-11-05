@@ -72,6 +72,7 @@ final class Modes {
         let wnc = NSWorkspace.shared.notificationCenter
         wnc.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             self?.appActivatedAt = Self.now
+            LiveInput.shared.keep(for: Self.activationWindow + 0.5)   // xem `userInput(since:)`
         }
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
                      NSWorkspace.sessionDidResignActiveNotification] {
@@ -187,7 +188,16 @@ final class Modes {
 
     /// Người dùng có bấm phím (kể cả phím bổ trợ, 🌐/fn) hay click chuột sau thời điểm `t` không. Chọn chế độ bằng
     /// menu bộ gõ, ⌃Space, 🌐… luôn có thao tác như vậy; macOS / ứng dụng tự chọn lại khi kích hoạt thì không.
+    /// - Bộ gõ nhận phím sau đó; phím bổ trợ, phím đặc biệt, nút chuột đọc liên tục từ lúc kích hoạt (`LiveInput`, cập nhật
+    ///   ngay trên mọi phiên bản macOS).
+    /// - macOS 26: thêm thời điểm sự kiện của WindowServer. macOS 27 chỉ công bố chúng mỗi 0,5 s, làm tròn xuống — sự kiện
+    ///   vừa xảy ra trông như chưa xảy ra: không dùng được.
     private static func userInput(since t: TimeInterval) -> Bool {
+        if KeyWatch.shared.lastKeyAt >= t { return true }
+        let live = LiveInput.shared
+        live.sample()
+        if live.activity(from: t, to: now).seen { return true }
+        guard KeyWatch.shared.counterMode == .exact else { return false }
         let age = now - t
         let types: [CGEventType] = [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         return types.contains { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) < age }
@@ -227,6 +237,7 @@ final class Modes {
         if let reason {
             DebugLog.write("giữ chế độ \(vietnamese ? "vi" : "en"): bỏ qua \(on ? "vi" : "en") do hệ thống chọn (\(source), \(reason))")
             rejected = (on, Self.now)
+            LiveInput.shared.keep(for: 2.5)                       // xem `userInput(since:)`
             syncSystemMode()
             return
         }
@@ -244,6 +255,7 @@ final class Modes {
         self.client = client
         clientBundleID = bundleID
         activatedAt = Self.now
+        LiveInput.shared.keep(for: Self.activationWindow + 0.5)   // xem `userInput(since:)`
         if isExcluded(bundleID) {
             if vietnamese {
                 restoreVietnamese = true

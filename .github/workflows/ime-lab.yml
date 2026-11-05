@@ -43,7 +43,7 @@ jobs:
     name: Lab
     needs: config
     runs-on: ${{ needs.config.outputs.runner }}
-    timeout-minutes: 50
+    timeout-minutes: 110
     env:
       TERMS: ${{ inputs.terms || 'terminal ghostty rex muxy kitty wezterm iterm2' }}
       METHODS: ${{ inputs.methods || 'vni telex' }}

@@ -258,8 +258,87 @@ final class SignalsTests: XCTestCase {
         var l = ledger(at: 10)
         XCTAssertEqual(l.observe(reading(12, at: 1.0, code: 1)), .unknown)
         XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.35), .resolved)
-        XCTAssertEqual(l.observe(reading(12, at: 1.2, code: 2)), .clean)
+        // phím nằm chờ tới khi hết treo: phím mới nhất bấm cách đây đã lâu
+        let late = KeyReading(keyDownCount: 12, timestamp: 1.2, keyCode: 2, isRepeat: false, sinceLastKeyDown: 0.4)
+        XCTAssertEqual(l.observe(late), .clean)
         XCTAssertEqual(l.observe(reading(13, at: 1.3, code: 3)), .clean)
+    }
+
+    /// Phím đi vòng được kiểm tra tính là lỡ, rồi phím tới tiếp là phím do chương trình gõ (không được đếm) mà tới ngay:
+    /// nó không được "bù" phím đi vòng thành sạch.
+    func testLedgerUncountedKeyDoesNotHideBypass() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        // Home đi vòng (đếm 12), dừng tay → lần kiểm tra tính là lỡ
+        XCTAssertEqual(l.check(keyDownCount: 12, secondsSinceLastKeyDown: 0.2), .resolved)
+        let synthetic = KeyReading(keyDownCount: 12, timestamp: 1.5, keyCode: 2, isRepeat: false, sinceLastKeyDown: 0.001)
+        XCTAssertNotEqual(l.observe(synthetic), .clean)
+    }
+
+    /// GTVInput thấy phím đặc biệt bộ gõ không nhận (`PressLog`): tính là lỡ ngay, các phím sau sạch.
+    func testLedgerNoteBypassed() {
+        var l = ledger(at: 10)
+        XCTAssertEqual(l.observe(reading(11, at: 1.0, code: 1)), .clean)
+        XCTAssertEqual(l.observe(reading(13, at: 1.2, code: 2)), .unknown)      // ⌫ đi vòng, rồi phím này
+        l.noteBypassed(1)
+        XCTAssertEqual(l.observe(reading(14, at: 1.3, code: 3)), .clean)
+        l.noteBypassed(1)                                                       // không tính trùng
+        XCTAssertEqual(l.observe(reading(15, at: 1.4, code: 4)), .clean)
+    }
+
+    /// Đọc trạng thái phím đặc biệt / nút chuột: phím bộ gõ nhận được đối chiếu, phím terminal tự xử lý và click thì không.
+    func testPressLogMatchesKeysAndFindsBypass() {
+        var p = PressLog()
+        p.maxGap = 1                                                              // đọc thưa cho gọn: không có khoảng hở
+        p.sample(at: 1.000, held: [], button: false, flags: 0)
+        p.sample(at: 1.008, held: [51], button: false, flags: 0)                // ⌫ được nhấn…
+        p.keyReceived(51, at: 1.010, isRepeat: false)                            // …và tới bộ gõ (Ghostty)
+        p.sample(at: 1.016, held: [], button: false, flags: 0)
+        p.keyReceived(0, at: 1.100, isRepeat: false)
+        XCTAssertTrue(p.takeMissed(before: 1.100).isEmpty)
+        p.sample(at: 1.200, held: [123], button: false, flags: 0)               // ← (Terminal.app không đưa bộ gõ)
+        p.sample(at: 1.208, held: [], button: false, flags: 0)
+        p.keyReceived(14, at: 1.300, isRepeat: false)
+        XCTAssertEqual(p.takeMissed(before: 1.300), [PressLog.Press(key: 123, at: 1.200)])
+        XCTAssertTrue(p.takeMissed(before: 1.400).isEmpty)                       // đã lấy ra
+        p.sample(at: 1.248, held: [], button: true, flags: 0)                    // click
+        p.keyReceived(15, at: 1.400, isRepeat: false)
+        XCTAssertEqual(p.takeMissed(before: 1.400), [PressLog.Press(key: nil, at: 1.248)])
+    }
+
+    /// Bộ gõ nhận phím trước lần đọc thấy nó được nhấn: vẫn đối chiếu được. Phím bấm ngay sau phím vừa tới (trong `lead`)
+    /// chưa tính, để lần sau.
+    func testPressLogKeyArrivesBeforeSampleAndLead() {
+        var p = PressLog()
+        p.sample(at: 1.000, held: [], button: false, flags: 0)
+        p.keyReceived(36, at: 1.003, isRepeat: false)                            // ⏎ tới bộ gõ trước
+        p.sample(at: 1.008, held: [36], button: false, flags: 0)
+        XCTAssertTrue(p.pending.isEmpty)
+        p.sample(at: 1.016, held: [], button: false, flags: 0)
+        p.sample(at: 1.024, held: [48], button: false, flags: 0)                 // ⇥ nhấn ngay trước phím sau…
+        p.keyReceived(3, at: 1.028, isRepeat: false)
+        XCTAssertTrue(p.takeMissed(before: 1.028).isEmpty)                       // …chưa chắc là trước hay sau nó
+        XCTAssertEqual(p.takeMissed(before: 1.2).map(\.key), [48])
+    }
+
+    /// Đọc có khoảng hở: không biết gì xảy ra giữa chừng (`covered`); phím / nút đang giữ lúc đọc lại không tính là vừa
+    /// nhấn (vd. chính cú click làm đổi ứng dụng).
+    func testPressLogCoverage() {
+        var p = PressLog()
+        p.sample(at: 1.00, held: [], button: false, flags: 0)
+        p.sample(at: 1.04, held: [], button: false, flags: 0)
+        XCTAssertTrue(p.covered(since: 1.0))
+        p.sample(at: 2.00, held: [124], button: true, flags: 1)
+        XCTAssertFalse(p.covered(since: 1.5))
+        XCTAssertTrue(p.covered(since: 2.0))
+        XCTAssertTrue(p.pending.isEmpty)
+        XCTAssertFalse(p.pressed(from: 1.9, to: 2.1))
+        p.sample(at: 2.01, held: [], button: false, flags: 3)
+        p.sample(at: 2.02, held: [124], button: true, flags: 3)
+        XCTAssertTrue(p.pressed(from: 2.01, to: 2.03))
+        XCTAssertEqual(p.pending.map(\.key), [124, nil])
+        XCTAssertTrue(p.flagsChanged(from: 2.0, to: 2.02))
+        XCTAssertFalse(p.flagsChanged(from: 1.0, to: 1.99))
     }
 
     /// Ứng dụng treo 0,4 s trong lúc gõ "Viet" (không phím nào đi vòng): lần kiểm tra lúc người dùng dừng tay tính nhầm
