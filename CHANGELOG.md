@@ -18,7 +18,8 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
 - Thanh Find, command palette… trong app terminal gõ như ô văn bản thường.
 - Herdr: gõ thẳng xuống shell như Ghostty / Muxy (không gạch chân); thanh Find và ô prompt gõ như ô văn bản thường.
 - Ứng dụng chưa kiểm chứng có ô tự vẽ không cho biết con trỏ (GPUI, terminal nhúng, ứng dụng Rust…): không còn từ nào ra
-  nguyên văn (`d9a82ng`) — từ bắt đầu khi ô báo con trỏ ở đầu được gõ bằng gạch chân, cách đúng ở mọi ô.
+  nguyên văn (`d9a82ng`) — từ bắt đầu khi ô báo con trỏ ở đầu được gõ bằng gạch chân, cách đúng ở mọi ô; ô có con trỏ giả
+  (ô chat trong game SDL) cũng vậy từ từ thứ hai.
 - Kaku (bản fork của WezTerm) và Iruka (SwiftTerm): gõ thẳng xuống shell như các terminal khác.
 - Ứng dụng GTK (CherryTree, GIMP, Inkscape…) và winit (egui, iced, Alacritty…): gõ được dấu (gạch chân trong lúc gõ một từ).
   Trước đây GTK mất cả từ khi gõ dấu cách, winit nuốt dấu cách / ⏎ ngay sau từ.

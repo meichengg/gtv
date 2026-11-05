@@ -169,6 +169,11 @@ public final class Session {
     private var combinedCommit = false
     /// Gạch chân: ô báo đúng `hasMarkedText` ngay từ đầu (GTK, winit) — không cần chờ thấy nó báo một lần (`markedReported`).
     private var trustMarked = false
+    /// Ô tự vẽ của ứng dụng chưa kiểm chứng (`handle(markedAtCaretZero:)`).
+    private var customView = false
+    /// Ô tự vẽ: vị trí con trỏ lúc phím kết thúc từ đi thẳng (dấu cách, dấu câu). Từ sau bắt đầu mà con trỏ vẫn ở đó thì ô không
+    /// cho biết con trỏ thật (SDL: luôn báo lại vùng chọn của lần setMarkedText gần nhất) — gõ bằng marked text từ đó.
+    private var boundaryAt: Int?
 
     public init() {}
 
@@ -190,6 +195,7 @@ public final class Session {
 
     /// Bỏ những gì biết về từ gõ trực tiếp (xem `untracked`, `passedAt`, `lastEdit`).
     private func endDirectWord() {
+        boundaryAt = nil
         untracked = false
         passedAt = nil
         lastEdit = nil
@@ -229,6 +235,7 @@ public final class Session {
         self.qtApp = qtApp
         self.combinedCommit = combinedCommit
         self.trustMarked = trustMarked
+        self.customView = markedAtCaretZero
         self.earlyCommit = earlyCommit
         inTerminal = terminal != nil
         if let terminal {
@@ -279,12 +286,14 @@ public final class Session {
         switch key {
         case .other:
             continueWordOnNextChar = false
+            boundaryAt = nil
             if combinedCommit, marked, !engine.isEmpty {
                 return endMarkedWord(with: keyText, client, clear: clearAfterCommit)
             }
             breakWord(client)
             return false
         case .backspace:
+            boundaryAt = nil              // ⌫ đưa con trỏ về lại chỗ cũ: không phải dấu hiệu ô mù
             let handled = backspace(client)
             if engine.isEmpty && !marked {
                 continueWordOnNextChar = true
@@ -296,13 +305,18 @@ public final class Session {
             if engine.isEmpty {
                 engine.options = options
                 let deleted = deletedAt
+                let boundary = boundaryAt
                 endDirectWord()
                 if forceMarked || caretBlind {
                     marked = true            // gạch chân: không cần vị trí con trỏ (bớt một lần hỏi ứng dụng)
                     anchor = 0
                 } else {
                     sel = client.selectedRange()
-                    marked = sel == nil || (markedAtCaretZero && sel?.location == 0 && sel?.length == 0)
+                    if markedAtCaretZero, let b = boundary, sel?.location == b, sel?.length == 0 {
+                        caretBlind = true
+                        log?("ô tự vẽ: con trỏ không nhích sau phím kết thúc từ (\(b)) — gõ bằng marked text")
+                    }
+                    marked = sel == nil || caretBlind || (markedAtCaretZero && sel?.location == 0 && sel?.length == 0)
                     anchor = sel?.location ?? 0
                 }
                 committed = ""
@@ -327,11 +341,17 @@ public final class Session {
             }
             let before = engine.displayed
             guard let action = engine.process(ch) else {
-                if combinedCommit, marked, !engine.isEmpty {
+                guard !engine.isEmpty else {
+                    // Không có từ nào bắt đầu (End, mũi tên, dấu câu… ở đầu ô): không giữ chế độ gạch chân vừa chọn cho từ.
+                    if !forceMarked { marked = false }
+                    return false
+                }
+                if combinedCommit, marked {
                     return endMarkedWord(with: Self.producesText(ch) ? keyText ?? String(ch) : nil, client,
                                          clear: clearAfterCommit)
                 }
                 breakWord(client)
+                if customView, Self.producesText(ch) { boundaryAt = client.selectedRange()?.location }
                 return false
             }
             if marked { return showMarked(ch, action, before: before, client) }

@@ -229,6 +229,10 @@ private final class CustomView: TextClient {
     var caret = 0
     var marked: Range<Int>?
     let blind: Bool
+    /// Như SDL2/SDL3 (SDL_cocoakeyboard.m): con trỏ báo lại vùng chọn của lần setMarkedText gần nhất (không đổi khi chèn),
+    /// insertText bỏ qua vùng thay.
+    var sdl = false
+    var sdlSelection = 0
     let session = Session()
     var options = EngineOptions()
     init(blind: Bool) { self.blind = blind }
@@ -236,19 +240,21 @@ private final class CustomView: TextClient {
     var text: String { String(decoding: units, as: UTF16.self) }
 
     func selectedRange() -> (location: Int, length: Int)? {
-        blind ? (marked?.count ?? 0, 0) : (caret, 0)
+        if sdl { return (sdlSelection, 0) }
+        return blind ? (marked?.count ?? 0, 0) : (caret, 0)
     }
     func text(location: Int, length: Int) -> String? {
         guard !blind, location >= 0, location + length <= units.count else { return nil }
         return String(decoding: units[location..<location + length], as: UTF16.self)
     }
     func replaceText(location: Int, length: Int, with t: String) {
-        if blind { insertText(t); return }                  // bỏ qua vùng thay
+        if blind || sdl { insertText(t); return }           // bỏ qua vùng thay
         units.replaceSubrange(location..<location + length, with: Array(t.utf16))
         caret = location + t.utf16.count
     }
     func replaceViaMarkedText(location: Int, length: Int, with t: String) { replaceText(location: location, length: length, with: t) }
     func setMarkedText(_ t: String) {
+        if sdl, !t.isEmpty { sdlSelection = t.utf16.count }
         let r = marked ?? caret..<caret
         units.replaceSubrange(r, with: Array(t.utf16))
         marked = t.isEmpty ? nil : r.lowerBound..<(r.lowerBound + t.utf16.count)
@@ -266,6 +272,11 @@ private final class CustomView: TextClient {
         for k in keys where !session.handle(.char(k), self, options: options, forceMarked: false, markedAtCaretZero: true) {
             insertText(String(k))
         }
+    }
+
+    /// Phím không ra chữ: nếu bộ gõ cho đi thì ô làm `effect`.
+    func press(_ key: Key, effect: () -> Void) {
+        if !session.handle(key, self, options: options, forceMarked: false, markedAtCaretZero: true) { effect() }
     }
 }
 
@@ -986,6 +997,37 @@ final class SessionTests: XCTestCase {
 
     /// Ô kiểu Qt 5 (con trỏ luôn báo 0, bỏ qua vùng cần thay): không bao giờ chèn ư / ơ vào giữa từ ("awesome" → "aưesome");
     /// thấy rồi thì các từ sau gõ bằng marked text (GTVInput còn nhận ra Qt 5 trước cả từ đầu tiên, xem `AppToolkit`).
+    /// SDL (ô chat trong game): con trỏ giả không bao giờ là 0 sau từ đầu — con trỏ không nhích sau dấu cách thì từ sau gõ bằng
+    /// marked text (review: trước đây từ thứ hai trở đi ra nguyên văn).
+    func testSDLStyleFakeCaretKeepsAllWords() {
+        let f = CustomView(blind: false)
+        f.sdl = true
+        f.type("vieejt nam vieejt dduowcj ")
+        XCTAssertEqual(f.text, "việt nam việt được ")
+    }
+
+    /// Ô soạn thảo thật (GPUI, Qt 6…): End bấm ở đầu ô (con trỏ {0,0}) không được để lại chế độ gạch chân — ⌫ rồi gõ dấu vẫn
+    /// nạp lại từ trước con trỏ ("hoi" + r → "hỏi").
+    func testNonWordKeyAtCaretZeroKeepsContinueWord() {
+        let f = CustomView(blind: false)
+        f.type("hoi x")
+        XCTAssertEqual(f.text, "hoi x")
+        f.press(.char("\u{F729}")) { f.caret = 0 }                       // Home
+        f.press(.char("\u{F72B}")) { f.caret = f.units.count }           // End
+        for _ in 0..<2 {
+            f.press(.backspace) { f.units.remove(at: f.caret - 1); f.caret -= 1 }
+        }
+        f.type("r ")
+        XCTAssertEqual(f.text, "hỏi ")
+        // Ô soạn thảo thật: dấu cách rồi ⌫ đưa con trỏ về chỗ cũ — không bị coi là ô mù (vẫn gõ trực tiếp).
+        let g = CustomView(blind: false)
+        g.type("ab ")
+        g.press(.backspace) { g.units.remove(at: g.caret - 1); g.caret -= 1 }
+        g.type("x")
+        XCTAssertEqual(g.text, "abx")
+        XCTAssertNil(g.marked, "ô thật bị coi là ô mù sau dấu cách + ⌫")
+    }
+
     /// GTK (CherryTree…) và winit (egui, iced, Alacritty): từ đang gạch chân được chốt cùng chữ của phím kết thúc từ trong một lần
     /// chèn; ⏎ ngay sau từ vẫn có tác dụng (winit: gỡ marked text để không bị nuốt).
     func testGtkAndWinitKeepWordAndTerminator() {

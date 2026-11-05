@@ -116,6 +116,9 @@ enum AppToolkit {
             p.trustMarked = true
         }
         if p.winit { p.clearAfterCommit = true }
+        // xterm.dart: mỗi lần insertText là một lần cập nhật gửi lên Dart, ô chỉ đặt lại về rỗng sau đó (bất đồng bộ) — chốt từ
+        // rồi để AppKit chèn dấu cách là hai lần cập nhật cùng gốc rỗng: shell nhận cả từ hai lần ("việtviệt").
+        if p.flutterTerminal { p.combinedCommit = true }
         return p
     }
 
