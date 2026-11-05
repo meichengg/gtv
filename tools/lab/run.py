@@ -635,8 +635,15 @@ def run_modes():
                     "pass": got == expect, "shot": shot(f"modes-{name}")})
         print("modes", name, got, flush=True)
     term = TERMINALS["terminal"]
-    sh(["open", "-a", term[1]]); time.sleep(2.5)
-    sh([DRV, "-", "20", "{IS:en}"])
+    sh(["open", "-a", term[1]])
+    # Chờ Terminal thật sự ở phía trước rồi thêm 1,5 s: lệnh chọn bộ gõ tới ngay sau lúc GTV gắn vào ô mà không có thao tác
+    # nào của người dùng là "hệ thống chọn" (GTV giữ chế độ) — sau bài Chrome, Terminal có lúc mất 2 s mới lên (lab 42044377600).
+    for _ in range(100):
+        if front() == term[0]:
+            break
+        time.sleep(0.1)
+    time.sleep(1.5)
+    sh([DRV, "-", "20", "{TAPSHIFT}{IS:en}"])
     check("start-en", "en")
     for app in ["/System/Applications/TextEdit.app", "/System/Library/CoreServices/Finder.app", term[1]]:
         sh(["open", "-a", app]); check("switch-" + pathlib.Path(app).stem, "en")
