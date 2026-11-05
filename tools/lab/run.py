@@ -90,10 +90,12 @@ APP_TESTS = [
     ("vni-backspace", "vni", "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 45),
     # Phím kết thúc từ không phải chữ: chữ được chốt và phím vẫn có tác dụng (Java nuốt phím sau khi bộ gõ chốt marked
     # text nếu GTV không bật lại cờ phát phím: "việtx").
-    ("vni-arrow", "vni", "vie65t{LEFT}x ", "việx t", 45),
-    # Đối chứng: mũi tên khi không có từ đang gõ.
+    # Java: từ đang gạch chân được chốt sau 1 s không gõ (GTV), nên phím đó tới Java như thường.
+    ("vni-arrow", "vni", "vie65t{WAIT1300}{LEFT}x ", "việx t", 45),
+    ("vni-shortcut", "vni", "vie65t{WAIT1300}{CMDA}{BS}xyz ", "xyz ", 45),
+    # Đối chứng: mũi tên khi không có từ đang gõ; mũi tên ngay sau từ (Java: bị nuốt — chỉ ghi lại, không chấm).
     ("vni-arrow-plain", "vni", "ab {LEFT}x ", "abx  ", 45),
-    ("vni-shortcut", "vni", "vie65t{CMDA}{BS}xyz ", "xyz ", 45),
+    ("vni-arrow-fast", "vni", "vie65t{LEFT}x ", None, 45),
     ("vni-enter", "vni", "vie65t{RET}nam ", "việt\nnam ", 45),
     ("vni-punct", "vni", "d9a38ng, vie65t.", "đẳng, việt.", 45),
 ]
@@ -537,6 +539,14 @@ def run_app_suite(app):
             shot(f"{app}-not-ready")
             return [{"terminal": app, "test": "-", "error": f"ô {app} không sẵn sàng (front={front()}, pid={front_pid()})"}]
         time.sleep(1.0)
+        if app == "chrome":
+            # Chrome vừa mở còn ì (phím tới trễ cả giây): gõ nháp rồi xoá trước khi chấm.
+            time.sleep(3)
+            configure("vni", "auto")
+            ensure_mode(bid, "vi")
+            drv(bid, "khoi dong ", 45)
+            time.sleep(2)
+            clear_field(out_file, web)
         shot(f"{app}-opened")
         for name, method, keys, expect, ms in tests:
             r = {"terminal": app, "style": "-", "test": name, "expect": expect}
