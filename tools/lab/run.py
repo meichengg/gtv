@@ -81,6 +81,38 @@ FISH = [
 ]
 
 
+# Ứng dụng thường (không phải terminal): ô Cocoa (NSTextView, GTV thay chữ trực tiếp) và ô Java Swing (GTV phải nhận ra Java
+# và gõ bằng marked text). Mỗi ô ghi nội dung ra file. (tên, kiểu gõ, phím, mong đợi, ms giữa 2 phím)
+APP_TESTS = [
+    ("vni-words", "vni", "Vie65t Nam, d9a5i ho5c d9a38ng ", "Việt Nam, đại học đẳng ", 45),
+    ("vni-fast", "vni", "Vie65t Nam, d9a5i ho5c d9a38ng ", "Việt Nam, đại học đẳng ", 12),
+    ("telex-words", "telex", "Vieetj Nam, ddaij hocj ", "Việt Nam, đại học ", 45),
+    ("vni-backspace", "vni", "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 45),
+    # Phím kết thúc từ không phải chữ: chữ được chốt và phím vẫn có tác dụng (Java nuốt phím sau khi bộ gõ chốt marked
+    # text nếu GTV không bật lại cờ phát phím: "việtx").
+    ("vni-arrow", "vni", "vie65t{LEFT}x ", "việx t", 45),
+    ("vni-shortcut", "vni", "vie65t{CMDA}{BS}xyz ", "xyz ", 45),
+    ("vni-enter", "vni", "vie65t{RET}nam ", "việt\nnam ", 45),
+    ("vni-punct", "vni", "d9a38ng, vie65t.", "đẳng, việt.", 45),
+]
+# Gõ ngay khi cửa sổ vừa được kích hoạt (như TinyCast: ⌘Space rồi gõ liền): phím đầu có thể tới trước lời gọi setValue mà
+# InputMethodKit gửi sau mỗi lần gắn bộ gõ — lỗi cũ: "d9a38ng" ra "d9ẳng".
+RACE = ("vni", "d9a38ng", "đẳng", 10)
+# Chrome (Chromium: cũng là Electron, VS Code, Claude desktop…): gõ rất nhanh (bộ đệm văn bản phía trình duyệt cập nhật
+# chậm sau lần thay của bộ gõ: có thể mất dấu) và ⌫ làm dời dấu thanh (kiểu cũ: "hoàn" ⌫ → "hòa"; Chromium có thể vừa
+# nhận lần thay của bộ gõ vừa tự xoá).
+CHROME_TESTS = APP_TESTS + [
+    ("telex-fast8", "telex", "Vieetj Nam ddaij hocj tieengs Vieetj nguwowif ", "Việt Nam đại học tiếng Việt người ", 8),
+    ("vni-fast6", "vni", "Vie65t Nam d9a5i ho5c tie61ng Vie65t ngu7o72i ", "Việt Nam đại học tiếng Việt người ", 6),
+    ("telex-bs-tone", "telex", "hoafn{BS} ", "hòa ", 45),
+    ("vni-bs-tone", "vni", "toa1n{BS} ", "tóa ", 45),
+]
+CHROME = "/Applications/Google Chrome.app"
+CHROME_ID = "com.google.Chrome"
+FIELD_APP = L / "GTVField.app"
+FIELD_ID = "com.gtv.lab.field"
+
+
 def sh(cmd, timeout=60, check=False):
     r = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True, timeout=timeout)
     if check and r.returncode:
@@ -195,7 +227,7 @@ def ime_seen(mark, bid):
     with open(GTV_LOG, "rb") as f:
         f.seek(mark)
         new = f.read().decode("utf-8", "replace").splitlines()
-    keys = [l for l in new if " phím " in l and bid in l and "chế độ E" not in l]
+    keys = [l for l in new if " phím " in l and (bid is None or bid in l) and "chế độ E" not in l]
     return {"ime_keys": len(keys), "ime_handled": sum("bộ gõ xử lý" in l for l in keys)}
 
 
@@ -320,6 +352,253 @@ def probe_fields(key, bid):
     return out
 
 
+def front_pid():
+    asn = sh(["lsappinfo", "front"]).stdout.strip()
+    out = sh(["lsappinfo", "info", "-only", "pid", asn]).stdout
+    m = re.search(r"=\s*(\d+)", out)
+    return int(m.group(1)) if m else None
+
+
+def build_field_app():
+    """Gói tools/lab/field.swift thành GTVField.app (cần bundle ID để `open -a` kích hoạt và driver kiểm tra phía trước)."""
+    exe = FIELD_APP / "Contents/MacOS/field"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    sh(["swiftc", "-O", "-o", str(exe), str(HERE / "field.swift")], timeout=300, check=True)
+    (FIELD_APP / "Contents/Info.plist").write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>{FIELD_ID}</string>
+<key>CFBundleExecutable</key><string>field</string>
+<key>CFBundleName</key><string>GTVField</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+</dict></plist>
+""")
+
+
+def find_java():
+    """JDK 11+ (chạy thẳng file .java): các JDK có sẵn trên máy GitHub (JAVA_HOME_<bản>_<kiến trúc>), rồi java_home."""
+    homes = sorted(((int(m.group(1)), v) for k, v in os.environ.items()
+                    if (m := re.match(r"JAVA_HOME_(\d+)_", k)) and int(m.group(1)) >= 11), reverse=True)
+    for _, home in homes:
+        if pathlib.Path(home, "bin/java").exists():
+            return str(pathlib.Path(home, "bin/java"))
+    r = sh(["/usr/libexec/java_home", "-v", "11+"])
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip() + "/bin/java"
+    return shutil.which("java")
+
+
+def wait_file(p, timeout=20):
+    for _ in range(int(timeout * 20)):
+        if p.exists():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def read_text(p):
+    try:
+        return p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+def ime_trace(mark):
+    """Các dòng vòng đời bộ gõ (activate/deactivate/setValue/commitComposition) và phím kể từ `mark`, rút gọn."""
+    if not GTV_LOG.exists():
+        return []
+    with open(GTV_LOG, "rb") as f:
+        f.seek(mark)
+        new = f.read().decode("utf-8", "replace").splitlines()
+    keep = []
+    for l in new:
+        m = re.search(r"(activateServer|deactivateServer|setValue|commitComposition|phím \d+ '[^']*')[^:]*(: [^s]*)?", l)
+        if m:
+            keep.append(m.group(0)[:80])
+    return keep[:40]
+
+
+def clear_field(out_file, web=None):
+    """Xoá chữ trong ô thử qua file tín hiệu <file>.clear (trang web: lệnh "clear" của máy chủ thử)."""
+    flag = pathlib.Path(str(out_file) + ".clear")
+    if web:
+        web.cmd = "clear"
+    else:
+        flag.write_text("1")
+    for _ in range(100):
+        if not flag.exists() and not (web and web.cmd) and read_text(out_file) == "":
+            time.sleep(0.2)
+            return
+        time.sleep(0.05)
+    raise RuntimeError(f"không xoá được ô (còn {read_text(out_file)!r})")
+
+
+class _Web:
+    """Máy chủ nhỏ cho trang thử trong Chrome: trang gửi nội dung ô (POST /t), lấy lệnh xoá (GET /cmd)."""
+    PAGE = """<!doctype html><meta charset=utf-8><title>GTV Lab web</title>
+<textarea id=t autofocus spellcheck=false autocomplete=off autocorrect=off
+ style="width:640px;height:160px;font-size:18px"></textarea>
+<script>
+const t = document.getElementById('t');
+const send = () => fetch('/t', {method: 'POST', body: t.value});
+t.addEventListener('input', send);
+setInterval(async () => {
+  t.focus();
+  const c = await (await fetch('/cmd')).text();
+  if (c === 'clear') { t.value = ''; send(); }
+}, 100);
+fetch('/ready', {method: 'POST', body: '1'});
+</script>"""
+
+    def __init__(self, out_file, ready):
+        import http.server
+        import threading
+        web = self
+        self.cmd = ""
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _reply(self, body=b"", ctype="text/plain; charset=utf-8"):
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/cmd":
+                    c, web.cmd = web.cmd, ""
+                    self._reply(c.encode())
+                else:
+                    self._reply(_Web.PAGE.encode(), "text/html; charset=utf-8")
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n).decode("utf-8", "replace")
+                if self.path == "/t":
+                    out_file.write_text(body, encoding="utf-8")
+                elif self.path == "/ready":
+                    ready.write_text("ready")
+                self._reply()
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+def run_app_suite(app):
+    """Bài gõ trong ô của ứng dụng thường. `app`: "field" (Cocoa) hoặc "swing" (Java)."""
+    out_file = L / f"{app}.txt"
+    ready = pathlib.Path(str(out_file) + ".ready")
+    out_file.unlink(missing_ok=True)
+    ready.unlink(missing_ok=True)
+    proc = None
+    results = []
+    try:
+        web = None
+        tests = APP_TESTS
+        if app == "field":
+            build_field_app()
+            sh(["open", "-a", str(FIELD_APP), "--args", str(out_file)])
+            bid, pid = FIELD_ID, None
+        elif app == "chrome":
+            if not pathlib.Path(CHROME).exists():
+                return [{"terminal": app, "test": "-", "error": "chưa cài Chrome"}]
+            web = _Web(out_file, ready)
+            tests = CHROME_TESTS
+            sh(["open", "-na", CHROME, "--args", "--user-data-dir=/tmp/l/chrome-profile", "--no-first-run",
+                "--no-default-browser-check", "--disable-features=Translate", "--new-window",
+                f"http://127.0.0.1:{web.port}/"])
+            bid, pid = CHROME_ID, None
+        else:
+            java = find_java()
+            if not java:
+                return [{"terminal": app, "test": "-", "error": "không có JDK 11+"}]
+            proc = subprocess.Popen([java, str(HERE / "SwingField.java"), str(out_file)],
+                                    stdout=open(OUT / "logs" / "swing.log", "w"), stderr=subprocess.STDOUT)
+            bid, pid = "-", proc.pid
+        if not wait_file(ready, 60):
+            shot(f"{app}-not-ready")
+            return [{"terminal": app, "test": "-", "error": f"ô {app} không sẵn sàng (front={front()}, pid={front_pid()})"}]
+        time.sleep(1.0)
+        shot(f"{app}-opened")
+        for name, method, keys, expect, ms in tests:
+            r = {"terminal": app, "style": "-", "test": name, "expect": expect}
+            try:
+                if pid is not None and front_pid() != pid:
+                    raise RuntimeError(f"ô {app} không ở phía trước (front={front()}, pid={front_pid()})")
+                configure(method, "auto")
+                ensure_mode(bid, "vi")
+                clear_field(out_file, web)
+                mark = log_mark()
+                drv(bid, keys, ms)
+                time.sleep(0.8)
+                got = read_text(out_file)
+                r.update({"final": got, "pass": got == expect, "shot": shot(f"{app}-{name}")})
+                r.update(ime_seen(mark, None if app == "swing" else bid))
+                if got != expect:
+                    r["trace"] = ime_trace(mark)
+            except Exception as e:  # noqa: BLE001
+                r["error"] = str(e)
+                shot(f"{app}-{name}-error")
+            results.append(r)
+            print(f"{app}/{name}", json.dumps(r, ensure_ascii=False), flush=True)
+        if app == "field":
+            results += run_race(bid, out_file, ready)
+    finally:
+        if proc:
+            proc.terminate()
+        elif app == "chrome":
+            sh(["pkill", "-f", "chrome-profile"])
+        else:
+            sh(["pkill", "-f", str(FIELD_APP / "Contents/MacOS/field")])
+        if web:
+            web.close()
+        time.sleep(1)
+    return results
+
+
+def run_race(bid, out_file, ready):
+    """Rời ô (sang Finder) rồi kích hoạt lại và gõ NGAY khi nó lên phía trước, nhiều lần."""
+    method, keys, expect, ms = RACE
+    configure(method, "auto")
+    ensure_mode(bid, "vi")
+    out = []
+    for i in range(int(os.environ.get("RACE_REPEAT", "12"))):
+        r = {"terminal": "field", "style": "-", "test": f"race-{i + 1}", "expect": expect}
+        try:
+            sh(["open", "-a", "Finder"])
+            for _ in range(60):
+                if front() == "com.apple.finder" and not ready.exists():
+                    break
+                time.sleep(0.05)
+            time.sleep(0.5)
+            mark = log_mark()
+            sh(["open", "-a", str(FIELD_APP)])
+            for _ in range(400):
+                if front() == bid:
+                    break
+                time.sleep(0.005)
+            drv(bid, keys, ms)
+            time.sleep(0.8)
+            got = read_text(out_file)
+            r.update({"final": got, "pass": got == expect, "trace": ime_trace(mark)})
+            r.update(ime_seen(mark, bid))
+            if got != expect:
+                r["shot"] = shot(f"field-race-{i + 1}")
+        except Exception as e:  # noqa: BLE001
+            r["error"] = str(e)
+        out.append(r)
+        print(f"field/race-{i + 1}", json.dumps(r, ensure_ascii=False), flush=True)
+    return out
+
+
 def run_modes():
     """Chế độ V/E phải cố định: đổi ứng dụng / hệ thống chọn lại GTV không được làm đổi chế độ;
     người dùng tự đổi thì theo."""
@@ -437,6 +716,13 @@ def main():
             shot(f"{key}-fatal")
         finally:
             close_terminal(key)
+
+    for app in os.environ.get("APPS", "field swing chrome").split():
+        try:
+            results += run_app_suite(app)
+        except Exception as e:  # noqa: BLE001
+            results.append({"terminal": app, "test": "-", "error": str(e)})
+            shot(f"{app}-fatal")
 
     if os.environ.get("MODES_TEST", "1") == "1":
         for counter_mode in counter_modes:

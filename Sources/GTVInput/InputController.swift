@@ -28,7 +28,17 @@ private final class ClientAdapter: TextClient {
                               replacementRange: notFound)
     }
 
+    /// Bộ gõ đã chèn chữ (chốt marked text…) trong lúc xử lý phím hiện tại (xem `GTVInputController.rearmJavaKey`).
+    var insertedDuringKey = false
+
     func insertText(_ text: String) {
+        guard !text.isEmpty else {
+            // Chuỗi rỗng: chỉ cần gỡ marked text (nếu có). Không gửi insertText rỗng: AWTView của Java đọc ký tự đầu tiên
+            // của chuỗi (`characterAtIndex:0`) và văng lỗi.
+            if hasMarkedText() { setMarkedText("") }
+            return
+        }
+        insertedDuringKey = true
         client?.insertText(text, replacementRange: notFound)
     }
 
@@ -90,6 +100,8 @@ final class GTVInputController: IMKInputController {
     private var hotkeyArmedAt: TimeInterval?
     /// Ô đang gắn là ô văn bản hay view terminal (chỉ hỏi ở app terminal); nil: chưa biết, hỏi lại ở phím kế tiếp.
     private var clientKind: ClientKind?
+    /// Ô của ứng dụng Java (AWT…): chỉ gõ được bằng marked text, xem `JavaDetector`. nil: chưa biết.
+    private var javaView: Bool?
 
     // MARK: - Vòng đời
 
@@ -101,10 +113,15 @@ final class GTVInputController: IMKInputController {
         session.reset()
         hotkeyArmedAt = nil
         clientKind = nil
+        javaView = nil
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
         KeyWatch.shared.rebase()
-        if Settings.knownTerminals.contains(bundleID) { clientKind = Self.kind(of: client) }
+        if Settings.knownTerminals.contains(bundleID) {
+            clientKind = Self.kind(of: client)
+        } else if Self.kind(of: client) == .terminalView {
+            JavaDetector.prefetch(bundleID)          // có kết quả trước phím đầu tiên
+        }
         #if DEBUG
         // IME Lab: thuộc tính marked text ô nhập liệu nhận — phân biệt view terminal với ô văn bản thường (NSTextView).
         DebugLog.write("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-") attrs=[\(Self.markedTextAttributes(client).joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
@@ -148,6 +165,23 @@ final class GTVInputController: IMKInputController {
         return kind == .placeholder ? nil : kind
     }
 
+    /// Ô của ứng dụng Java (AWT, JavaFX, Compose Desktop): không khai báo thuộc tính marked text nào, trong tiến trình chạy
+    /// máy ảo Java. Hỏi một lần cho mỗi ô (ô tạm của InputMethodKit: hỏi lại ở phím sau).
+    private func isJavaView(_ client: Client) -> Bool {
+        if let javaView { return javaView }
+        switch Self.kind(of: client) {
+        case .terminalView?:
+            guard let java = JavaDetector.usesJVM(bundleID, wait: 0.05) else { return false }   // chưa biết: hỏi lại sau
+            javaView = java
+            return java
+        case .textView?:
+            javaView = false
+            return false
+        default:
+            return false
+        }
+    }
+
     /// Terminal mà view terminal luôn báo con trỏ ở 0 (`Settings.cursorlessTerminals`): báo vị trí khác 0 là đang gõ trong
     /// một ô văn bản của app (Muxy: thanh Find không làm bộ gõ được gắn lại nên không thấy qua `activateServer`).
     private static func inTextField(_ client: Client, _ bundleID: String) -> Bool {
@@ -161,19 +195,31 @@ final class GTVInputController: IMKInputController {
         commit(sender)
     }
 
+    /// Ứng dụng (hay InputMethodKit) muốn chốt — không phải lúc mất focus (đó là `deactivateServer`). Gõ trực tiếp thì giữ
+    /// từ đang gõ nếu nó vẫn nằm nguyên trước con trỏ, xem `Session.commitRequested`.
     override func commitComposition(_ sender: Any!) {
-        commit(sender)
+        DebugLog.write("commitComposition \(bundleID)")
+        adapter.client = sender as? Client
+        session.commitRequested(adapter.client == nil ? nil : adapter)
+        adapter.client = nil
     }
 
-    /// macOS báo đổi chế độ Tiếng Việt / Tiếng Anh.
+    /// macOS báo chế độ Tiếng Việt / Tiếng Anh. InputMethodKit gọi hàm này cả ngay SAU mỗi lần gắn bộ gõ vào ô nhập liệu
+    /// (`activateServer`), với chế độ đang chọn — có lúc sau cả phím đầu tiên: gõ ngay khi ô vừa hiện (TinyCast, Spotlight:
+    /// ⌘Space rồi gõ liền "d9…"). Chế độ không đổi thì không đụng tới từ đang gõ — chốt từ ở đây làm quên chữ 'd' vừa gõ,
+    /// "d9a38ng" thành "d9ẳng".
     override func setValue(_ value: Any!, forTag tag: Int, client sender: Any!) {
         guard tag == Int(kTextServiceInputModePropertyTag), let mode = value as? String else {
             super.setValue(value, forTag: tag, client: sender)
             return
         }
+        let wasVietnamese = Modes.shared.vietnamese
+        Modes.shared.modeSelected(mode)
+        let changed = Modes.shared.vietnamese != wasVietnamese
+        DebugLog.write("setValue \(mode) \(bundleID): \(changed ? "đổi chế độ" : "chế độ không đổi, giữ từ đang gõ")")
+        guard changed else { return }
         commit(sender)
         KeyWatch.shared.rebase()             // phím đổi chế độ (🌐, ⌃Space…) không tới bộ gõ
-        Modes.shared.modeSelected(mode)
     }
 
     private func commit(_ sender: Any?) {
@@ -222,6 +268,27 @@ final class GTVInputController: IMKInputController {
             return false
         }
 
+        adapter.insertedDuringKey = false
+        let handled = handleKeyDown(event, client, flags: flags)
+        if !handled && adapter.insertedDuringKey && javaView == true { rearmJavaKey(event, client) }
+        return handled
+    }
+
+    /// Ô Java: phím đi thẳng ngay sau khi bộ gõ chốt marked text (←, ⌘A, ⌘S, Esc… kết thúc từ). AWTView coi chữ bộ gõ chốt
+    /// trong keyDown là "đã thay cho phím này" và không phát phím cho Java nữa (`fKeyEventsNeeded = NO`); chỉ ⏎, ⇥, ⌫ được
+    /// bật lại — phím khác bị nuốt (IME Lab: "vie65t←x" ra "việtx"). Gửi thêm đúng ký tự của chính phím đó khi không còn
+    /// marked text: OpenJDK chỉ bật lại cờ phát phím, không chèn chuỗi; JetBrains Runtime phát phím kèm chuỗi đó — trùng
+    /// ký tự của phím, như phím gốc.
+    private func rearmJavaKey(_ event: NSEvent, _ client: Client) {
+        let marked = client.markedRange()
+        guard let chars = event.characters, chars.utf16.count == 1,
+              marked.location == NSNotFound || marked.length == 0 else { return }
+        client.insertText(chars, replacementRange: notFound)
+    }
+
+    private func handleKeyDown(_ event: NSEvent, _ client: Client, flags: NSEvent.ModifierFlags) -> Bool {
+        let settings = Settings.shared
+
         // Sổ phím: mọi keyDown bộ gõ nhận đều phải vào sổ, kể cả khi phím đi thẳng ngay dưới đây.
         let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID))
 
@@ -260,6 +327,8 @@ final class GTVInputController: IMKInputController {
                 forceMarked = settings.alwaysMarked
                 earlyCommit = false
             }
+        } else if !forceMarked && isJavaView(client) {
+            forceMarked = true                       // Java bỏ qua cách thay chữ trực tiếp, xem `JavaDetector`
         }
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,

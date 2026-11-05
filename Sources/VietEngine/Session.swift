@@ -116,6 +116,7 @@ public final class Session {
     public static var deferDelay = defaultDeferDelay   // IME Lab đổi được (bản Debug)
     private var anchor = 0       // vị trí bắt đầu của từ đang gõ
     private var qtApp = false    // ô nhập liệu thuộc ứng dụng Qt (xem `replace`)
+    private var inTerminal = false   // phím gần nhất được xử lý theo cách gõ terminal (`handle(terminal:)`)
     /// Vừa xoá lùi khi không có từ nào đang gõ (vd. "hoir " → xoá " " và "r" → còn "hoi"): ở phím chữ tiếp
     /// theo, đọc lại từ trước con trỏ để gõ tiếp (gõ "r" → "hỏi") thay vì bắt đầu từ mới.
     private var continueWordOnNextChar = false
@@ -157,6 +158,7 @@ public final class Session {
                        earlyCommit: Bool = false, gap: KeyGap = .none, legacy: String? = nil) -> Bool {
         self.qtApp = qtApp
         self.earlyCommit = earlyCommit
+        inTerminal = terminal != nil
         if let terminal {
             if marked || literalTail { reset() }     // vừa đổi từ chế độ gạch chân
             return handleTerminal(key, client, options: options, style: terminal, repeatDelay: repeatDelay, gap: gap,
@@ -210,6 +212,27 @@ public final class Session {
             if marked { return showMarked(ch, action, before: before, client) }
             return perform(action, client, retry: ch)
         }
+    }
+
+    /// Ứng dụng / InputMethodKit muốn chốt (`commitComposition`) mà ô nhập liệu không mất focus: ứng dụng tự đổi văn bản hay
+    /// vùng chọn, InputMethodKit gọi lại quanh lúc gắn bộ gõ… Gõ trực tiếp (không gạch chân, không phải terminal) thì không có
+    /// gì để chốt: nếu từ đang gõ vẫn nằm nguyên ngay trước con trỏ thì giữ — mọi lần sửa sau đều đối chiếu lại với màn hình
+    /// (`inSync`, `replace`). Bỏ từ ở đây làm các phím vừa gõ mất tác dụng (vd. 'd' của "d9" → "d9ẳng").
+    public func commitRequested(_ client: TextClient?) {
+        if !marked, !literalTail, !inTerminal, pending == nil, !engine.isEmpty, let client, wordOnScreen(client) {
+            log?("commitComposition: gõ trực tiếp, từ \(engine.displayed.debugDescription) vẫn trước con trỏ — giữ")
+            return
+        }
+        commit(client)
+    }
+
+    /// Gõ trực tiếp: từ đang gõ vẫn nằm ngay trước con trỏ, đúng như bộ gõ nhớ.
+    private func wordOnScreen(_ client: TextClient) -> Bool {
+        guard let sel = client.selectedRange(), sel.length == 0, inSync(sel) else { return false }
+        let word = engine.displayed
+        let n = word.utf16.count
+        guard n > 0, sel.location >= n, let text = client.text(location: sel.location - n, length: n) else { return false }
+        return text == word
     }
 
     /// Chốt từ đang gõ (khi ô nhập liệu mất focus, click chuột...).
@@ -848,9 +871,12 @@ public final class Session {
     /// `typed`: ký tự của phím vừa bấm (nếu việc thay đổi do phím đó gây ra).
     private func replace(_ old: String, _ new: String, _ client: TextClient, typed: Character? = nil) -> Bool {
         let oldLen = old.utf16.count
-        guard let sel = client.selectedRange(), sel.location >= oldLen,
-              sel.location == anchor + oldLen else { return false }
+        guard let sel = client.selectedRange(), sel.location >= oldLen, sel.location == anchor + oldLen else {
+            log?("thay \(old.debugDescription): con trỏ \(client.selectedRange().map { "\($0)" } ?? "-"), cần \(anchor + oldLen)")
+            return false
+        }
         if oldLen > 0, let current = client.text(location: sel.location - oldLen, length: oldLen), current != old {
+            log?("thay \(old.debugDescription): trước con trỏ lại là \(current.debugDescription)")
             return false
         }
         // Chỉ thay phần khác nhau để ứng dụng phải làm ít việc nhất.

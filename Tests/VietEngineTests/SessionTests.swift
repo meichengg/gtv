@@ -571,6 +571,44 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(m.text, "hoir")
     }
 
+    /// InputMethodKit / ứng dụng gọi `commitComposition` giữa từ mà ô nhập liệu không mất focus. Gõ trực tiếp, từ vẫn nằm
+    /// nguyên trước con trỏ: giữ từ — 'd' rồi '9' vẫn ra "đ" (TinyCast: "d9ẳng").
+    func testCommitRequestKeepsDirectWord() {
+        let f = Field()
+        f.options.method = .vni
+        f.type("d")
+        f.session.commitRequested(f)
+        f.type("9a38ng")
+        XCTAssertEqual(f.text, "đẳng")
+
+        // Ứng dụng đã tự đổi văn bản: bỏ từ, không sửa nhầm chữ khác.
+        let g = Field()
+        g.options.method = .vni
+        g.type("d")
+        g.units = Array("x".utf16)
+        g.sel = (1, 0)
+        g.session.commitRequested(g)
+        g.type("9")
+        XCTAssertEqual(g.text, "x9")
+
+        // Không đọc được văn bản: không chắc từ còn nguyên — bỏ từ như trước.
+        let h = Field()
+        h.options.method = .vni
+        h.readable = false
+        h.type("d")
+        h.session.commitRequested(h)
+        h.type("9")
+        XCTAssertEqual(h.text, "d9")
+
+        // Đang bôi đen (gợi ý tự động sau con trỏ…): bỏ từ.
+        let k = Field()
+        k.type("vie")
+        k.selectAll()
+        k.session.commitRequested(k)
+        k.type("e")
+        XCTAssertEqual(k.text, "e")
+    }
+
     func testBackspaceInWord() {
         let f = Field()
         f.type("vieetj")
@@ -630,6 +668,25 @@ final class SessionTests: XCTestCase {
 
     /// Ứng dụng thường dùng gạch chân (bật tay, ứng dụng không báo con trỏ): giữ cả từ trong phần gạch chân như
     /// bản gốc, nên sửa chữ bằng ⌫ rồi thêm dấu vẫn đúng.
+    /// Ứng dụng Java (AWT: Burp Suite…) chỉ gõ được bằng marked text: bộ gõ không bao giờ sửa chữ đã chốt (`Terminal` báo lỗi
+    /// nếu có) và không để phím đi thẳng khi còn marked text (Java sẽ phát lại phím gốc). Cùng các bài với IME Lab (`apps`).
+    func testJavaStyleMarkedTyping() {
+        let cases: [(InputMethod, String, String)] = [
+            (.vni, "Vie65t Nam, d9a5i ho5c d9a38ng ", "Việt Nam, đại học đẳng "),
+            (.telex, "Vieetj Nam, ddaij hocj ", "Việt Nam, đại học "),
+            (.vni, "tie61ng<<<e65t ", "tiệt "),
+            (.vni, "d9a38ng, vie65t.", "đẳng, việt."),
+        ]
+        for (method, keys, expect) in cases {
+            let t = Terminal()
+            t.earlyCommit = false
+            t.options.method = method
+            for k in keys { if k == "<" { t.backspace() } else { t.type(String(k)) } }
+            XCTAssertEqual(t.screen, expect, "\(method) \(keys)")
+            XCTAssertEqual(t.marked, "", "\(keys): từ cuối phải được chốt bằng dấu câu / dấu cách")
+        }
+    }
+
     func testMarkedAppKeepsWholeWordForBackspaceFixes() {
         let cases: [(InputMethod, String, String)] = [
             (.telex, "anht<f", "ành"), (.telex, "tooss<f", "tồ"), (.telex, "hocx<j", "học"),
