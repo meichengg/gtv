@@ -13,8 +13,13 @@ enum AppMenu {
         case excludeCurrent = 60, addExcluded
         case showStatusIcon = 70, playSwitchSound, selectAtLogin, checkForUpdates, autoCheckUpdates
         case quit = 99
-        case removeExcluded = 1000   // 1000 + vị trí trong excludedSorted()
+        case removeExcluded = 1000   // 1000 + vị trí trong `shownExcluded`
     }
+
+    /// Danh sách loại trừ theo đúng thứ tự đã hiện ở lần dựng menu gần nhất (tag của mục = vị trí trong danh sách này).
+    /// Không sắp lại lúc bấm: tên dùng để sắp đổi theo ứng dụng có đang chạy không (vd. "Code" / "Visual Studio Code"),
+    /// sắp lại có thể ra thứ tự khác và bỏ loại trừ nhầm ứng dụng.
+    private static var shownExcluded: [String] = []
 
     /// `standalone`: menu của biểu tượng V/E trên thanh menu (dùng menu con).
     /// Menu bộ gõ của macOS được chép sang tiến trình khác để hiển thị: chỉ dựa vào `tag`
@@ -23,6 +28,20 @@ enum AppMenu {
         let s = Settings.shared
         let o = s.options
         let menu = NSMenu()
+
+        // Tên ứng dụng: tra một lần cho mỗi ứng dụng mỗi lần dựng menu, từ một ảnh chụp danh sách ứng dụng đang chạy (tra
+        // ngay trong hàm so sánh khi sắp xếp là O(n log n) lần quét tiến trình và hỏi LaunchServices).
+        var running: [String: NSRunningApplication] = [:]
+        for app in NSWorkspace.shared.runningApplications {
+            if let id = app.bundleIdentifier, running[id] == nil { running[id] = app }
+        }
+        var names: [String: String] = [:]
+        func appName(_ id: String) -> String {
+            if let name = names[id] { return name }
+            let name = running[id]?.localizedName ?? AppMenu.fileName(id)
+            names[id] = name
+            return name
+        }
 
         func item(_ title: String, _ tag: Int, _ on: Bool, indent: Bool = false) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -59,7 +78,9 @@ enum AppMenu {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         header("Phiên bản \(version)")
         if Updater.shared.isAvailable {
-            add("Kiểm tra cập nhật…", .checkForUpdates, false)
+            // Bản mới tìm thấy lúc người dùng đang gõ: Sparkle không giành focus, chỉ nhắc ở đây.
+            add(Updater.shared.pendingVersion.map { "Có bản mới \($0): cài đặt…" } ?? "Kiểm tra cập nhật…",
+                .checkForUpdates, false)
         }
 
         let hint = s.hotkey == .none ? "" : "   (\(s.hotkey.title.prefix(2)))"
@@ -91,10 +112,17 @@ enum AppMenu {
             i.representedObject = appBundleID
             menu.addItem(i)
         }
-        var excludedItems: [NSMenuItem] = excludedSorted().enumerated().map { index, id in
+        shownExcluded = s.excludedApps.map { ($0, appName($0)) }
+            .sorted {
+                let order = $0.1.localizedCaseInsensitiveCompare($1.1)
+                return order == .orderedSame ? $0.0 < $1.0 : order == .orderedAscending
+            }
+            .map(\.0)
+        var excludedItems: [NSMenuItem] = shownExcluded.enumerated().map { index, id in
             let i = item(appName(id), Tag.removeExcluded.rawValue + index, true)
             i.toolTip = "Bấm để gõ tiếng Việt lại trong ứng dụng này"
             i.image = appIcon(id)
+            i.representedObject = id
             return i
         }
         if !excludedItems.isEmpty { excludedItems.append(.separator()) }
@@ -116,7 +144,18 @@ enum AppMenu {
         add("Luôn dùng gạch chân (tương thích tối đa)", .markedAlways, s.alwaysMarked)
 
         menu.addItem(.separator())
-        add("Chọn GTV khi đăng nhập", .selectAtLogin, s.selectAtLogin)
+        // Mục đăng nhập dùng SMAppService (macOS 13+), do GTV.app trong Applications đăng ký.
+        if #available(macOS 13.0, *) {
+            if let launcher = Settings.launcherURL(), Settings.isInApplications(launcher) {
+                let i = item("Chọn GTV khi đăng nhập", Tag.selectAtLogin.rawValue, s.selectsAtLogin)
+                if s.selectAtLogin && s.loginItemStatus == "requiresApproval" {
+                    i.toolTip = "GTV đang bị tắt trong Cài đặt hệ thống → Cài đặt chung → Mục đăng nhập. Bấm để mở và bật lại."
+                }
+                menu.addItem(i)
+            } else {
+                header("Chọn GTV khi đăng nhập: cần GTV trong Applications")
+            }
+        }
         if Updater.shared.isAvailable {
             add("Tự động kiểm tra cập nhật", .autoCheckUpdates, Updater.shared.automaticallyChecks)
         }
@@ -125,20 +164,13 @@ enum AppMenu {
         return menu
     }
 
-    /// Danh sách loại trừ theo thứ tự hiển thị (tag của mục = vị trí trong danh sách này).
-    private static func excludedSorted() -> [String] {
-        Settings.shared.excludedApps.sorted {
-            appName($0).localizedCaseInsensitiveCompare(appName($1)) == .orderedAscending
-        }
-    }
-
     static func perform(_ item: NSMenuItem, appBundleID fallbackAppID: String) {
         let s = Settings.shared
         let appBundleID = item.representedObject as? String ?? fallbackAppID
         if item.tag >= Tag.removeExcluded.rawValue {
-            let list = excludedSorted()
             let index = item.tag - Tag.removeExcluded.rawValue
-            if index < list.count { s.setExcluded([list[index]], false) }
+            let shown = shownExcluded.indices.contains(index) ? shownExcluded[index] : nil
+            if let id = item.representedObject as? String ?? shown { s.setExcluded([id], false) }
             return
         }
         if let hotkey = ToggleHotkey(rawValue: item.tag - Tag.hotkey.rawValue),
@@ -171,7 +203,9 @@ enum AppMenu {
         case .playSwitchSound:
             s.playSwitchSound.toggle()
         case .selectAtLogin:
-            s.selectAtLogin.toggle()
+            // Theo dấu tích đang hiện (trạng thái thật), không theo cài đặt: người dùng tắt GTV trong Cài đặt hệ thống thì
+            // mục hiện tắt, bấm vào là muốn bật lại.
+            s.selectAtLogin = !s.selectsAtLogin
         case .checkForUpdates:
             // Đợi menu đóng hẳn rồi mới mở cửa sổ của Sparkle.
             DispatchQueue.main.async { Updater.shared.checkForUpdates() }
@@ -227,12 +261,9 @@ enum AppMenu {
         return image
     }
 
-    private static func appName(_ bundleID: String) -> String {
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first,
-           let name = app.localizedName {
-            return name
-        }
-        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)?
+    /// Tên ứng dụng không chạy: tên gói .app (ứng dụng đang chạy dùng localizedName, xem `build`).
+    private static func fileName(_ bundleID: String) -> String {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)?
             .deletingPathExtension().lastPathComponent ?? bundleID
     }
 }

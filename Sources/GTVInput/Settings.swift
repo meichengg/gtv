@@ -59,6 +59,8 @@ final class Settings {
         didSet { defaults.set(playSwitchSound, forKey: "playSwitchSound") }
     }
     /// GTV.app nằm trong "Mở khi đăng nhập": khi đăng nhập tự chọn GTV nếu đang ở bộ gõ khác.
+    /// Gán (kể cả gán lại giá trị cũ) là người dùng vừa chọn trong menu: GTV.app đăng ký / gỡ mục đăng nhập, hoặc mở Cài
+    /// đặt hệ thống nếu người dùng đã tắt nó ở đó.
     var selectAtLogin: Bool {
         didSet {
             defaults.set(selectAtLogin, forKey: "selectAtLogin")
@@ -67,7 +69,13 @@ final class Settings {
         }
     }
 
-    /// Chạy GTV.app (launcher) với tham số — việc đăng ký "Mở khi đăng nhập" phải do chính GTV.app làm.
+    /// Trạng thái thật của mục "Mở khi đăng nhập" (SMAppService của GTV.app), GTV.app ghi lại mỗi lần đồng bộ:
+    /// "enabled", "requiresApproval" (người dùng tắt trong Cài đặt hệ thống), "notRegistered"; nil khi chưa biết.
+    var loginItemStatus: String? { defaults.string(forKey: "loginItemStatus") }
+
+    /// Dấu tích của mục menu: người dùng muốn, và macOS thật sự sẽ mở GTV.app khi đăng nhập.
+    var selectsAtLogin: Bool { selectAtLogin && (loginItemStatus ?? "enabled") == "enabled" }
+
     /// Vị trí GTV.app. Ưu tiên bản trong Applications (máy phát triển còn có các bản build khác cùng
     /// bundle ID).
     static func launcherURL() -> URL? {
@@ -77,12 +85,32 @@ final class Settings {
         return candidates.first ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.gtv.GTV")
     }
 
-    static func runLauncher(_ arguments: [String]) {
-        guard let app = launcherURL(), let exe = Bundle(url: app)?.executableURL else { return }
+    /// GTV.app nằm cố định trong Applications: chỉ bản đó đăng ký mở khi đăng nhập (bản trong DMG, thư mục tải về hay
+    /// thư mục build sẽ mất hoặc cũ đi; GTV.app tự kiểm như vậy).
+    static func isInApplications(_ url: URL) -> Bool {
+        let path = url.path
+        return path.hasPrefix("/Applications/")
+            || path.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path + "/Applications/")
+    }
+
+    /// Chạy GTV.app (launcher) với tham số — việc đăng ký "Mở khi đăng nhập" phải do chính GTV.app làm.
+    /// Trả về false nếu không tìm thấy hay không chạy được GTV.app.
+    @discardableResult
+    static func runLauncher(_ arguments: [String]) -> Bool {
+        guard let app = launcherURL(), let exe = Bundle(url: app)?.executableURL else {
+            DebugLog.write("Không tìm thấy GTV.app để chạy \(arguments)")
+            return false
+        }
         let p = Process()
         p.executableURL = exe
         p.arguments = arguments
-        try? p.run()
+        do {
+            try p.run()
+        } catch {
+            DebugLog.write("Không chạy được \(exe.path): \(error.localizedDescription)")
+            return false
+        }
+        return true
     }
 
     /// Biểu tượng V/E riêng của GTV (mặc định ẩn: menu bộ gõ của macOS đã có đủ).
