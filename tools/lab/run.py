@@ -662,6 +662,12 @@ def run_modes():
     # Đổi ứng dụng rồi 0,3 s sau người dùng chọn "English (GTV)" (⌃Space, 🌐…) -> theo, không bị đảo lại
     sh(["open", "-a", "/System/Applications/TextEdit.app"]); time.sleep(0.3)
     sh([DRV, "-", "20", "{TAPSHIFT}{IS:en}"]); check("user-switch-right-after-app-switch", "en")
+    # Từ ABC chọn lại một chế độ của GTV, lặp nhiều lần: macOS gắn GTV vào ô rồi mới báo chế độ người dùng chọn — GTV không
+    # được chọn đè chế độ cũ, lời báo cho lần GTV tự chọn không phải người dùng chọn (lab 42055281996, có lúc mới gặp).
+    for i in range(int(os.environ.get("MODES_REPEAT", "3"))):
+        for target in ("vi", "en"):
+            sh([DRV, "-", "20", "{TAPSHIFT}{IS:abc}{WAIT1000}{TAPSHIFT}{IS:" + target + "}"])
+            check(f"user-abc-then-{target}-{i + 1}", target)
     sh(["pkill", "-x", "TextEdit"])
     return out
 
