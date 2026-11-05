@@ -28,9 +28,6 @@ private final class ClientAdapter: TextClient {
                               replacementRange: notFound)
     }
 
-    /// Bộ gõ đã chèn chữ (chốt marked text…) trong lúc xử lý phím hiện tại (xem `GTVInputController.rearmJavaKey`).
-    var insertedDuringKey = false
-
     func insertText(_ text: String) {
         guard !text.isEmpty else {
             // Chuỗi rỗng: chỉ cần gỡ marked text (nếu có). Không gửi insertText rỗng: AWTView của Java đọc ký tự đầu tiên
@@ -38,7 +35,6 @@ private final class ClientAdapter: TextClient {
             if hasMarkedText() { setMarkedText("") }
             return
         }
-        insertedDuringKey = true
         client?.insertText(text, replacementRange: notFound)
     }
 
@@ -98,10 +94,12 @@ final class GTVInputController: IMKInputController {
     private let adapter = ClientAdapter()
     private var bundleID = ""
     private var hotkeyArmedAt: TimeInterval?
-    /// Ô đang gắn là ô văn bản hay view terminal (chỉ hỏi ở app terminal); nil: chưa biết, hỏi lại ở phím kế tiếp.
+    /// Ô đang gắn là ô văn bản hay view terminal (hỏi một lần lúc gắn); nil: chưa biết (ô tạm), hỏi lại ở phím kế tiếp.
     private var clientKind: ClientKind?
     /// Ô của ứng dụng Java (AWT…): chỉ gõ được bằng marked text, xem `JavaDetector`. nil: chưa biết.
     private var javaView: Bool?
+    /// Ô Java: chốt từ đang gạch chân sau một lúc không gõ (xem `scheduleJavaCommit`).
+    private var javaCommit: DispatchWorkItem?
 
     // MARK: - Vòng đời
 
@@ -114,12 +112,13 @@ final class GTVInputController: IMKInputController {
         hotkeyArmedAt = nil
         clientKind = nil
         javaView = nil
+        javaCommit?.cancel()
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
         KeyWatch.shared.rebase()
-        if Settings.knownTerminals.contains(bundleID) {
-            clientKind = Self.kind(of: client)
-        } else if Self.kind(of: client) == .terminalView {
+        clientKind = Self.kind(of: client)           // một lần cho mỗi lần gắn
+        if clientKind == .textView { javaView = false }
+        if clientKind == .terminalView, !Settings.knownTerminals.contains(bundleID) {
             JavaDetector.prefetch(bundleID)          // có kết quả trước phím đầu tiên
         }
         #if DEBUG
@@ -129,7 +128,7 @@ final class GTVInputController: IMKInputController {
         DebugLog.write("activateServer \(bundleID)")
         #endif
         Modes.shared.clientActivated(client, bundleID: bundleID)
-        _ = QtDetector.isQt(bundleID)   // kiểm tra trước ở luồng nền, có kết quả trước khi cần
+        _ = AppToolkit.profile(bundleID)   // kiểm tra trước ở luồng nền, có kết quả trước khi cần
     }
 
     private static func markedTextAttributes(_ client: Client) -> [String] {
@@ -169,7 +168,8 @@ final class GTVInputController: IMKInputController {
     /// máy ảo Java. Hỏi một lần cho mỗi ô (ô tạm của InputMethodKit: hỏi lại ở phím sau).
     private func isJavaView(_ client: Client) -> Bool {
         if let javaView { return javaView }
-        switch Self.kind(of: client) {
+        if clientKind == nil { clientKind = Self.kind(of: client) }
+        switch clientKind {
         case .terminalView?:
             guard let java = JavaDetector.usesJVM(bundleID, wait: 0.05) else { return false }   // chưa biết: hỏi lại sau
             javaView = java
@@ -192,6 +192,7 @@ final class GTVInputController: IMKInputController {
 
     override func deactivateServer(_ sender: Any!) {
         DebugLog.write("deactivateServer \(bundleID)")
+        javaCommit?.cancel()
         commit(sender)
     }
 
@@ -199,9 +200,10 @@ final class GTVInputController: IMKInputController {
     /// từ đang gõ nếu nó vẫn nằm nguyên trước con trỏ, xem `Session.commitRequested`.
     override func commitComposition(_ sender: Any!) {
         DebugLog.write("commitComposition \(bundleID)")
+        let saved = adapter.client
         adapter.client = sender as? Client
         session.commitRequested(adapter.client == nil ? nil : adapter)
-        adapter.client = nil
+        adapter.client = saved
     }
 
     /// macOS báo chế độ Tiếng Việt / Tiếng Anh. InputMethodKit gọi hàm này cả ngay SAU mỗi lần gắn bộ gõ vào ô nhập liệu
@@ -222,10 +224,12 @@ final class GTVInputController: IMKInputController {
         KeyWatch.shared.rebase()             // phím đổi chế độ (🌐, ⌃Space…) không tới bộ gõ
     }
 
+    /// Chốt từ đang gõ với ô `sender`. Giữ lại ô của phím đang xử lý nếu lời gọi lồng vào giữa `handle`.
     private func commit(_ sender: Any?) {
+        let saved = adapter.client
         adapter.client = sender as? Client
         session.commit(adapter.client == nil ? nil : adapter)
-        adapter.client = nil
+        adapter.client = saved
     }
 
     // MARK: - Xử lý phím
@@ -268,9 +272,25 @@ final class GTVInputController: IMKInputController {
             return false
         }
 
-        adapter.insertedDuringKey = false
-        let handled = handleKeyDown(event, client, flags: flags)
-        return handled
+        return handleKeyDown(event, client, flags: flags)
+    }
+
+    /// Ô Java: chốt từ đang gạch chân khi người dùng ngừng gõ một lúc. AWT nuốt phím không ra chữ (←, ⌘A, ⌘S, Esc…) nếu bộ gõ
+    /// chốt từ ngay trong keyDown của chính phím đó (IME Lab: "việt←x" ra "việtx"); chốt sớm thì phím đó tới Java như thường.
+    /// Đổi lại, dấu gõ sau khi đã dừng hơn `javaIdleCommit` giây không còn thêm được vào từ trước.
+    private static let javaIdleCommit = 1.0
+
+    private func scheduleJavaCommit(_ client: Client) {
+        javaCommit?.cancel()
+        javaCommit = nil
+        guard session.composing else { return }
+        let item = DispatchWorkItem { [weak self, weak client] in
+            guard let self, let client, self.session.composing else { return }
+            DebugLog.write("Java: chốt từ đang gạch chân sau \(Self.javaIdleCommit) s không gõ")
+            self.commit(client)
+        }
+        javaCommit = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.javaIdleCommit, execute: item)
     }
 
     private func handleKeyDown(_ event: NSEvent, _ client: Client, flags: NSEvent.ModifierFlags) -> Bool {
@@ -301,6 +321,7 @@ final class GTVInputController: IMKInputController {
 
         adapter.client = client
         defer { adapter.client = nil }
+        let toolkit = AppToolkit.profile(bundleID)
         var terminal = settings.terminalStyle(for: bundleID)
         var forceMarked = terminal == nil && (settings.useMarked(for: bundleID)
             || (Settings.knownTerminals.contains(bundleID) && settings.terminalMode == "marked"))
@@ -314,13 +335,15 @@ final class GTVInputController: IMKInputController {
                 forceMarked = settings.alwaysMarked
                 earlyCommit = false
             }
-        } else if !forceMarked && isJavaView(client) {
-            forceMarked = true                       // Java bỏ qua cách thay chữ trực tiếp, xem `JavaDetector`
+        } else if !forceMarked {
+            // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, LibreOffice, Emacs, MacVim — gõ bằng marked text.
+            forceMarked = toolkit.markedOnly || isJavaView(client)
         }
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
-                                     qtApp: QtDetector.isQt(bundleID), terminal: terminal, repeatDelay: repeatDelay,
+                                     qtApp: toolkit.qt, terminal: terminal, repeatDelay: repeatDelay,
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags))
+        if javaView == true { scheduleJavaCommit(client) }
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled
     }
@@ -335,7 +358,9 @@ final class GTVInputController: IMKInputController {
         let item = (sender as? [String: Any])?[kIMKCommandMenuItemName] as? NSMenuItem
             ?? sender as? NSMenuItem
         guard let item else { return }
+        // Chốt từ đang gõ TRƯỚC khi đổi chế độ / tuỳ chọn (theo kiểu gõ cũ; mục "Thoát GTV" kết thúc tiến trình ngay trong
+        // `perform`). Chỉ bỏ trạng thái thì phần đang gạch chân bị phím sau thay mất.
+        commit((sender as? [String: Any])?[kIMKCommandClientName] ?? client())
         AppMenu.perform(item, appBundleID: bundleID)
-        session.reset()
     }
 }

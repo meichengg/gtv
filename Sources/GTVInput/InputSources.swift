@@ -22,10 +22,14 @@ enum InputSources {
     static var isGTVSelected: Bool { currentID?.hasPrefix(gtvID) ?? false }
 
     /// Chọn chế độ khi không có ô nhập liệu nào để gọi `selectMode` (dự phòng).
+    /// Chế độ người dùng đã gỡ khỏi danh sách nguồn đầu vào thì không chọn (TISSelectInputSource sẽ lỗi im lặng, biểu tượng
+    /// lệch với chế độ của GTV) và không tự bật lại (đó là cấu hình của người dùng): GTV vẫn giữ chế độ V/E của nó.
     static func selectMode(_ id: String) {
         let filter = [kTISPropertyInputSourceID as String: id] as CFDictionary
         guard let src = (TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource])?.first
         else { return }
+        if let p = TISGetInputSourceProperty(src, kTISPropertyInputSourceIsEnabled),
+           !CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(p).takeUnretainedValue()) { return }
         TISSelectInputSource(src)
     }
 

@@ -28,7 +28,10 @@ enum JavaDetector {
 
     private static var cache: [Process: Bool] = [:]
     private static var running: [Process: Check] = [:]
-    private static let queue = DispatchQueue(label: "gtv.java-detector", qos: .userInitiated)
+    /// Tiến trình đã chờ kết quả một lần (hết hạn): các phím sau không chờ nữa.
+    private static var waited: Set<Process> = []
+    /// Hàng đợi song song: lần quét chậm của tiến trình này (không chạy Java: đi hết vùng nhớ) không chặn tiến trình khác.
+    private static let queue = DispatchQueue.global(qos: .userInitiated)
 
     /// Bắt đầu kiểm tra sớm (lúc gắn bộ gõ), để có kết quả trước phím đầu tiên.
     static func prefetch(_ bundleID: String) {
@@ -36,13 +39,15 @@ enum JavaDetector {
         start(p)
     }
 
-    /// Ô nhập liệu thuộc tiến trình chạy máy ảo Java không. Chưa có kết quả thì chờ tối đa `wait` giây (chỉ ở phím đầu tiên
-    /// của mỗi tiến trình, và thường đã có từ lúc gắn bộ gõ); nil: chưa biết (không tìm thấy tiến trình, hay hết hạn chờ).
+    /// Ô nhập liệu thuộc tiến trình chạy máy ảo Java không. Chưa có kết quả thì chờ tối đa `wait` giây — một lần cho mỗi tiến
+    /// trình (thường đã có từ lúc gắn bộ gõ); nil: chưa biết (không tìm thấy tiến trình, hay đang quét).
     static func usesJVM(_ bundleID: String, wait: Double) -> Bool? {
         guard let p = process(for: bundleID) else { return nil }
         if let known = cache[p] { return known }
         let check = running[p] ?? start(p)
-        guard check.group.wait(timeout: .now() + wait) == .success else { return nil }
+        let timeout: Double = waited.contains(p) ? 0 : wait
+        waited.insert(p)
+        guard check.group.wait(timeout: .now() + timeout) == .success else { return nil }
         return finish(p, check)
     }
 
@@ -64,6 +69,7 @@ enum JavaDetector {
         if let known = cache[p] { return known }
         cache[p] = check.result
         running[p] = nil
+        waited.remove(p)
         if check.result {
             DebugLog.write("tiến trình \(p.pid) chạy máy ảo Java: ô không khai báo thuộc tính văn bản sẽ gõ bằng marked text")
         }
@@ -72,7 +78,8 @@ enum JavaDetector {
 
     /// Tiến trình của ô nhập liệu: ứng dụng đang ở trước nếu khớp (gần như luôn vậy khi gõ), không thì tìm theo bundle ID.
     /// Ứng dụng Java (install4j: Burp Suite) có khi không đăng ký bundle ID với LaunchServices: so với Info.plist trong gói.
-    /// Tiến trình `java` không có gói (Ghidra chạy bằng script): bundle ID rỗng.
+    /// Tiến trình `java` không có gói (Ghidra chạy bằng script): launcher của OpenJDK nhúng Info.plist với bundle ID
+    /// "net.java.openjdk.java", LaunchServices không có gói cho nó — so với ứng dụng đang ở trước.
     private static func process(for bundleID: String) -> Process? {
         var pid: pid_t?
         if let front = NSWorkspace.shared.frontmostApplication {

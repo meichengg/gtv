@@ -88,6 +88,79 @@ private final class Field: TextClient {
     }
 }
 
+/// Ô có bộ đệm chậm như Chromium / Electron: bộ gõ đọc vị trí con trỏ và chữ từ một bản chụp chỉ cập nhật khi `flush()`
+/// (trang báo lại), còn phím và lần sửa của bộ gõ áp dụng ngay, theo thứ tự, lên văn bản thật. `backspaceAlways`: ⌫ luôn
+/// chạy cả khi bộ gõ trả lời đã xử lý (Chromium).
+private final class LaggyField: TextClient {
+    var real: [UInt16] = []
+    var caret = 0
+    private var snap: [UInt16] = []
+    private var snapCaret = 0
+    var autoFlush = true
+    var backspaceAlways = false
+    let session = Session()
+    var options = EngineOptions()
+
+    var text: String { String(decoding: real, as: UTF16.self) }
+
+    func flush() { snap = real; snapCaret = caret }
+
+    func selectedRange() -> (location: Int, length: Int)? { (snapCaret, 0) }
+    func text(location: Int, length: Int) -> String? {
+        guard location >= 0, location + length <= snap.count else { return nil }
+        return String(decoding: snap[location..<location + length], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with s: String) {
+        let end = min(location + length, real.count)
+        guard location >= 0, location <= end else { return }
+        real.replaceSubrange(location..<end, with: Array(s.utf16))
+        caret = location + s.utf16.count
+    }
+    func setMarkedText(_ text: String) { XCTFail("gõ trực tiếp") }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("không phải Qt") }
+    func insertText(_ s: String) {
+        real.insert(contentsOf: Array(s.utf16), at: caret)
+        caret += s.utf16.count
+    }
+
+    func type(_ keys: String) {
+        for k in keys {
+            if !session.handle(.char(k), self, options: options, forceMarked: false) { insertText(String(k)) }
+            if autoFlush { flush() }
+        }
+    }
+
+    func backspace() {
+        let handled = session.handle(.backspace, self, options: options, forceMarked: false)
+        if (!handled || backspaceAlways), caret > 0 {
+            real.remove(at: caret - 1)
+            caret -= 1
+        }
+        if autoFlush { flush() }
+    }
+}
+
+/// Ô kiểu Qt 5: luôn báo con trỏ ở 0, không cho đọc chữ, bỏ qua vùng cần thay (chèn tại con trỏ).
+private final class Qt5Field: TextClient {
+    var units: [UInt16] = []
+    let session = Session()
+    var options = EngineOptions()
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { (0, 0) }
+    func text(location: Int, length: Int) -> String? { nil }
+    func replaceText(location: Int, length: Int, with s: String) { units += Array(s.utf16) }
+    func setMarkedText(_ text: String) {}
+    func replaceViaMarkedText(location: Int, length: Int, with s: String) { units += Array(s.utf16) }
+    func insertText(_ s: String) { units += Array(s.utf16) }
+
+    func type(_ keys: String) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: false) {
+            units += Array(String(k).utf16)
+        }
+    }
+}
+
 /// Ô nhập liệu dùng marked text như NSTextView: marked text nằm trong văn bản, `insertText` chốt nó; ứng dụng có thể tự chốt
 /// phần gạch chân mà bộ gõ không thấy (JetBrains Runtime khi click, ứng dụng đổi chữ bằng chương trình…).
 private final class ComposingField: TextClient {
@@ -731,6 +804,90 @@ final class SessionTests: XCTestCase {
             XCTAssertEqual(t.screen, expect, "\(method) \(keys)")
             XCTAssertEqual(t.marked, "", "\(keys): từ cuối phải được chốt bằng dấu câu / dấu cách")
         }
+    }
+
+    /// ⌫ làm dời dấu thanh (kiểu cũ "hoàn" ⌫ → "hòa"): bộ gõ thay phần đổi nhưng để chính ứng dụng xoá ký tự cuối — đúng cả
+    /// khi ứng dụng vẫn chạy ⌫ của nó sau lần thay của bộ gõ (Chromium; IME Lab: "hoafn⌫" từng ra "hò").
+    func testBackspaceToneMoveNeverDeletesTwice() {
+        for always in [false, true] {
+            let f = LaggyField()
+            f.backspaceAlways = always
+            f.type("hoafn")
+            f.backspace()
+            f.type(" ")
+            XCTAssertEqual(f.text, "hòa ", "ứng dụng luôn chạy ⌫: \(always)")
+
+            let g = LaggyField()
+            g.backspaceAlways = always
+            g.options.method = .vni
+            g.type("toa1n")
+            g.backspace()
+            g.type(" ")
+            XCTAssertEqual(g.text, "tóa ", "VNI, ứng dụng luôn chạy ⌫: \(always)")
+        }
+        // Ô thường vẫn như cũ.
+        let h = Field()
+        h.type("hoafn")
+        h.backspace()
+        h.type(" ")
+        XCTAssertEqual(h.text, "hòa ")
+    }
+
+    /// Ô có bộ đệm chậm (Chromium khi trang chậm): bộ gõ đọc thấy trạng thái cũ thì không đoán — chữ đi nguyên văn, không bao
+    /// giờ thay sai chỗ, đảo thứ tự phím hay xoá chữ không do nó gõ.
+    func testLaggyClientNeverEditsFromStaleView() {
+        // 'h' chưa được trang báo lại khi 'w' tới: không chèn "ư" trước 'h' ("toi nưh").
+        let f = LaggyField()
+        f.type("toi n")
+        f.autoFlush = false
+        f.type("hw")
+        f.flush()
+        f.autoFlush = true
+        f.type(" ")
+        XCTAssertEqual(f.text, "toi nhw ")
+
+        // ⌫ chưa được báo lại khi 's' tới: không đọc lại "tieng" rồi thay đè lên chữ sau từ ("tiếngabc").
+        let g = LaggyField()
+        g.type("tieng abc")
+        g.caret = 5
+        g.flush()
+        g.type("")                                  // con trỏ dời: từ mới bắt đầu ở phím sau
+        let start = Session()
+        _ = start
+        g.autoFlush = false
+        g.backspace()
+        g.type("s")
+        g.flush()
+        XCTAssertTrue(g.text.hasSuffix(" abc"), "chữ sau từ phải còn nguyên: \(g.text)")
+        XCTAssertFalse(g.text.contains("ếngabc"))
+
+        // Lần thay e → ê chưa được báo lại khi 's' tới: không đọc lại "tie" rồi thay thành "tíe" (mất mũ).
+        let h = LaggyField()
+        h.type("tie")
+        h.autoFlush = false
+        h.type("es")
+        h.flush()
+        XCTAssertNotEqual(h.text, "tíe")
+        XCTAssertTrue(h.text == "tiês" || h.text == "tiế", h.text)
+
+        // Bình thường (trang báo lại kịp): gõ đúng cả câu, kể cả ⌫ trong từ.
+        let k = LaggyField()
+        k.type("Tooi yeeu tieengs Vieetj ")
+        XCTAssertEqual(k.text, "Tôi yêu tiếng Việt ")
+    }
+
+    /// Ô kiểu Qt 5 (con trỏ luôn báo 0, bỏ qua vùng cần thay): không bao giờ chèn ư / ơ vào giữa từ ("awesome" → "aưesome");
+    /// thấy rồi thì các từ sau gõ bằng marked text (GTVInput còn nhận ra Qt 5 trước cả từ đầu tiên, xem `AppToolkit`).
+    func testQt5StyleFieldNeverInsertsMidWord() {
+        for c in ["awesome", "how", "hello"] {
+            let f = Qt5Field()
+            f.type(c + " ")
+            XCTAssertEqual(f.text, c + " ", c)
+        }
+        let g = Qt5Field()
+        g.options.method = .vni
+        g.type("ab vie65t ")
+        XCTAssertTrue(g.text.hasSuffix(" việt "), g.text)
     }
 
     /// Ứng dụng tự chốt phần gạch chân giữa từ: gõ tiếp là từ mới, không dựng lại cả từ ở chỗ mới (thành chữ đôi "việviệt").

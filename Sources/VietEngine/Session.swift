@@ -133,8 +133,17 @@ public final class Session {
     /// Lần thay gần nhất của bộ gõ trong từ đang gõ: từ trước (`from`) và sau (`to`) lần thay. Bộ đệm phía ứng dụng chưa có
     /// lần thay đó thì vẫn cho đọc `from` (xem `staleWord`).
     private var lastEdit: (from: String, to: String)?
+    /// Gõ trực tiếp: ⌫ đi thẳng khi không còn từ đang gõ, và vị trí con trỏ lúc đó — ở chữ sau, nếu con trỏ chưa lùi thì ô chưa
+    /// xử lý xong ⌫: không đọc lại từ trước con trỏ (`continueWordOnNextChar`) từ bản chụp cũ.
+    private var deletedAt: Int?
+    /// Ô từng báo con trỏ ở đầu văn bản trong khi từ đang gõ nằm sau đó (Qt 5: luôn báo 0): ô không cho biết con trỏ thật, các
+    /// từ sau gõ bằng marked text (chèn tại con trỏ, không cần vị trí).
+    private var caretBlind = false
 
     public init() {}
+
+    /// Đang có phần gạch chân của bộ gõ chưa chốt trong ô nhập liệu.
+    public var composing: Bool { marked && !preedit.isEmpty }
 
     /// Ghi log chẩn đoán (bản Debug của bộ gõ gắn vào DebugLog).
     public var log: ((String) -> Void)?
@@ -154,6 +163,7 @@ public final class Session {
         untracked = false
         passedAt = nil
         lastEdit = nil
+        deletedAt = nil
     }
 
     private func endMarkedWord() {
@@ -231,16 +241,19 @@ public final class Session {
             continueWordOnNextChar = false
             return false
         case .backspace:
-            passedAt = nil           // con trỏ lùi lại: phép thử "con trỏ chưa nhích" (`lostTrack`) không còn đúng
             let handled = backspace(client)
-            if engine.isEmpty && !marked { continueWordOnNextChar = true }
+            if engine.isEmpty && !marked {
+                continueWordOnNextChar = true
+                if !handled { deletedAt = client.selectedRange()?.location }   // trước khi ứng dụng xoá
+            }
             return handled
         case let .char(ch):
             var sel: (location: Int, length: Int)?
             if engine.isEmpty {
                 engine.options = options
+                let deleted = deletedAt
                 endDirectWord()
-                if forceMarked {
+                if forceMarked || caretBlind {
                     marked = true            // gạch chân: không cần vị trí con trỏ (bớt một lần hỏi ứng dụng)
                     anchor = 0
                 } else {
@@ -250,7 +263,13 @@ public final class Session {
                 }
                 committed = ""
                 preedit = ""
-                if continueWordOnNextChar && !marked { resync(client) }
+                if continueWordOnNextChar && !marked {
+                    if let d = deleted, sel?.location == d {
+                        log?("gõ trực tiếp: con trỏ chưa lùi sau ⌫ (\(d)) — không đọc lại từ trước con trỏ")
+                    } else {
+                        resync(client)
+                    }
+                }
                 continueWordOnNextChar = false
             } else if !marked {
                 sel = client.selectedRange()
@@ -282,23 +301,24 @@ public final class Session {
 
     /// Gõ trực tiếp, giữa từ: ô nhập liệu cho thấy điều bộ gõ không thể đoán chắc — trả về lý do, khi đó không sửa gì nữa trong
     /// từ này. nil: theo dõi tiếp (kể cả khi con trỏ đã bị dời — `resync` đọc lại từ ở chỗ mới).
-    /// - phím trước đi thẳng mà con trỏ chưa nhích: ứng dụng chưa xử lý xong phím đó (Chromium / Electron khi trang chậm: vị trí
-    ///   và chữ đọc được đến từ bộ đệm chưa cập nhật), hay không cho biết con trỏ thật (Qt5: luôn báo 0);
+    /// - phím trước (chữ hay ⌫) đi thẳng mà con trỏ chưa nhích: ứng dụng chưa xử lý xong phím đó (Chromium / Electron khi trang
+    ///   chậm: vị trí và chữ đọc được đến từ bộ đệm chưa cập nhật), hay không cho biết con trỏ thật (Qt5: luôn báo 0);
     /// - con trỏ ở đúng chỗ của từ trước lần thay gần nhất của bộ gõ (bộ đệm chưa có lần thay đó);
     /// - ô báo con trỏ ở đầu văn bản trong khi từ đang gõ nằm sau đó (Qt5).
     private func lostTrack(_ sel: (location: Int, length: Int)?) -> String? {
         guard let sel else { return "ô không còn cho biết vị trí con trỏ" }
         let expected = anchor + engine.displayed.utf16.count
         if sel.location == expected { return nil }
+        if sel.location == 0, sel.length == 0, expected > 0 {     // (⌘A chọn từ 0 thì là dời con trỏ thật: đọc lại)
+            caretBlind = true
+            return "ô báo con trỏ ở đầu văn bản — các từ sau gõ bằng marked text"
+        }
         if let at = passedAt, sel.location == at {
             return "con trỏ chưa nhích sau phím đi thẳng (\(at))"
         }
         if let stale = staleWord(engine.displayed), stale.utf16.count != engine.displayed.utf16.count,
            sel.location == anchor + stale.utf16.count {
             return "ô chưa có lần thay trước của bộ gõ (con trỏ \(sel.location))"
-        }
-        if sel.location == 0, sel.length == 0, expected > 0 {     // (⌘A chọn từ 0 thì là dời con trỏ thật: đọc lại)
-            return "ô báo con trỏ ở đầu văn bản"
         }
         return nil
     }
@@ -930,14 +950,20 @@ public final class Session {
             engine.reset()          // văn bản đã đổi ngoài tầm bộ gõ (vd. Cmd+A): bỏ từ đang gõ
             return false
         }
+        passedAt = nil
         if sel.length > 0 { return false }   // chỉ xoá phần gợi ý tự động đang bôi đen sau từ
         let old = engine.displayed
-        guard case let .replace(_, new) = engine.backspace(), let last = old.last else { return false }
+        guard case let .replace(_, new) = engine.backspace(), let last = old.last else {
+            // Ứng dụng tự xoá ký tự cuối: ở phím sau con trỏ phải đã lùi (`lostTrack`).
+            if !engine.isEmpty { passedAt = sel.location }
+            return false
+        }
         // Xoá lùi làm đổi chữ còn lại (kiểu dấu cũ: "hoàn" ⌫ → "hòa"): thay phần đổi nhưng GIỮ ký tự cuối, rồi để chính ứng
         // dụng xoá nó như mọi phím ⌫ — không trả lời "đã xử lý" cho ⌫. Chromium / Electron vẫn chạy ⌫ của nó sau lần thay
         // của bộ gõ (IME Lab: "hoafn⌫" ra "hò").
-        if replace(old, new + String(last), client, sel: sel) {
-            passedAt = nil
+        let kept = new + String(last)
+        if replace(old, kept, client, sel: sel) {
+            if kept.utf16.count == old.utf16.count { passedAt = sel.location }
             return false
         }
         engine.reset()              // không thay được: ứng dụng xoá ký tự cuối, bỏ từ

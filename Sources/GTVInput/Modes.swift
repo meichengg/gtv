@@ -44,6 +44,8 @@ final class Modes {
     /// Chế độ vừa bị bỏ qua vì do hệ thống chọn, và lúc đó: ứng dụng chọn lại chế độ này ngay sau đó (không có
     /// thao tác nào của người dùng) cũng bỏ qua.
     private var rejected: (on: Bool, at: TimeInterval)?
+    /// Lần GTV tự chọn một chế độ của nó gần nhất (xem `select`).
+    private var selfSelected: (id: String, at: TimeInterval)?
 
     private init() {
         // Giữ chế độ người dùng chọn lần trước (bộ gõ có thể khởi động lại khi cập nhật, hay khi đang ở ABC).
@@ -134,7 +136,7 @@ final class Modes {
     private func restoreGTV() {
         guard gtvInUse, !suspended, !Self.isScreenLocked, !InputSources.isGTVSelected else { return }
         DebugLog.write("khôi phục GTV (\(vietnamese ? "vi" : "en")), đang ở \(InputSources.currentID ?? "-")")
-        InputSources.selectMode(vietnamese ? InputSources.vietnameseID : InputSources.englishID)
+        select(vietnamese ? InputSources.vietnameseID : InputSources.englishID)
     }
 
     private static var isScreenLocked: Bool {
@@ -144,7 +146,13 @@ final class Modes {
 
 
     private func systemInputSourceChanged() {
-        KeyWatch.shared.rebase()      // phím gõ ở bộ gõ khác / phím đổi bộ gõ không tới GTV
+        // Phím gõ ở bộ gõ khác / phím đổi bộ gõ không tới GTV: đặt lại sổ phím — trừ khi đây chỉ là lần GTV tự chọn lại chế độ
+        // của nó (không có phím nào đi vòng; đặt lại sẽ quên phím đi vòng vừa thấy, vd. ⌫ ở Terminal.app).
+        if let own = selfSelected, own.id == InputSources.currentID, Self.now - own.at < 1 {
+            selfSelected = nil
+        } else {
+            KeyWatch.shared.rebase()
+        }
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
         DebugLog.write("bộ gõ đổi -> \(InputSources.currentID ?? "-"), front=\(front), tạm dừng=\(suspended)")
         let wasGTV = lastSourceIsGTV
@@ -175,7 +183,7 @@ final class Modes {
             syncSystemMode()   // bộ gõ "cha" được chọn: chọn lại chế độ
             return
         }
-        if id == InputSources.vietnameseID && isExcluded(front) {
+        if id == InputSources.vietnameseID && isExcluded(currentApp(front: front)) {
             restoreVietnamese = true
             vietnamese = false
             syncSystemMode()
@@ -192,15 +200,32 @@ final class Modes {
     ///   ngay trên mọi phiên bản macOS).
     /// - macOS 26: thêm thời điểm sự kiện của WindowServer. macOS 27 chỉ công bố chúng mỗi 0,5 s, làm tròn xuống — sự kiện
     ///   vừa xảy ra trông như chưa xảy ra: không dùng được.
+    /// Phím bộ gõ đã nhận không bao giờ là thao tác đổi bộ gõ (⌃Space, 🌐 do hệ thống giữ lại): không tính — một lời báo đổi
+    /// chế độ của hệ thống tới sau phím đầu tiên (gõ ngay khi ô vừa hiện) không được coi là người dùng chọn.
     private static func userInput(since t: TimeInterval) -> Bool {
-        if KeyWatch.shared.lastKeyAt >= t { return true }
         let live = LiveInput.shared
         live.sample()
-        if live.activity(from: t, to: now).seen { return true }
+        let log = live.log
+        let end = now
+        if log.history.contains(where: { $0.key == nil && $0.at >= t }) { return true }      // click
+        if log.pending.contains(where: { $0.key != nil && $0.at >= t }) { return true }      // phím đặc biệt đi vòng bộ gõ
+        if log.flagsPressed(from: t, to: end) { return true }                                 // ⌃ ⌥ ⌘ fn, caps lock
         guard KeyWatch.shared.counterMode == .exact else { return false }
-        let age = now - t
-        let types: [CGEventType] = [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        let age = end - t
+        let types: [CGEventType] = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         return types.contains { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) < age }
+    }
+
+    /// Ứng dụng đang nhận phím: ô được gắn gần nhất nếu lần gắn đó mới hơn lần đổi ứng dụng (bảng kiểu Spotlight / Raycast /
+    /// Alfred không làm đổi ứng dụng phía trước), không thì ứng dụng phía trước.
+    private func currentApp(front: String) -> String {
+        !clientBundleID.isEmpty && activatedAt >= appActivatedAt ? clientBundleID : front
+    }
+
+    /// Chọn chế độ của GTV (ghi lại để thông báo đổi bộ gõ do chính lần chọn này gây ra không bị coi là người dùng đổi).
+    private func select(_ id: String) {
+        selfSelected = (id, Self.now)
+        InputSources.selectMode(id)
     }
 
     /// Vừa đổi ứng dụng mà người dùng chưa thao tác gì sau đó.
@@ -243,6 +268,8 @@ final class Modes {
         }
         DebugLog.write("chế độ -> \(on ? "vi" : "en") (\(source)\(returning ? ", người dùng chọn lại GTV" : ""))")
         rejected = nil
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
+        if !isExcluded(currentApp(front: front)) { restoreVietnamese = false }   // người dùng đã chọn: không khôi phục đè lên
         set(on, updateSystem: false)
     }
 
@@ -275,7 +302,7 @@ final class Modes {
         DispatchQueue.main.async { [self] in
             let mode = vietnamese ? InputSources.vietnameseID : InputSources.englishID
             if InputSources.isGTVSelected && InputSources.currentID != mode {
-                InputSources.selectMode(mode)
+                select(mode)
             }
         }
     }
@@ -304,7 +331,10 @@ final class Modes {
             InputSources.selectMode(InputSources.vietnameseID)
             return
         }
-        if !vietnamese && isExcluded(clientBundleID) { return }
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
+        let app = currentApp(front: front)
+        if !vietnamese && isExcluded(app) { return }
+        if !isExcluded(app) { restoreVietnamese = false }
         if Settings.shared.playSwitchSound { NSSound.beep() }
         DebugLog.write("toggle -> \(vietnamese ? "en" : "vi")")
         set(!vietnamese)
@@ -319,7 +349,7 @@ final class Modes {
                 return
             }
             DebugLog.write("kiểm tra sau \(delay)s: CHƯA khớp (\(InputSources.currentID ?? "-")), chọn lại \(mode)")
-            InputSources.selectMode(mode)
+            select(mode)
             if retries > 0 { verifySystemMode(retries: retries - 1, delay: 0.3) }
         }
     }

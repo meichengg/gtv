@@ -28,7 +28,6 @@
 		75A385E61452BF063D50685B /* SessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92A46C139EFA1902702308B9 /* SessionTests.swift */; };
 		76F03C9123DBEDB0E57A1565 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 61AA7C5CC11AC3862C10B7D5 /* AppIcon.icns */; };
 		79C7FA9AAB3F6EEB7F81CEE2 /* Tables.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAD40F1C897E90A79DF03B71 /* Tables.swift */; };
-		7F15F0DE771D585E253F893B /* QtDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4442A713AEF84EDA3EE146DD /* QtDetector.swift */; };
 		85FD4EC9B339DDF645008C36 /* TerminalScreenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBD9DE142A7C26D8E0595822 /* TerminalScreenTests.swift */; };
 		895FE5A06609E7222E5D90E1 /* InputMethodKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D20BB3D8C69F6C5A30753353 /* InputMethodKit.framework */; };
 		8AC9242AC6506D3D3D52F561 /* Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C942C41A08257D1C27DEDCBF /* Engine.swift */; };
@@ -39,6 +38,7 @@
 		B7731BE6BCB9AEDAED4111D5 /* EngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E0AD2333CEFBE4AC1B693A6 /* EngineTests.swift */; };
 		BE028D2E9E5FAA46C77A67B7 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A683909FBBF4463C94CF640 /* main.swift */; };
 		BF2DFCEBF0D24AB175DBC91B /* InputSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 661C0580E5E6B5E582BAD3D4 /* InputSources.swift */; };
+		CB0E1FC622D4A30F178B12ED /* AppToolkit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8176DD8F6742152C7D40E1AF /* AppToolkit.swift */; };
 		CCE6AED1AD68BA08CFE2E4D6 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3C504A1435BA73CE275369 /* Settings.swift */; };
 		CDBD08879CFA21A2E6D6C462 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05AC7C50B20F8ED398081259 /* DebugLog.swift */; };
 		D75477C469A22CF7F93067FB /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36ECC934EBB2131DFC903D8E /* Session.swift */; };
@@ -96,7 +96,6 @@
 		3EDC763A5B1168D26B5D63A5 /* libVietEngine.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libVietEngine.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		40B13F5512AE34AB0B9A223B /* VietEngineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VietEngineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		42EBC293736E90A638F492AF /* Hotkey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Hotkey.swift; sourceTree = "<group>"; };
-		4442A713AEF84EDA3EE146DD /* QtDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QtDetector.swift; sourceTree = "<group>"; };
 		5113B87895D95941D7323D26 /* GTVInput.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GTVInput.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		52FF0AC8F47708857274EAA6 /* Updater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Updater.swift; sourceTree = "<group>"; };
 		5E3C504A1435BA73CE275369 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
@@ -108,6 +107,7 @@
 		6EC9C644AE077F93675E91A9 /* icon-en.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = "icon-en.tiff"; sourceTree = "<group>"; };
 		74943AB85A1ACC63E7E1A7C7 /* icon.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = icon.tiff; sourceTree = "<group>"; };
 		7BE67B802A8FA7F5580AC3A7 /* AppMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMenu.swift; sourceTree = "<group>"; };
+		8176DD8F6742152C7D40E1AF /* AppToolkit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppToolkit.swift; sourceTree = "<group>"; };
 		8AE1317FEFE440998EEC6D1D /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
 		8C4829B78686F5EEDAAE4D2B /* InputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputController.swift; sourceTree = "<group>"; };
 		8DCC5FFA32B815F886682598 /* GTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -193,6 +193,7 @@
 			isa = PBXGroup;
 			children = (
 				7BE67B802A8FA7F5580AC3A7 /* AppMenu.swift */,
+				8176DD8F6742152C7D40E1AF /* AppToolkit.swift */,
 				05AC7C50B20F8ED398081259 /* DebugLog.swift */,
 				42EBC293736E90A638F492AF /* Hotkey.swift */,
 				8C4829B78686F5EEDAAE4D2B /* InputController.swift */,
@@ -202,7 +203,6 @@
 				0D099114FBF9D6AB3C21D5A4 /* LiveInput.swift */,
 				6A683909FBBF4463C94CF640 /* main.swift */,
 				F326911EE6FE5701740BC28C /* Modes.swift */,
-				4442A713AEF84EDA3EE146DD /* QtDetector.swift */,
 				5E3C504A1435BA73CE275369 /* Settings.swift */,
 				C5FD2BD5169653BA694708AC /* StatusController.swift */,
 				52FF0AC8F47708857274EAA6 /* Updater.swift */,
@@ -473,6 +473,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				97E905D9A7D26EF5D3A50FFA /* AppMenu.swift in Sources */,
+				CB0E1FC622D4A30F178B12ED /* AppToolkit.swift in Sources */,
 				CDBD08879CFA21A2E6D6C462 /* DebugLog.swift in Sources */,
 				53227346BE7555757824037E /* Hotkey.swift in Sources */,
 				2ABB4140E3596090D04C6F5C /* InputController.swift in Sources */,
@@ -481,7 +482,6 @@
 				F7B98D9A82DBF7C05A174797 /* KeyWatch.swift in Sources */,
 				EBD731229A701CED0C86F787 /* LiveInput.swift in Sources */,
 				27E517B3F7827B5E51EA4349 /* Modes.swift in Sources */,
-				7F15F0DE771D585E253F893B /* QtDetector.swift in Sources */,
 				CCE6AED1AD68BA08CFE2E4D6 /* Settings.swift in Sources */,
 				5EE3E1435ED4BAAEA7C372E0 /* StatusController.swift in Sources */,
 				46CF5AD1760FEA6FCA3A9288 /* Updater.swift in Sources */,
