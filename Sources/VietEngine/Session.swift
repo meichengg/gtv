@@ -209,9 +209,13 @@ public final class Session {
     /// GTVInput, xem `KeyLedger`).
     /// `legacy`: terminal — byte terminal gửi xuống shell cho phím này khi không có bổ trợ (Enter "\r", Tab "\t", ⌫ DEL,
     /// Esc, ←, Ctrl+chữ); dùng để gửi kèm phím khi Ghostty sẽ nuốt nó (xem `handleTerminal`).
+    /// `markedAtCaretZero`: ô tự vẽ của ứng dụng chưa kiểm chứng (GPUI, terminal nhúng, Rust/winit…): từ bắt đầu khi ô báo con
+    /// trỏ ở {0, 0} thì gõ bằng marked text — không phân biệt được ô trống với ô không cho biết con trỏ (luôn báo 0, bỏ qua
+    /// vùng thay), mà marked text đúng ở cả hai. Ô báo vị trí thật thì từ sau gõ trực tiếp như thường.
     public func handle(_ key: Key, _ client: TextClient, options: EngineOptions, forceMarked: Bool,
                        qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil,
-                       earlyCommit: Bool = false, gap: KeyGap = .none, legacy: String? = nil) -> Bool {
+                       earlyCommit: Bool = false, gap: KeyGap = .none, legacy: String? = nil,
+                       markedAtCaretZero: Bool = false) -> Bool {
         self.qtApp = qtApp
         self.earlyCommit = earlyCommit
         inTerminal = terminal != nil
@@ -283,7 +287,7 @@ public final class Session {
                     anchor = 0
                 } else {
                     sel = client.selectedRange()
-                    marked = sel == nil
+                    marked = sel == nil || (markedAtCaretZero && sel?.location == 0 && sel?.length == 0)
                     anchor = sel?.location ?? 0
                 }
                 committed = ""

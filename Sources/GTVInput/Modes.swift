@@ -35,8 +35,10 @@ final class Modes {
     /// (bộ gõ nhớ theo từng ứng dụng / cửa sổ). Lần đổi trong khoảng này mà người dùng không bấm phím hay click
     /// gì kể từ lúc kích hoạt thì không phải do người dùng: giữ nguyên chế độ của GTV.
     private static let activationWindow: TimeInterval = 0.6
-    /// Bộ gõ đang chọn (theo thông báo gần nhất) có phải GTV không.
-    private var lastSourceIsGTV = InputSources.isGTVSelected
+    /// Bộ gõ đang chọn (theo thông báo gần nhất) có phải GTV không. Lúc tiến trình vừa khởi động coi như chưa: macOS khởi động
+    /// GTV khi người dùng chọn một chế độ của nó từ bộ gõ khác (thông báo của lần chọn đó tới trước khi GTV kịp nghe) — lần gắn
+    /// đầu tiên là lần quay lại GTV, lựa chọn đó (setValue) quyết định, GTV không chọn đè chế độ đã lưu.
+    private var lastSourceIsGTV = false
     /// Lần rời GTV gần nhất là do hệ thống (ô mật khẩu, khoá màn hình, đổi ứng dụng), không phải người dùng tự
     /// chọn bộ gõ khác: lần quay lại GTV sau đó cũng do hệ thống, giữ chế độ của GTV. Người dùng tự chọn bộ gõ
     /// khác rồi tự chọn lại một chế độ của GTV thì theo lựa chọn đó.
@@ -185,7 +187,7 @@ final class Modes {
             return
         }
         if id == InputSources.vietnameseID && isExcluded(currentApp(front: front)) {
-            restoreVietnamese = true
+            if wantsVietnameseHere { restoreVietnamese = true }
             vietnamese = false
             syncSystemMode()
             return
@@ -228,14 +230,17 @@ final class Modes {
         let now = Self.now
         selfSelected.removeAll { now - $0.at >= 1 }
         selfSelected.append((id, now))
+        LiveInput.shared.keep(for: 1.5)                       // xem `ownSelection`
         InputSources.selectMode(id)
     }
 
     /// Hệ thống báo chế độ `id` mà chính GTV vừa chọn (`select`, trong 1 giây — thường tới 2 lần: setValue và thông báo
-    /// đổi bộ gõ).
+    /// đổi bộ gõ), và người dùng không thao tác gì từ lần chọn đó. Có thao tác (⌃Space, 🌐, menu bộ gõ — kể cả chọn lại đúng
+    /// chế độ GTV vừa chọn sau khi đã đổi sang chế độ kia) thì đây là lựa chọn của người dùng.
     private func ownSelection(_ id: String) -> Bool {
         let now = Self.now
-        return selfSelected.contains { $0.id == id && now - $0.at < 1 }
+        guard let own = selfSelected.last(where: { $0.id == id && now - $0.at < 1 }) else { return false }
+        return !Self.userInput(since: own.at)
     }
 
     /// Lời báo cho lần GTV tự chọn không bao giờ là người dùng chọn. Lúc GTV chọn, chế độ đó khớp với GTV; nếu giờ đã
@@ -246,6 +251,13 @@ final class Modes {
         guard (id == InputSources.vietnameseID) != vietnamese else { return }
         DebugLog.write("giữ chế độ \(vietnamese ? "vi" : "en"): \(id == InputSources.vietnameseID ? "vi" : "en") là lần GTV tự chọn (\(source))")
         syncSystemMode()
+    }
+
+    /// Ở ứng dụng loại trừ, hệ thống báo chế độ tiếng Việt: chỉ nhớ để khôi phục tiếng Việt khi rời ứng dụng nếu người dùng
+    /// đang ở tiếng Việt hoặc tự chọn nó — ứng dụng / macOS tự chọn lại tiếng Việt (nhớ theo ứng dụng) không được biến chế độ
+    /// tiếng Anh của người dùng thành tiếng Việt.
+    private var wantsVietnameseHere: Bool {
+        vietnamese || Self.userInput(since: max(activatedAt, appActivatedAt))
     }
 
     /// Vừa đổi ứng dụng mà người dùng chưa thao tác gì sau đó.
@@ -265,7 +277,15 @@ final class Modes {
     /// - ngay sau khi đổi ứng dụng / ô nhập liệu mà người dùng chưa thao tác gì;
     /// - ứng dụng chọn lại chế độ vừa bị bỏ qua (người dùng chưa thao tác gì từ lúc đó).
     private func adopt(_ on: Bool, from source: String, returning: Bool) {
-        guard on != vietnamese else { return }
+        guard on != vietnamese else {
+            // Người dùng tự chọn lại GTV ở đúng chế độ đang có (vd. "English (GTV)" khi đang chờ khôi phục tiếng Việt sau ứng
+            // dụng loại trừ): lựa chọn đó thắng, không khôi phục đè nữa.
+            if returning, !leftGTVBySystem, !appSwitchedBySystem {
+                let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
+                if !isExcluded(currentApp(front: front)) { restoreVietnamese = false }
+            }
+            return
+        }
         var reason: String?
         if let r = rejected, r.on == on, Self.now - r.at < 2, !Self.userInput(since: r.at) {
             // Cùng một lần đổi được báo nhiều lần (thông báo + setValue), hoặc ứng dụng chọn lại.
@@ -310,11 +330,17 @@ final class Modes {
             }
         } else if restoreVietnamese {
             restoreVietnamese = false
-            set(true)
+            // Người dùng tự rời GTV rồi tự chọn lại một chế độ của nó ở ứng dụng này: lựa chọn đó quyết định (`adopt`), không
+            // khôi phục đè.
+            if lastSourceIsGTV || leftGTVBySystem { set(true) }
         }
         // Vừa chọn lại GTV từ bộ gõ khác: chế độ người dùng (hoặc hệ thống) chọn tới ngay sau (setValue, thông báo đổi bộ
-        // gõ) và `adopt` quyết định theo hay giữ; chọn lại chế độ cũ ngay ở đây sẽ đè lên lựa chọn của người dùng.
-        if lastSourceIsGTV { syncSystemMode() }
+        // gõ) và `adopt` quyết định theo hay giữ; chọn lại chế độ cũ ngay ở đây sẽ đè lên lựa chọn của người dùng. Bộ gõ "cha"
+        // được chọn (không chế độ nào) thì luôn chọn lại.
+        let current = InputSources.currentID
+        let parentSelected = InputSources.isGTVSelected
+            && current != InputSources.vietnameseID && current != InputSources.englishID
+        if lastSourceIsGTV || parentSelected { syncSystemMode() }
     }
 
     /// Khi chuyển ứng dụng, macOS có lúc chọn bộ gõ GTV "cha" thay vì một chế độ (biểu tượng không
@@ -338,7 +364,7 @@ final class Modes {
         let on = modeID != InputSources.englishID
         if on && isExcluded(clientBundleID) {
             // Ứng dụng loại trừ không gõ tiếng Việt: trả về tiếng Anh.
-            restoreVietnamese = true
+            if wantsVietnameseHere { restoreVietnamese = true }
             vietnamese = false
             syncSystemMode()
             return

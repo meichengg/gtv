@@ -200,6 +200,9 @@ final class Settings {
     static let knownTerminals: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "com.superlogical.rex",
         "com.muxy.app", "net.kovidgoyal.kitty", "com.github.wez.wezterm",
+        // Herdr (GPUI + libghostty-vt, đọc mã nguồn herdrdev/herdr-app src/terminal.rs): insertText ghi nguyên chuỗi xuống
+        // shell, bỏ qua vùng thay; phím in được tới bộ gõ trước (GPUI: nguồn nhập là bộ gõ).
+        "dev.herdr.app",
     ]
 
     /// Mọi terminal (kể cả terminal chưa kiểm chứng, chỉ dùng gạch chân): khi gõ có gạch chân thì chốt sớm phần
@@ -210,7 +213,9 @@ final class Settings {
     /// Terminal có ô văn bản (thanh Find) mà khi gõ vào bộ gõ không được gắn lại (không có `activateServer`), nên không
     /// phân biệt được qua thuộc tính marked text; view terminal của chúng luôn báo con trỏ ở 0 (IME Lab, Muxy 2.3), ô văn
     /// bản thì báo vị trí thật.
-    static let cursorlessTerminals: Set<String> = ["com.muxy.app"]
+    /// Herdr: view terminal báo con trỏ = độ dài marked text (0 khi gõ kiểu terminal), thanh Find / ô prompt là ô văn bản của
+    /// gpui-kit báo vị trí thật.
+    static let cursorlessTerminals: Set<String> = ["com.muxy.app", "dev.herdr.app"]
 
     /// Terminal tự xử lý phím lặp (giữ phím) mà không qua bộ gõ, và không cho biết vị trí con trỏ.
     static let repeatBypassTerminals: Set<String> = ["com.superlogical.rex", "com.muxy.app"]

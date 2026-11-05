@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       terms:
-        description: "Terminal (terminal ghostty rex muxy kitty wezterm iterm2)"
-        default: "terminal ghostty rex muxy kitty wezterm iterm2"
+        description: "Terminal (terminal ghostty rex muxy herdr kitty wezterm iterm2)"
+        default: "terminal ghostty rex muxy herdr kitty wezterm iterm2"
         type: string
       methods:
         description: "Kiểu gõ (vni telex)"
@@ -50,7 +50,7 @@ jobs:
     runs-on: ${{ needs.config.outputs.runner }}
     timeout-minutes: 110
     env:
-      TERMS: ${{ inputs.terms || 'terminal ghostty rex muxy kitty wezterm iterm2' }}
+      TERMS: ${{ inputs.terms || 'terminal ghostty rex muxy herdr kitty wezterm iterm2' }}
       METHODS: ${{ inputs.methods || 'vni telex' }}
       STYLES: ${{ inputs.styles || 'marked inline deferred direct' }}
       OUT: ${{ github.workspace }}/lab-out
@@ -93,11 +93,15 @@ jobs:
           # Muxy 2.3.0 (libghostty-vt, lớp nhập liệu riêng)
           curl -sfL https://github.com/muxy-app/muxy/releases/download/v2.3.0/Muxy-2.3.0-arm64.dmg -o "$RUNNER_TEMP/muxy.dmg" && {
             m="$(mktemp -d)"; hdiutil attach -nobrowse -quiet -mountpoint "$m" "$RUNNER_TEMP/muxy.dmg" && cp -R "$m"/*.app /Applications/ && hdiutil detach -quiet "$m"; } || true
+          # Herdr (GPUI + libghostty-vt) và herdr-core (chạy các terminal; cài sẵn để app mở thẳng cửa sổ chính)
+          brew install --cask herdr-app >/dev/null || echo "::warning::không cài được Herdr"
+          curl -fsSL https://releases.herdr.dev/core/install.sh | sh >/dev/null 2>&1 || echo "::warning::không cài được herdr-core"
           # Bỏ cờ quarantine để lần mở đầu không bị Gatekeeper hỏi (hộp thoại chặn cả lab)
-          for a in /Applications/iTerm.app /Applications/Ghostty.app /Applications/kitty.app /Applications/WezTerm.app "/Applications/Rex Beta.app" /Applications/Muxy.app; do
+          for a in /Applications/iTerm.app /Applications/Ghostty.app /Applications/kitty.app /Applications/WezTerm.app "/Applications/Rex Beta.app" /Applications/Muxy.app /Applications/Herdr.app; do
             [ -d "$a" ] && xattr -dr com.apple.quarantine "$a" 2>/dev/null || true
           done
-          ls -d /Applications/*.app | grep -iE "ghostty|iterm|kitty|wezterm|rex|muxy" || true
+          ls -d /Applications/*.app | grep -iE "ghostty|iterm|kitty|wezterm|rex|muxy|herdr" || true
+          ls -la ~/.local/share/herdr-core ~/.local/bin 2>/dev/null | head -20 || true
           # kitty / WezTerm không mở cửa sổ trên máy ảo: ghi log khởi động để biết vì sao
           mkdir -p "$OUT"
           (/Applications/kitty.app/Contents/MacOS/kitty --debug-rendering -o allow_remote_control=no -e /usr/bin/true > "$OUT/kitty-launch.log" 2>&1 &)

@@ -44,12 +44,13 @@ TERMINALS = {
     "wezterm": ("com.github.wez.wezterm", "/Applications/WezTerm.app"),
     "rex": ("com.superlogical.rex", "/Applications/Rex Beta.app"),
     "muxy": ("com.muxy.app", "/Applications/Muxy.app"),
+    "herdr": ("dev.herdr.app", "/Applications/Herdr.app"),
 }
 
 # (tên, kiểu gõ, phím, mong đợi, ms giữa 2 phím)
 TERMINAL_IDS = ["com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "io.alacritty",
                 "com.github.wez.wezterm", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "com.superlogical.rex",
-                "com.muxy.app"]
+                "com.muxy.app", "dev.herdr.app"]
 
 CAPTURE = [
     ("vni-words", "vni", "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
@@ -110,6 +111,12 @@ CHROME_TESTS = APP_TESTS + [
     ("vni-fast6", "vni", "Vie65t Nam d9a5i ho5c tie61ng Vie65t ngu7o72i ", "Việt Nam đại học tiếng Việt người ", 6),
     ("telex-bs-tone", "telex", "hoafn{BS} ", "hòa ", 45),
     ("vni-bs-tone", "vni", "toa1n{BS} ", "tóa ", 45),
+]
+# View tự vẽ "mù con trỏ" (field.swift --blind: như view terminal GPUI / Herdr / Zed khi GTV chưa biết ứng dụng): mọi từ phải ra
+# đúng (gõ bằng marked text), không từ nào đi nguyên văn. Không có ⌘A (view không có menu Edit).
+BLIND_TESTS = [t for t in APP_TESTS if t[0] != "vni-shortcut"] + [
+    ("telex-first-word", "telex", "ddawngf ", "đằng ", 45),
+    ("vni-first-word-fast", "vni", "d9a82ng tie61ng ", "đằng tiếng ", 10),
 ]
 CHROME = "/Applications/Google Chrome.app"
 CHROME_ID = "com.google.Chrome"
@@ -203,6 +210,11 @@ def open_terminal(key):
     if key == "muxy":      # cửa sổ dự án "No tabs": mở tab terminal
         sh([DRV, bid, "10", "{CMDT}"]); time.sleep(3)
         shot("muxy-after-new-tab")
+    if key == "herdr":     # herdr-core đã cài sẵn (ime-lab.yml): cửa sổ chính; ⌘T mở tab terminal mới
+        time.sleep(2)
+        shot("herdr-opened")
+        sh([DRV, bid, "10", "{CMDT}"]); time.sleep(3)
+        shot("herdr-after-new-tab")
     dismiss_dialogs()
     if front() != bid:
         sh(["open", "-a", path])
@@ -221,6 +233,14 @@ GTV_LOG = pathlib.Path.home() / "Library/Logs/GTV-debug.log"
 
 def log_mark():
     return GTV_LOG.stat().st_size if GTV_LOG.exists() else 0
+
+
+def log_since(mark):
+    if not GTV_LOG.exists():
+        return ""
+    with open(GTV_LOG, "rb") as f:
+        f.seek(mark)
+        return f.read().decode("utf-8", "replace")
 
 
 def ime_seen(mark, bid):
@@ -512,10 +532,12 @@ def run_app_suite(app):
     try:
         web = None
         tests = APP_TESTS
-        if app == "field":
+        if app in ("field", "blind"):
             build_field_app()
-            sh(["open", "-a", str(FIELD_APP), "--args", str(out_file)])
+            sh(["open", "-a", str(FIELD_APP), "--args", str(out_file)] + (["--blind"] if app == "blind" else []))
             bid, pid = FIELD_ID, None
+            if app == "blind":
+                tests = BLIND_TESTS
         elif app == "chrome":
             if not pathlib.Path(CHROME).exists():
                 return [{"terminal": app, "test": "-", "error": "chưa cài Chrome"}]
@@ -635,11 +657,13 @@ def run_modes():
                     "pass": got == expect, "shot": shot(f"modes-{name}")})
         print("modes", name, got, flush=True)
     term = TERMINALS["terminal"]
+    mark = log_mark()
     sh(["open", "-a", term[1]])
-    # Chờ Terminal thật sự ở phía trước rồi thêm 1,5 s: lệnh chọn bộ gõ tới ngay sau lúc GTV gắn vào ô mà không có thao tác
-    # nào của người dùng là "hệ thống chọn" (GTV giữ chế độ) — sau bài Chrome, Terminal có lúc mất 2 s mới lên (lab 42044377600).
-    for _ in range(100):
-        if front() == term[0]:
+    # Chờ GTV thật sự gắn vào ô của Terminal (dòng activateServer trong log) rồi thêm 1,5 s. Terminal ở phía trước (lsappinfo)
+    # chưa đủ: khởi động lạnh thì cửa sổ hiện muộn, macOS khôi phục chế độ Terminal đã nhớ sau thao tác của lab và GTV coi đó
+    # là người dùng chọn (lab 42044377600, 42057042497).
+    for _ in range(150):
+        if front() == term[0] and f"activateServer {term[0]}" in log_since(mark):
             break
         time.sleep(0.1)
     time.sleep(1.5)
@@ -702,7 +726,7 @@ def main():
     (L / "fd" / "suoddms-quickstart-6.0.23.tar").mkdir(parents=True, exist_ok=True)
     shutil.copy(HERE / "capture.py", L / "c.py")
     subprocess.run(["pbcopy"], input=PASTE, text=True, check=False)
-    terms = os.environ.get("TERMS", "terminal ghostty rex muxy kitty wezterm iterm2").split()
+    terms = os.environ.get("TERMS", "terminal ghostty rex muxy herdr kitty wezterm iterm2").split()
     methods = os.environ.get("METHODS", "vni telex").split()
     styles = os.environ.get("STYLES", "marked inline deferred direct").split()
     # Lặp các bài capture để đo lỗi thỉnh thoảng mới gặp; Ghostty (kiểu deferred) chạy với từng độ trễ gửi.
@@ -755,7 +779,7 @@ def main():
         finally:
             close_terminal(key)
 
-    for app in os.environ.get("APPS", "field swing chrome").split():
+    for app in os.environ.get("APPS", "field blind swing chrome").split():
         try:
             results += run_app_suite(app)
         except Exception as e:  # noqa: BLE001

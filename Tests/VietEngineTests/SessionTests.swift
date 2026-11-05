@@ -161,6 +161,55 @@ private final class Qt5Field: TextClient {
     }
 }
 
+/// Ô tự vẽ (GPUI, terminal nhúng…) của ứng dụng chưa kiểm chứng, dùng với `markedAtCaretZero`:
+/// - `blind`: như view terminal của Herdr / Zed — con trỏ luôn báo {độ dài marked text}, `insertText` bỏ qua vùng thay (ghi
+///   thêm vào cuối), không đọc được chữ;
+/// - không `blind`: ô soạn thảo thật (bắt đầu trống) — báo con trỏ thật, thay đúng vùng.
+private final class CustomView: TextClient {
+    var units: [UInt16] = []
+    var caret = 0
+    var marked: Range<Int>?
+    let blind: Bool
+    let session = Session()
+    var options = EngineOptions()
+    init(blind: Bool) { self.blind = blind }
+
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? {
+        blind ? (marked?.count ?? 0, 0) : (caret, 0)
+    }
+    func text(location: Int, length: Int) -> String? {
+        guard !blind, location >= 0, location + length <= units.count else { return nil }
+        return String(decoding: units[location..<location + length], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with t: String) {
+        if blind { insertText(t); return }                  // bỏ qua vùng thay
+        units.replaceSubrange(location..<location + length, with: Array(t.utf16))
+        caret = location + t.utf16.count
+    }
+    func replaceViaMarkedText(location: Int, length: Int, with t: String) { replaceText(location: location, length: length, with: t) }
+    func setMarkedText(_ t: String) {
+        let r = marked ?? caret..<caret
+        units.replaceSubrange(r, with: Array(t.utf16))
+        marked = t.isEmpty ? nil : r.lowerBound..<(r.lowerBound + t.utf16.count)
+        caret = r.lowerBound + t.utf16.count
+    }
+    func insertText(_ t: String) {
+        let r = marked ?? caret..<caret
+        units.replaceSubrange(r, with: Array(t.utf16))
+        caret = r.lowerBound + t.utf16.count
+        marked = nil
+    }
+    func hasMarkedText() -> Bool { marked != nil }
+
+    func type(_ keys: String) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: false, markedAtCaretZero: true) {
+            insertText(String(k))
+        }
+    }
+}
+
 /// Ô nhập liệu dùng marked text như NSTextView: marked text nằm trong văn bản, `insertText` chốt nó; ứng dụng có thể tự chốt
 /// phần gạch chân mà bộ gõ không thấy (JetBrains Runtime khi click, ứng dụng đổi chữ bằng chương trình…).
 private final class ComposingField: TextClient {
@@ -878,6 +927,24 @@ final class SessionTests: XCTestCase {
 
     /// Ô kiểu Qt 5 (con trỏ luôn báo 0, bỏ qua vùng cần thay): không bao giờ chèn ư / ơ vào giữa từ ("awesome" → "aưesome");
     /// thấy rồi thì các từ sau gõ bằng marked text (GTVInput còn nhận ra Qt 5 trước cả từ đầu tiên, xem `AppToolkit`).
+    /// Ô tự vẽ không cho biết con trỏ (view terminal của Herdr / Zed khi chưa nhận ra): mọi từ gõ bằng marked text, không từ nào
+    /// đi nguyên văn hay thành chữ rác ("dd9"); ô soạn thảo thật bắt đầu trống: chỉ từ đầu gạch chân, từ sau gõ trực tiếp.
+    func testCustomViewAtCaretZeroTypesMarked() {
+        for method in [InputMethod.vni, .telex] {
+            let blind = CustomView(blind: true)
+            blind.options.method = method
+            blind.type(method == .vni ? "d9a82ng tie61ng vie65t " : "ddawngf tieengs vieejt ")
+            XCTAssertEqual(blind.text, "đằng tiếng việt ", "\(method)")
+            XCTAssertNil(blind.marked)
+
+            let editor = CustomView(blind: false)
+            editor.options.method = method
+            editor.type(method == .vni ? "d9a82ng tie61ng " : "ddawngf tieengs ")
+            XCTAssertEqual(editor.text, "đằng tiếng ", "\(method)")
+            XCTAssertNil(editor.marked)
+        }
+    }
+
     func testQt5StyleFieldNeverInsertsMidWord() {
         for c in ["awesome", "how", "hello"] {
             let f = Qt5Field()

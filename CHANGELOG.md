@@ -16,6 +16,9 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   rồi gõ dấu). Không event tap, không cần quyền: trong lúc gõ, GTV đọc trạng thái phím đặc biệt và nút chuột của hệ
   thống. iTerm2, Terminal.app: sau ⌫ / click thì đọc lại từ trên màn hình để gõ tiếp.
 - Thanh Find, command palette… trong app terminal gõ như ô văn bản thường.
+- Herdr: gõ thẳng xuống shell như Ghostty / Muxy (không gạch chân); thanh Find và ô prompt gõ như ô văn bản thường.
+- Ứng dụng chưa kiểm chứng có ô tự vẽ không cho biết con trỏ (GPUI, terminal nhúng, ứng dụng Rust…): không còn từ nào ra
+  nguyên văn (`d9a82ng`) — từ bắt đầu khi ô báo con trỏ ở đầu được gõ bằng gạch chân, cách đúng ở mọi ô.
 - Chế độ V/E giữ cố định: đổi ứng dụng, quay lại sau ô mật khẩu / màn hình khoá không làm nhảy chế độ. Người dùng tự
   đổi (⌘⇧, ⌃Space, 🌐, menu bộ gõ, kể cả khi đang ở bộ gõ khác) thì theo.
 
@@ -23,6 +26,11 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
 - macOS 27: ⌘⇧Z, ⌘⇧4, ⌘⇧← / → (chọn chữ), ⌘⇧ + click bị hiểu nhầm là phím tắt đổi chế độ, và có lúc lựa chọn chế độ của
   người dùng bị đảo lại sau khi đổi ứng dụng (macOS 27 chỉ cập nhật thời điểm sự kiện mỗi 0,5 s cho ứng dụng khác, GTV
   không còn dựa vào đó).
+- Đang ở bộ gõ khác (ABC…) chọn "Tiếng Việt (GTV)" / "English (GTV)" trong menu bộ gõ có lúc lại ra chế độ cũ: lời báo cho
+  lần GTV tự chọn lại chế độ cũ tới sau lựa chọn của người dùng và bị coi là người dùng chọn; GTV khởi động theo lựa chọn
+  đó, hay vừa rời ứng dụng loại trừ, cũng chọn đè. Đổi chế độ hai lần liền tay (⌘⇧ rồi ⌃Space…) không còn bị đảo lại.
+- Ứng dụng loại trừ được macOS chọn lại tiếng Việt (nhớ theo ứng dụng) không còn làm chế độ tiếng Anh thành tiếng Việt khi
+  rời ứng dụng đó.
 - Gạch chân (ứng dụng chọn gạch chân, *Luôn dùng gạch chân*): xoá lùi rồi gõ tiếp trong một từ ra sai (`anht⌫f`).
 - Gõ ngay khi ô nhập liệu vừa hiện (TinyCast, Spotlight-style: ⌘Space rồi gõ liền `d9a38ng`) có lúc ra `d9ẳng`: lời báo
   chế độ mà macOS gửi sau mỗi lần gắn bộ gõ, tới sau phím đầu tiên, làm GTV quên chữ vừa gõ.
