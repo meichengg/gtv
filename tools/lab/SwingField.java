@@ -25,11 +25,22 @@ public class SwingField {
         }
     }
 
+    static synchronized void append(Path p, String line) {
+        try {
+            Files.write(p, (System.nanoTime() / 1000000 + " " + line + "\n").getBytes(StandardCharsets.UTF_8),
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Path out = Paths.get(args[0]);
         Path ready = Paths.get(args[0] + ".ready");
         // Lab tạo file này để xoá chữ trong ô (không dùng phím tắt: đó cũng là thứ cần kiểm tra).
         Path clear = Paths.get(args[0] + ".clear");
+        // Nhật ký sự kiện Java nhận (phím, bộ gõ) để biết phím nào tới / bị nuốt.
+        Path events = Paths.get(args[0] + ".events");
         SwingUtilities.invokeAndWait(() -> {
             JFrame frame = new JFrame("GTV Lab Swing");
             JTextArea area = new JTextArea(6, 40);
@@ -39,6 +50,23 @@ public class SwingField {
                 public void insertUpdate(DocumentEvent e) { dump(); }
                 public void removeUpdate(DocumentEvent e) { dump(); }
                 public void changedUpdate(DocumentEvent e) { dump(); }
+            });
+            area.addKeyListener(new java.awt.event.KeyAdapter() {
+                void log(String kind, java.awt.event.KeyEvent e) {
+                    append(events, kind + " code=" + e.getKeyCode() + " char=" + (int) e.getKeyChar()
+                        + " mods=" + e.getModifiersEx() + " caret=" + area.getCaretPosition());
+                }
+                @Override public void keyPressed(java.awt.event.KeyEvent e) { log("P", e); }
+                @Override public void keyTyped(java.awt.event.KeyEvent e) { log("T", e); }
+            });
+            area.addInputMethodListener(new java.awt.event.InputMethodListener() {
+                @Override public void inputMethodTextChanged(java.awt.event.InputMethodEvent e) {
+                    StringBuilder b = new StringBuilder();
+                    java.text.AttributedCharacterIterator it = e.getText();
+                    if (it != null) for (char c = it.first(); c != java.text.CharacterIterator.DONE; c = it.next()) b.append(c);
+                    append(events, "IM committed=" + e.getCommittedCharacterCount() + " text=" + b);
+                }
+                @Override public void caretPositionChanged(java.awt.event.InputMethodEvent e) { }
             });
             frame.add(new JScrollPane(area));
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);

@@ -282,8 +282,12 @@ final class GTVInputController: IMKInputController {
     private func rearmJavaKey(_ event: NSEvent, _ client: Client) {
         let marked = client.markedRange()
         guard let chars = event.characters, chars.utf16.count == 1,
-              marked.location == NSNotFound || marked.length == 0 else { return }
+              marked.location == NSNotFound || marked.length == 0 else {
+            DebugLog.write("Java: không bật lại cờ phát phím \(event.keyCode) (marked=\(marked))")
+            return
+        }
         client.insertText(chars, replacementRange: notFound)
+        DebugLog.write("Java: bật lại cờ phát phím \(event.keyCode) (marked trước đó=\(marked), sau=\(client.markedRange()))")
     }
 
     private func handleKeyDown(_ event: NSEvent, _ client: Client, flags: NSEvent.ModifierFlags) -> Bool {

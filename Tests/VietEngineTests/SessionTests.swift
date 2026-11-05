@@ -88,6 +88,52 @@ private final class Field: TextClient {
     }
 }
 
+/// Ô nhập liệu dùng marked text như NSTextView: marked text nằm trong văn bản, `insertText` chốt nó; ứng dụng có thể tự chốt
+/// phần gạch chân mà bộ gõ không thấy (JetBrains Runtime khi click, ứng dụng đổi chữ bằng chương trình…).
+private final class ComposingField: TextClient {
+    var units: [UInt16] = []
+    var caret = 0
+    var marked: Range<Int>?
+    let session = Session()
+    var options = EngineOptions()
+
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { (caret, 0) }
+    func text(location: Int, length: Int) -> String? {
+        guard location >= 0, location + length <= units.count else { return nil }
+        return String(decoding: units[location..<location + length], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with text: String) { XCTFail("chế độ gạch chân không thay chữ trực tiếp") }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("chế độ gạch chân") }
+    func setMarkedText(_ t: String) {
+        let r = marked ?? caret..<caret
+        units.replaceSubrange(r, with: Array(t.utf16))
+        marked = t.isEmpty ? nil : r.lowerBound..<(r.lowerBound + t.utf16.count)
+        caret = r.lowerBound + t.utf16.count
+    }
+    func insertText(_ t: String) {
+        let r = marked ?? caret..<caret
+        units.replaceSubrange(r, with: Array(t.utf16))
+        caret = r.lowerBound + t.utf16.count
+        marked = nil
+    }
+    func hasMarkedText() -> Bool { marked != nil }
+
+    func type(_ keys: String) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: true) {
+            XCTAssertNil(marked, "phím \(k) đi thẳng khi còn marked text")
+            insertText(String(k))
+        }
+    }
+
+    /// Ứng dụng tự chốt phần gạch chân (con trỏ đặt ở `caretAt` nếu có).
+    func appCommits(caretAt at: Int? = nil) {
+        marked = nil
+        if let at { caret = at }
+    }
+}
+
 /// Terminal giả, dùng chế độ gạch chân: phím đi qua và chữ chốt (`insertText`) tới shell ngay, không sửa lại
 /// được nữa; marked text (gạch chân) chỉ hiện trên màn hình, chưa tới shell.
 private final class Terminal: TextClient {
@@ -685,6 +731,32 @@ final class SessionTests: XCTestCase {
             XCTAssertEqual(t.screen, expect, "\(method) \(keys)")
             XCTAssertEqual(t.marked, "", "\(keys): từ cuối phải được chốt bằng dấu câu / dấu cách")
         }
+    }
+
+    /// Ứng dụng tự chốt phần gạch chân giữa từ: gõ tiếp là từ mới, không dựng lại cả từ ở chỗ mới (thành chữ đôi "việviệt").
+    func testMarkedTextEndedByAppStartsNewWord() {
+        let f = ComposingField()
+        f.options.method = .vni
+        f.type("vie65")
+        XCTAssertEqual(f.text, "việ")
+        f.appCommits()
+        f.type("t ")
+        XCTAssertEqual(f.text, "việt ")
+
+        // Click sang chỗ khác (ứng dụng tự chốt rồi dời con trỏ về đầu dòng).
+        let g = ComposingField()
+        g.options.method = .vni
+        g.type("to6i ")
+        g.type("vie6")
+        g.appCommits(caretAt: 0)
+        g.type("a1 ")
+        XCTAssertEqual(g.text, "á tôi viê")
+
+        // Bình thường (ứng dụng không tự chốt): vẫn gõ đúng cả câu, kể cả xoá lùi trong từ.
+        let h = ComposingField()
+        h.options.method = .vni
+        h.type("Vie65t Nam d9a38ng ")
+        XCTAssertEqual(h.text, "Việt Nam đẳng ")
     }
 
     func testMarkedAppKeepsWholeWordForBackspaceFixes() {

@@ -419,6 +419,11 @@ def ime_trace(mark):
     return keep[:40]
 
 
+def append_events(out_file, line):
+    with open(str(out_file) + ".events", "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 def clear_field(out_file, web=None):
     """Xoá chữ trong ô thử qua file tín hiệu <file>.clear (trang web: lệnh "clear" của máy chủ thử)."""
     flag = pathlib.Path(str(out_file) + ".clear")
@@ -510,6 +515,9 @@ def run_app_suite(app):
         elif app == "chrome":
             if not pathlib.Path(CHROME).exists():
                 return [{"terminal": app, "test": "-", "error": "chưa cài Chrome"}]
+            # Chrome cài bằng Homebrew cask có cờ quarantine: hộp thoại Gatekeeper "downloaded from the Internet" chặn lab.
+            if sh(["xattr", "-dr", "com.apple.quarantine", CHROME]).returncode:
+                sh(["sudo", "-n", "xattr", "-dr", "com.apple.quarantine", CHROME])
             web = _Web(out_file, ready)
             tests = CHROME_TESTS
             sh(["open", "-na", CHROME, "--args", "--user-data-dir=/tmp/l/chrome-profile", "--no-first-run",
@@ -537,6 +545,8 @@ def run_app_suite(app):
                 ensure_mode(bid, "vi")
                 clear_field(out_file, web)
                 mark = log_mark()
+                if app == "swing":
+                    append_events(out_file, f"=== {name}")
                 drv(bid, keys, ms)
                 time.sleep(0.8)
                 got = read_text(out_file)
@@ -552,6 +562,9 @@ def run_app_suite(app):
         if app == "field":
             results += run_race(bid, out_file, ready)
     finally:
+        ev = pathlib.Path(str(out_file) + ".events")
+        if ev.exists():
+            shutil.copy(ev, OUT / "logs" / f"{app}-events.log")
         if proc:
             proc.terminate()
         elif app == "chrome":

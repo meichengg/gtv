@@ -120,6 +120,9 @@ public final class Session {
     /// Vừa xoá lùi khi không có từ nào đang gõ (vd. "hoir " → xoá " " và "r" → còn "hoi"): ở phím chữ tiếp
     /// theo, đọc lại từ trước con trỏ để gõ tiếp (gõ "r" → "hỏi") thay vì bắt đầu từ mới.
     private var continueWordOnNextChar = false
+    /// Ô nhập liệu đã từng báo đúng là đang có marked text của bộ gõ (`hasMarkedText`): từ đó, không thấy marked text nữa nghĩa
+    /// là ứng dụng đã tự chốt / bỏ nó. Ô không báo (hay báo sai) thì không bao giờ dựa vào dấu hiệu này.
+    private var markedReported = false
 
     public init() {}
 
@@ -163,6 +166,17 @@ public final class Session {
             if marked || literalTail { reset() }     // vừa đổi từ chế độ gạch chân
             return handleTerminal(key, client, options: options, style: terminal, repeatDelay: repeatDelay, gap: gap,
                                   legacy: legacy)
+        }
+        if marked, !preedit.isEmpty {
+            if client.hasMarkedText() {
+                markedReported = true
+            } else if markedReported {
+                // Ứng dụng đã tự chốt / bỏ phần gạch chân mà bộ gõ không thấy (JetBrains Runtime tự chốt khi click, ứng dụng
+                // đổi ô hay đổi chữ bằng chương trình…): phần đó không còn để sửa. Dựng lại cả từ ở chỗ mới sẽ thành chữ
+                // đôi — bắt đầu từ mới.
+                log?("marked text đã mất ngoài tầm bộ gõ: bỏ từ \(engine.displayed.debugDescription)")
+                reset()
+            }
         }
         if literalTail {
             // Từ đã chốt (xem `showMarked`): chữ cái gõ tiếp đi thẳng, phím khác kết thúc từ. Xoá lùi vẫn ở trong
