@@ -4,6 +4,38 @@ Mỗi phiên bản là một mục `## <phiên bản> — <ngày>`. Nội dung c
 note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớp `MARKETING_VERSION` trong
 `project.yml`.
 
+## 1.12 — 2026-11-05
+
+### Thay đổi
+- Terminal (Ghostty, iTerm2, Terminal.app, Rex, Muxy, kitty, WezTerm): gõ thẳng, không còn gạch chân. Phím tới shell
+  ngay khi gõ nên gợi ý lệnh của fish / zsh hiện đúng và Ctrl+E nhận cả gợi ý (trước đây chỉ hoàn thành phần chữ đang
+  gạch chân). Khi thêm dấu, GTV gửi một lần "xoá + chữ mới" xuống shell, không nháy chữ. Muốn gõ có gạch chân như
+  trước: menu bộ gõ → *Gạch chân khi gõ trong …*.
+- Terminal: GTV tự biết khi có phím hay click không qua bộ gõ (⌘V, mũi tên và Ctrl+A ở iTerm2, Tab ở Muxy, ⌫ / Tab /
+  mũi tên ở Terminal.app, click dời con trỏ ở Ghostty…) nên không xoá nhầm chữ không phải do nó gõ (vd. dán giữa một từ
+  rồi gõ dấu). Không event tap, không cần quyền: trong lúc gõ, GTV đọc trạng thái phím đặc biệt và nút chuột của hệ
+  thống. iTerm2, Terminal.app: sau ⌫ / click thì đọc lại từ trên màn hình để gõ tiếp.
+- Thanh Find, command palette… trong app terminal gõ như ô văn bản thường.
+- Chế độ V/E giữ cố định: đổi ứng dụng, quay lại sau ô mật khẩu / màn hình khoá không làm nhảy chế độ. Người dùng tự
+  đổi (⌘⇧, ⌃Space, 🌐, menu bộ gõ, kể cả khi đang ở bộ gõ khác) thì theo.
+
+### Sửa lỗi
+- macOS 27: ⌘⇧Z, ⌘⇧4, ⌘⇧← / → (chọn chữ), ⌘⇧ + click bị hiểu nhầm là phím tắt đổi chế độ, và có lúc lựa chọn chế độ của
+  người dùng bị đảo lại sau khi đổi ứng dụng (macOS 27 chỉ cập nhật thời điểm sự kiện mỗi 0,5 s cho ứng dụng khác, GTV
+  không còn dựa vào đó).
+- Gạch chân (ứng dụng chọn gạch chân, *Luôn dùng gạch chân*): xoá lùi rồi gõ tiếp trong một từ ra sai (`anht⌫f`).
+- Gõ ngay khi ô nhập liệu vừa hiện (TinyCast, Spotlight-style: ⌘Space rồi gõ liền `d9a38ng`) có lúc ra `d9ẳng`: lời báo
+  chế độ mà macOS gửi sau mỗi lần gắn bộ gõ, tới sau phím đầu tiên, làm GTV quên chữ vừa gõ.
+- Ứng dụng Java (Burp Suite, IntelliJ, Ghidra… — AWT / Swing / JavaFX / Compose Desktop) không gõ được dấu: Java bỏ qua
+  cách thay chữ trực tiếp, GTV tự nhận ra và gõ bằng marked text (có gạch chân trong lúc gõ một từ, như bộ gõ tiếng
+  Nhật / Trung — cách duy nhất Java hỗ trợ).
+
+### Lưu ý
+- vim / nvim, vi-mode của shell: ở normal mode các phím là lệnh — chuyển sang tiếng Anh (⌘⇧) khi gõ lệnh, hoặc dùng
+  plugin tự đổi bộ gõ (vd. im-select.nvim với `com.gtv.inputmethod.GTV.en` / `com.gtv.inputmethod.GTV.vi`).
+- macOS 27, phím do chương trình gõ hoặc điều khiển từ xa (Chrome Remote Desktop…): GTV chưa phân biệt được ⌘⇧ + phím chữ
+  với ⌘⇧ trơn; bàn phím thật thì được.
+
 ## 1.11.1 — 2026-10-12
 
 ### Sửa lỗi

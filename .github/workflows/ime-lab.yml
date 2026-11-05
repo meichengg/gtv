@@ -67,6 +67,8 @@ jobs:
       - name: Install tools and terminals
         run: |
           brew install xcodegen fish >/dev/null
+          # Lượt chỉ thử ứng dụng thường (TERMS rỗng trong lab.env): không cần cài terminal.
+          if [ -z "${TERMS// }" ]; then echo "TERMS rỗng: bỏ qua cài terminal"; exit 0; fi
           for c in iterm2 kitty wezterm; do brew install --cask "$c" >/dev/null || echo "::warning::không cài được $c"; done
           # Ghostty đúng bản người dùng đang dùng (1.4.0; cask có thể cũ hơn, khác hành vi insertText)
           m="$(mktemp -d)"; curl -sfL https://release.files.ghostty.org/1.4.0/Ghostty.dmg -o "$RUNNER_TEMP/ghostty.dmg"

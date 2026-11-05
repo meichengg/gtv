@@ -88,6 +88,52 @@ private final class Field: TextClient {
     }
 }
 
+/// Ô nhập liệu dùng marked text như NSTextView: marked text nằm trong văn bản, `insertText` chốt nó; ứng dụng có thể tự chốt
+/// phần gạch chân mà bộ gõ không thấy (JetBrains Runtime khi click, ứng dụng đổi chữ bằng chương trình…).
+private final class ComposingField: TextClient {
+    var units: [UInt16] = []
+    var caret = 0
+    var marked: Range<Int>?
+    let session = Session()
+    var options = EngineOptions()
+
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { (caret, 0) }
+    func text(location: Int, length: Int) -> String? {
+        guard location >= 0, location + length <= units.count else { return nil }
+        return String(decoding: units[location..<location + length], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with text: String) { XCTFail("chế độ gạch chân không thay chữ trực tiếp") }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("chế độ gạch chân") }
+    func setMarkedText(_ t: String) {
+        let r = marked ?? caret..<caret
+        units.replaceSubrange(r, with: Array(t.utf16))
+        marked = t.isEmpty ? nil : r.lowerBound..<(r.lowerBound + t.utf16.count)
+        caret = r.lowerBound + t.utf16.count
+    }
+    func insertText(_ t: String) {
+        let r = marked ?? caret..<caret
+        units.replaceSubrange(r, with: Array(t.utf16))
+        caret = r.lowerBound + t.utf16.count
+        marked = nil
+    }
+    func hasMarkedText() -> Bool { marked != nil }
+
+    func type(_ keys: String) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: true) {
+            XCTAssertNil(marked, "phím \(k) đi thẳng khi còn marked text")
+            insertText(String(k))
+        }
+    }
+
+    /// Ứng dụng tự chốt phần gạch chân (con trỏ đặt ở `caretAt` nếu có).
+    func appCommits(caretAt at: Int? = nil) {
+        marked = nil
+        if let at { caret = at }
+    }
+}
+
 /// Terminal giả, dùng chế độ gạch chân: phím đi qua và chữ chốt (`insertText`) tới shell ngay, không sửa lại
 /// được nữa; marked text (gạch chân) chỉ hiện trên màn hình, chưa tới shell.
 private final class Terminal: TextClient {
@@ -571,6 +617,44 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(m.text, "hoir")
     }
 
+    /// InputMethodKit / ứng dụng gọi `commitComposition` giữa từ mà ô nhập liệu không mất focus. Gõ trực tiếp, từ vẫn nằm
+    /// nguyên trước con trỏ: giữ từ — 'd' rồi '9' vẫn ra "đ" (TinyCast: "d9ẳng").
+    func testCommitRequestKeepsDirectWord() {
+        let f = Field()
+        f.options.method = .vni
+        f.type("d")
+        f.session.commitRequested(f)
+        f.type("9a38ng")
+        XCTAssertEqual(f.text, "đẳng")
+
+        // Ứng dụng đã tự đổi văn bản: bỏ từ, không sửa nhầm chữ khác.
+        let g = Field()
+        g.options.method = .vni
+        g.type("d")
+        g.units = Array("x".utf16)
+        g.sel = (1, 0)
+        g.session.commitRequested(g)
+        g.type("9")
+        XCTAssertEqual(g.text, "x9")
+
+        // Không đọc được văn bản: không chắc từ còn nguyên — bỏ từ như trước.
+        let h = Field()
+        h.options.method = .vni
+        h.readable = false
+        h.type("d")
+        h.session.commitRequested(h)
+        h.type("9")
+        XCTAssertEqual(h.text, "d9")
+
+        // Đang bôi đen (gợi ý tự động sau con trỏ…): bỏ từ.
+        let k = Field()
+        k.type("vie")
+        k.selectAll()
+        k.session.commitRequested(k)
+        k.type("e")
+        XCTAssertEqual(k.text, "e")
+    }
+
     func testBackspaceInWord() {
         let f = Field()
         f.type("vieetj")
@@ -630,6 +714,51 @@ final class SessionTests: XCTestCase {
 
     /// Ứng dụng thường dùng gạch chân (bật tay, ứng dụng không báo con trỏ): giữ cả từ trong phần gạch chân như
     /// bản gốc, nên sửa chữ bằng ⌫ rồi thêm dấu vẫn đúng.
+    /// Ứng dụng Java (AWT: Burp Suite…) chỉ gõ được bằng marked text: bộ gõ không bao giờ sửa chữ đã chốt (`Terminal` báo lỗi
+    /// nếu có) và không để phím đi thẳng khi còn marked text (Java sẽ phát lại phím gốc). Cùng các bài với IME Lab (`apps`).
+    func testJavaStyleMarkedTyping() {
+        let cases: [(InputMethod, String, String)] = [
+            (.vni, "Vie65t Nam, d9a5i ho5c d9a38ng ", "Việt Nam, đại học đẳng "),
+            (.telex, "Vieetj Nam, ddaij hocj ", "Việt Nam, đại học "),
+            (.vni, "tie61ng<<<e65t ", "tiệt "),
+            (.vni, "d9a38ng, vie65t.", "đẳng, việt."),
+        ]
+        for (method, keys, expect) in cases {
+            let t = Terminal()
+            t.earlyCommit = false
+            t.options.method = method
+            for k in keys { if k == "<" { t.backspace() } else { t.type(String(k)) } }
+            XCTAssertEqual(t.screen, expect, "\(method) \(keys)")
+            XCTAssertEqual(t.marked, "", "\(keys): từ cuối phải được chốt bằng dấu câu / dấu cách")
+        }
+    }
+
+    /// Ứng dụng tự chốt phần gạch chân giữa từ: gõ tiếp là từ mới, không dựng lại cả từ ở chỗ mới (thành chữ đôi "việviệt").
+    func testMarkedTextEndedByAppStartsNewWord() {
+        let f = ComposingField()
+        f.options.method = .vni
+        f.type("vie65")
+        XCTAssertEqual(f.text, "việ")
+        f.appCommits()
+        f.type("t ")
+        XCTAssertEqual(f.text, "việt ")
+
+        // Click sang chỗ khác (ứng dụng tự chốt rồi dời con trỏ về đầu dòng).
+        let g = ComposingField()
+        g.options.method = .vni
+        g.type("to6i ")
+        g.type("vie6")
+        g.appCommits(caretAt: 0)
+        g.type("a1 ")
+        XCTAssertEqual(g.text, "á tôi viê")
+
+        // Bình thường (ứng dụng không tự chốt): vẫn gõ đúng cả câu, kể cả xoá lùi trong từ.
+        let h = ComposingField()
+        h.options.method = .vni
+        h.type("Vie65t Nam d9a38ng ")
+        XCTAssertEqual(h.text, "Việt Nam đẳng ")
+    }
+
     func testMarkedAppKeepsWholeWordForBackspaceFixes() {
         let cases: [(InputMethod, String, String)] = [
             (.telex, "anht<f", "ành"), (.telex, "tooss<f", "tồ"), (.telex, "hocx<j", "học"),

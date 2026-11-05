@@ -7,3 +7,4 @@ xcuserdata/
 
 # Tài liệu nội bộ, không đưa lên git
 docs/
+__pycache__/
