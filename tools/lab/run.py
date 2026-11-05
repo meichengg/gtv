@@ -210,9 +210,12 @@ def open_terminal(key):
     if key == "muxy":      # cửa sổ dự án "No tabs": mở tab terminal
         sh([DRV, bid, "10", "{CMDT}"]); time.sleep(3)
         shot("muxy-after-new-tab")
-    if key == "herdr":     # herdr-core đã cài sẵn (ime-lab.yml): cửa sổ chính; ⌘T mở tab terminal mới
-        time.sleep(2)
+    if key == "herdr":     # herdr-core đã cài sẵn (ime-lab.yml): cửa sổ chính + màn chào "Welcome to Herdr" (4 trang, nút
+        time.sleep(2)      # mặc định Next / "Open a space") — lab 42066487046: phím của 5 bài đầu đi vào màn chào
         shot("herdr-opened")
+        for _ in range(5):
+            sh([DRV, bid, "10", "{RET}"]); time.sleep(0.8)
+        shot("herdr-after-welcome")
         sh([DRV, bid, "10", "{CMDT}"]); time.sleep(3)
         shot("herdr-after-new-tab")
     dismiss_dialogs()
