@@ -3,6 +3,10 @@
 # Auto-update: for regular (non-pre-) releases, an EdDSA-signed Sparkle appcast.xml is attached next to the
 # DMG; GTV reads it from releases/latest/download/appcast.xml. Requires the SPARKLE_PRIVATE_KEY secret.
 #
+# Mỗi lần build trên main (cùng MARKETING_VERSION) là một bản riêng: CFBundleVersion theo thời điểm build (build.sh),
+# DMG tên riêng GTV-<phiên bản>-<số build>.dmg tải lên trước, appcast.xml sau cùng. DMG có chứng thực build (artifact
+# attestation) để scripts/install-latest.sh kiểm trước khi cài.
+#
 # Release notes come from the `## <version>` section of CHANGELOG.md (version = MARKETING_VERSION in
 # project.yml). On main, a missing section stops the run instead of publishing an empty release.
 
@@ -20,6 +24,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write       # chứng thực build (actions/attest-build-provenance)
+  attestations: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -32,12 +38,25 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Job có token ghi (contents: write) và chạy công cụ bên ngoài (brew, Sparkle): không để token lại trong
+          # .git/config; gh dùng GH_TOKEN riêng ở từng bước.
+          persist-credentials: false
 
-      - name: Select latest Xcode
+      - name: Select latest stable Xcode
         run: |
-          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
-          [ -n "$latest" ] && sudo xcode-select -s "$latest"
+          # Xcode mới nhất không phải bản thử (beta / RC): tên thư mục trên máy của GitHub không phải lúc nào cũng có chữ
+          # beta, nên xem thêm loại giấy phép của Xcode.
+          pick=""
+          for x in $(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V); do
+            case "$(printf '%s' "$x" | tr 'A-Z' 'a-z')" in *beta*|*release_candidate*|*_rc*) continue ;; esac
+            license="$(/usr/libexec/PlistBuddy -c 'Print :licenseType' "$x/Contents/Resources/LicenseInfo.plist" 2>/dev/null || true)"
+            [ "$license" = "Beta" ] && continue
+            pick="$x"
+          done
+          [ -n "$pick" ] && sudo xcode-select -s "$pick"
           xcodebuild -version
+          echo "Xcode: $(xcodebuild -version | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate Xcode project from project.yml
         run: |
@@ -57,11 +76,15 @@ jobs:
         id: meta
         run: |
           version="$(defaults read "$PWD/build/GTV.app/Contents/Info.plist" CFBundleShortVersionString)"
+          build="$(defaults read "$PWD/build/GTV.app/Contents/Info.plist" CFBundleVersion)"
           dmg="build/GTV-$version.dmg"
           if [ "$GITHUB_REF_NAME" = "main" ]; then
             tag="v$version"
             title="GTV $version"
             prerelease=false
+            # Tên riêng cho mỗi bản build: appcast.xml không bao giờ trỏ tới một file mà lần build sau thay mất.
+            mv "$dmg" "build/GTV-$version-$build.dmg"
+            dmg="build/GTV-$version-$build.dmg"
           else
             branch="$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
             suffix="$branch-${GITHUB_SHA::7}"
@@ -73,13 +96,22 @@ jobs:
           fi
           {
             echo "version=$version"
+            echo "build=$build"
             echo "dmg=$dmg"
             echo "tag=$tag"
             echo "title=$title"
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
           echo "### $title" >> "$GITHUB_STEP_SUMMARY"
-          echo "DMG: \`$(basename "$dmg")\` ($(du -h "$dmg" | cut -f1))" >> "$GITHUB_STEP_SUMMARY"
+          echo "DMG: \`$(basename "$dmg")\` ($(du -h "$dmg" | cut -f1)), build $build" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest DMG build provenance
+        if: github.event_name == 'push' || inputs.publish
+        # Chứng thực chỉ để scripts/install-latest.sh kiểm; thiếu nó (vd. gói GitHub không hỗ trợ) thì vẫn phát hành.
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.meta.outputs.dmg }}
 
       - name: Release notes from CHANGELOG.md
         env:
@@ -105,28 +137,50 @@ jobs:
           cat build/notes.md
 
       - name: Sparkle appcast
+        id: appcast
         if: steps.meta.outputs.prerelease == 'false'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           DMG: ${{ steps.meta.outputs.dmg }}
           TAG: ${{ steps.meta.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
-            echo "::warning::SPARKLE_PRIVATE_KEY secret is not set: no appcast.xml, auto-update will not see this release."
+            # Feed của bản cài trỏ vào repo này: phát hành mà không có appcast.xml thì .../latest/download/appcast.xml trả
+            # 404 cho mọi máy.
+            feed="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' Resources/Launcher-Info.plist 2>/dev/null || true)"
+            if printf '%s' "$feed" | grep -qiF "github.com/$GITHUB_REPOSITORY/"; then
+              echo "::error::SUFeedURL ($feed) points to this repository but the SPARKLE_PRIVATE_KEY secret is not set."
+              exit 1
+            fi
+            echo "::warning::SPARKLE_PRIVATE_KEY secret is not set: no new appcast.xml, auto-update will not see this release."
+            # Release mới sẽ thành "latest": đính lại appcast.xml của release latest hiện tại để feed vẫn hợp lệ (trỏ bản cũ).
+            if ! gh release view "$TAG" >/dev/null 2>&1 && gh release download --pattern appcast.xml --dir build 2>/dev/null; then
+              echo "appcast.xml: carried over from the current latest release" >> "$GITHUB_STEP_SUMMARY"
+            fi
             exit 0
           fi
           # Sparkle tools (sign_update), same version as the Sparkle package in project.yml
           sparkle_version="$(sed -nE 's/^ *exactVersion: *"?([0-9.]+)"?.*/\1/p' project.yml | head -1)"
+          # sign_update đọc khoá bí mật: chỉ chạy đúng bản đã ghim (SHA-256 của bin/sign_update trong bản phát hành của
+          # Sparkle). Đổi phiên bản Sparkle thì ghim lại.
+          case "$sparkle_version" in
+            2.10.0) sign_update_sha256=43c249771bafc3aa581228abae00731a012d324691b8292860896635050be76b ;;
+            *) echo "::error file=.github/workflows/release.yml::No pinned sign_update checksum for Sparkle $sparkle_version."
+               exit 1 ;;
+          esac
           tools="$RUNNER_TEMP/sparkle"
           mkdir -p "$tools"
           curl -sSfL "https://github.com/sparkle-project/Sparkle/releases/download/$sparkle_version/Sparkle-$sparkle_version.tar.xz" \
             | tar -xJ -C "$tools"
+          echo "$sign_update_sha256  $tools/bin/sign_update" | shasum -a 256 -c -
           key_file="$RUNNER_TEMP/sparkle_key"
-          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$key_file"
+          (umask 077; printf '%s' "$SPARKLE_PRIVATE_KEY" > "$key_file")
           url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$DMG")"
           SPARKLE_BIN="$tools/bin" SPARKLE_KEY_FILE="$key_file" scripts/make_appcast.sh "$DMG" "$url" > build/appcast.xml
           rm -f "$key_file"
           cat build/appcast.xml
+          echo "fresh=true" >> "$GITHUB_OUTPUT"
           echo "appcast.xml signed (Sparkle $sparkle_version)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attack DMG to run
@@ -144,13 +198,30 @@ jobs:
           TITLE: ${{ steps.meta.outputs.title }}
           DMG: ${{ steps.meta.outputs.dmg }}
           PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          FRESH_APPCAST: ${{ steps.appcast.outputs.fresh }}
         run: |
           files=("$DMG")
           [ -f build/appcast.xml ] && files+=(build/appcast.xml)
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${files[@]}" --clobber
+            # DMG (tên riêng theo số build) trước, appcast.xml sau cùng: feed luôn trỏ tới một DMG đã có, khớp chữ ký.
+            gh release upload "$TAG" "$DMG" --clobber
+            if [ "$FRESH_APPCAST" = "true" ]; then
+              gh release upload "$TAG" build/appcast.xml --clobber
+              # Bỏ DMG cũ của phiên bản này, giữ thêm bản ngay trước (máy vừa đọc appcast cũ có thể còn đang tải nó).
+              gh release view "$TAG" --json assets \
+                -q '[.assets[] | select(.name | test("^GTV-.*\\.dmg$"))] | sort_by(.createdAt) | reverse | .[2:] | .[].name' \
+                | while read -r old; do
+                    [ "$old" = "$(basename "$DMG")" ] && continue
+                    gh release delete-asset "$TAG" "$old" --yes || echo "::warning::Could not delete old asset $old."
+                  done
+            fi
             gh release edit "$TAG" --notes-file build/notes.md
-            echo "Release $TAG đã có: thay file DMG và cập nhật release note." >> "$GITHUB_STEP_SUMMARY"
+            if [ "$PRERELEASE" = "false" ]; then
+              # Tag trỏ tới commit của bản build mới nhất (tag được tạo ở lần build đầu của phiên bản).
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true \
+                >/dev/null || echo "::warning::Could not move tag $TAG to $GITHUB_SHA."
+            fi
+            echo "Release $TAG đã có: thêm DMG $(basename "$DMG") và cập nhật release note." >> "$GITHUB_STEP_SUMMARY"
           else
             flags=(--title "$TITLE" --target "$GITHUB_SHA" --notes-file build/notes.md)
             [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)

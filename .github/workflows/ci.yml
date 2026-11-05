@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Chỉ đọc mã nguồn; token không nằm lại trong .git/config (persist-credentials: false).
+permissions:
+  contents: read
+
 concurrency:
   # Cancel last run when have new commit to PR
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -17,11 +21,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Select latest Xcode
+      - name: Select latest stable Xcode
         run: |
-          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
-          [ -n "$latest" ] && sudo xcode-select -s "$latest"
+          # Xcode mới nhất không phải bản thử (beta / RC): tên thư mục trên máy của GitHub không phải lúc nào cũng có chữ
+          # beta, nên xem thêm loại giấy phép của Xcode.
+          pick=""
+          for x in $(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V); do
+            case "$(printf '%s' "$x" | tr 'A-Z' 'a-z')" in *beta*|*release_candidate*|*_rc*) continue ;; esac
+            license="$(/usr/libexec/PlistBuddy -c 'Print :licenseType' "$x/Contents/Resources/LicenseInfo.plist" 2>/dev/null || true)"
+            [ "$license" = "Beta" ] && continue
+            pick="$x"
+          done
+          [ -n "$pick" ] && sudo xcode-select -s "$pick"
           xcodebuild -version
 
       - name: Generate Xcode project from project.yml
