@@ -52,6 +52,9 @@ struct VChar {
     /// Phím đứng riêng đã tạo ra chữ này (Telex: w → ư, [ → ơ, ] → ư, { → Ơ, } → Ư); 0 nếu không.
     /// Gõ lặp đúng phím đó thì trả về chính phím ấy (ww → w, [[ → [).
     var fromKey: UInt8 = 0
+    /// Chữ cái do đúng một phím gõ thêm (không biến đổi gì): số phím trong `raw` tính tới phím đó; 0 nếu không.
+    /// Xoá lùi chữ này khi nó ứng với phím cuối của `raw` thì `raw` vẫn khớp (bỏ phím cuối là xong).
+    var rawEnd = 0
 
     @inline(__always) var isVowel: Bool { Ch.isVowel(base) }
 }

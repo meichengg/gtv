@@ -130,6 +130,21 @@ enum VTable {
         return s
     }()
 
+    /// Phần đầu của các vần, mỗi nguyên âm đã có hoặc chưa có mũ/móc của vần đó ("ươ", "ưo", "uơ", "uo"...).
+    /// Mũ/móc đặt vào phải còn nằm trong một vần nào đó: "ngoe" + o không thành "ngôe" (vần "oeo" không có "ô").
+    static let markedPrefixes: Set<String> = {
+        var s: Set<String> = []
+        for k in clusters.keys {
+            var partial = [""]
+            for c in k {
+                let b = Character(stripMarks(String(c)))
+                partial = partial.flatMap { p in b == c ? [p + String(c)] : [p + String(c), p + String(b)] }
+                s.formUnion(partial)
+            }
+        }
+        return s
+    }()
+
     static func stripMarks(_ s: String) -> String {
         String(s.map { c -> Character in
             switch c {
