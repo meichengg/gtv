@@ -334,8 +334,8 @@ struct EchoClock {
     static let floor = 0.015
     static let cap = 0.35
 
-    /// Thời gian in lại đo trực tiếp (`Session.probeEcho`: xem lại màn hình sau 4, 8, 16, 32, 64 ms cho tới khi thấy chữ
-    /// vừa gửi — mỗi số là cận trên của lần đó), mới nhất ở cuối.
+    /// Thời gian in lại đo trực tiếp (`Session.probeEcho`: xem lại màn hình sau 4, 8, 16… 256 ms cho tới khi thấy chữ vừa
+    /// gửi — mỗi số là cận trên của lần đó), mới nhất ở cuối.
     private var measured: [Double] = []
     /// Các lần lệch về sau được biết là chưa in kịp (giây kể từ lần gửi cuối: cận dưới của lần đó), mới nhất ở cuối.
     private var lagSamples: [Double] = []
@@ -349,6 +349,17 @@ struct EchoClock {
         let fromMeasured = (measured.max() ?? 0) * 1.5 + 0.005
         let fromLags = lagSamples.max().map { $0 * 1.5 + 0.01 } ?? 0
         return min(Self.cap, max(Self.floor, fromMeasured, fromLags))
+    }
+
+    /// Số lần đo trực tiếp đang giữ.
+    var measurements: Int { measured.count }
+
+    /// Sổ phím sạch mà màn hình vẫn lệch lâu hơn chừng này kể từ lần gửi cuối thì không phải chưa in kịp (ứng dụng không in
+    /// lại chữ gõ: vim ở normal mode, ô mật khẩu; hay con trỏ thật ở chỗ khác: ứng dụng toàn màn hình). Chưa đo được gì thì
+    /// chờ tới `cap`: qua ssh in lại 200–300 ms mà gõ liền tay thì không có lần đối chiếu nào khớp để đo — chờ ít hơn thì phím
+    /// nào cũng bỏ từ.
+    var mismatchLimit: Double {
+        measured.isEmpty && lagSamples.isEmpty ? Self.cap : max(Self.unknown, bound)
     }
 
     /// Màn hình có đang cho thấy chữ bộ gõ gửi trước con trỏ không. Không, khi ứng dụng toàn màn hình vẽ con trỏ riêng
@@ -367,7 +378,9 @@ struct EchoClock {
     mutating func observe(visible: Bool, after: Double) {
         guard visible else {
             pendingLag = max(pendingLag ?? 0, after)
-            if after >= 0.25 { strikes += 1 }
+            // Cùng ngưỡng với lúc bỏ từ (`Session.guardCursor`): lần lệch nào đủ lâu để bỏ từ cũng tính — không thì người gõ đều
+            // tay ngay dưới ngưỡng cũ bị bỏ từ ở mọi phím mà màn hình vẫn được coi là theo dõi được.
+            if after >= mismatchLimit { strikes += 1 }
             return
         }
         strikes = 0

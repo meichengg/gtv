@@ -1157,7 +1157,8 @@ final class SessionTests: XCTestCase {
     }
 
     /// Ghostty: lần sửa còn chờ, người dùng dán (⌘V, đi vòng bộ gõ) rồi bấm Enter: bỏ lần sửa (không xoá chữ dán), gỡ
-    /// marked text — Enter lần này bị nuốt (hiếm), nhưng không kẹt: các phím sau tới bình thường.
+    /// marked text, Enter vẫn tới shell (gửi kèm ký tự mồi bị xoá ngay: "\r" đứng riêng thì Ghostty bỏ); không kẹt: các phím
+    /// sau tới bình thường.
     func testGhosttyStaleEditDroppedNoStuckMark() {
         let g = GhosttySim()
         g.options = EngineOptions(method: .vni)
@@ -1167,9 +1168,10 @@ final class SessionTests: XCTestCase {
         g.press(.enter, ledger: .interrupted)
         XCTAssertEqual(g.text, "tie/tmp")
         XCTAssertTrue(g.mark.isEmpty)
+        XCTAssertEqual(g.controls, ["\r"])
         g.press(.enter)
         g.press(.up)
-        XCTAssertEqual(g.controls, ["\r", "\u{1b}[A"])
+        XCTAssertEqual(g.controls, ["\r", "\r", "\u{1b}[A"])
         // phím chữ thì tự gửi
         let h = GhosttySim()
         h.options = EngineOptions(method: .vni)
@@ -1179,6 +1181,27 @@ final class SessionTests: XCTestCase {
         h.press(.char("x"), ledger: .interrupted)
         XCTAssertEqual(h.text, "tie/tmpx")
         XCTAssertTrue(h.mark.isEmpty)
+        // ⌫ cũng tới shell: xoá ký tự cuối của chữ dán
+        let b = GhosttySim()
+        b.options = EngineOptions(method: .vni)
+        b.type("tie")
+        b.press(.char("6"), gap: 0.001)
+        b.bypassPaste("/tmp")
+        b.press(.backspace, ledger: .interrupted)
+        XCTAssertEqual(b.text, "tie/tm")
+        XCTAssertTrue(b.mark.isEmpty)
+    }
+
+    /// Ghostty: từ không phải tiếng Việt kết thúc bằng Enter (sổ phím sạch) vẫn được khôi phục — "nvm use", không phải
+    /// "nvm úe" — trong cùng lần ghi với Enter.
+    func testGhosttyEnterRestoresWord() {
+        let g = GhosttySim()
+        g.options = EngineOptions(method: .telex)
+        g.type("nvm use")
+        g.press(.enter)
+        XCTAssertEqual(g.text, "nvm use")
+        XCTAssertEqual(g.controls, ["\r"])
+        XCTAssertTrue(g.mark.isEmpty)
     }
 
     /// Shell chưa kịp in lại chữ vừa gõ (gõ nhanh, ssh): con trỏ đứng sau là bình thường, vẫn thêm dấu đúng.
