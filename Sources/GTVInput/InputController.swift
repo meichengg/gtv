@@ -98,6 +98,8 @@ final class GTVInputController: IMKInputController {
     private var clientKind: ClientKind?
     /// Ô của ứng dụng Java (AWT…): chỉ gõ được bằng marked text, xem `JavaDetector`. nil: chưa biết.
     private var javaView: Bool?
+    /// Đã xét lại loại ô theo bộ công cụ của ứng dụng chưa (SwiftTerm bản mới, xem `refineKind`) — một lần cho mỗi lần gắn.
+    private var kindRefined = false
     /// Ô Java: chốt từ đang gạch chân sau một lúc không gõ (xem `scheduleJavaCommit`).
     private var javaCommit: DispatchWorkItem?
 
@@ -111,6 +113,7 @@ final class GTVInputController: IMKInputController {
         session.reset()
         hotkeyArmedAt = nil
         clientKind = nil
+        kindRefined = false
         javaView = nil
         javaCommit?.cancel()
         guard let client = sender as? Client else { return }
@@ -162,6 +165,18 @@ final class GTVInputController: IMKInputController {
     private static func kind(of client: Client) -> ClientKind? {
         let kind = ClientKind.classify(markedTextAttributes(client))
         return kind == .placeholder ? nil : kind
+    }
+
+    /// View terminal của SwiftTerm từ 04/2026 khai báo đúng [NSUnderline, NSMarkedClauseSegment, NSGlyphInfo] — trông như ô
+    /// văn bản nhưng bỏ qua vùng thay và báo con trỏ là chỉ số ô màn hình. Chỉ tin bộ ba này ở ứng dụng có SwiftTerm.
+    private func refineKind(_ client: Client, _ toolkit: AppToolkit.Profile) {
+        guard !kindRefined, toolkit.swiftTerm, clientKind == .textView else { return }
+        kindRefined = true
+        let attrs = Set(Self.markedTextAttributes(client)).subtracting(["NSDictationHiliteMarkedText"])
+        if attrs == ["NSUnderline", "NSMarkedClauseSegment", "NSGlyphInfo"] {
+            clientKind = .terminalView
+            javaView = false
+        }
     }
 
     /// Ô của ứng dụng Java (AWT, JavaFX, Compose Desktop): không khai báo thuộc tính marked text nào, trong tiến trình chạy
@@ -323,6 +338,8 @@ final class GTVInputController: IMKInputController {
         adapter.client = client
         defer { adapter.client = nil }
         let toolkit = AppToolkit.profile(bundleID)
+        if clientKind == nil { clientKind = Self.kind(of: client) }
+        refineKind(client, toolkit)
         var terminal = settings.terminalStyle(for: bundleID)
         var forceMarked = terminal == nil && (settings.useMarked(for: bundleID)
             || (Settings.knownTerminals.contains(bundleID) && settings.terminalMode == "marked"))
@@ -338,17 +355,26 @@ final class GTVInputController: IMKInputController {
             }
         } else if !forceMarked {
             // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, LibreOffice, Emacs, MacVim — gõ bằng marked text.
-            forceMarked = toolkit.markedOnly || isJavaView(client)
+            forceMarked = toolkit.markedOnly || (toolkit.swiftTerm && clientKind == .terminalView) || isJavaView(client)
         }
         // Ô tự vẽ (ít thuộc tính marked text) của ứng dụng chưa kiểm chứng: từ bắt đầu ở con trỏ {0, 0} gõ bằng marked text
         // (xem `Session.handle(markedAtCaretZero:)`) — không từ nào đi nguyên văn ở ô không cho biết con trỏ.
         if clientKind == nil { clientKind = Self.kind(of: client) }
+        // Flutter: ô văn bản không khai báo thuộc tính nào nhưng thay đúng vùng, con trỏ thật — không cần (marked text vào ô
+        // trống còn vướng flutter#194199); terminal xterm.dart thì cần.
         let markedAtCaretZero = !Settings.knownTerminals.contains(bundleID) && clientKind == .terminalView
+            && (!toolkit.flutter || toolkit.flutterTerminal)
+        // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
+        let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in
+            s.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f && !(0xF700...0xF8FF).contains($0.value) } ? s : nil
+        } : nil
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: toolkit.qt, terminal: terminal, repeatDelay: repeatDelay,
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),
-                                     markedAtCaretZero: markedAtCaretZero)
+                                     markedAtCaretZero: markedAtCaretZero, combinedCommit: toolkit.combinedCommit,
+                                     clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
+                                     keyText: keyText)
         if javaView == true { scheduleJavaCommit(client) }
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled

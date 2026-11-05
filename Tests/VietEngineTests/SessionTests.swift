@@ -161,6 +161,65 @@ private final class Qt5Field: TextClient {
     }
 }
 
+/// Ô GTK 3 (gdk/quartz, imquartz.c): marked text thật, `hasMarkedText` đúng; mỗi phím chỉ giữ LẦN CHÈN CUỐI (TIC_INSERT_TEXT bị
+/// ghi đè) — phím bộ gõ cho đi mà ra chữ thì AppKit chèn chữ đó, đè lên lần chốt từ của bộ gõ trong cùng phím.
+/// `winit`: thay vào đó như winit 0.30 — chèn khi không có marked text thì bị bỏ; sau lần chốt, phím bộ gõ cho đi bị nuốt trừ khi
+/// bộ gõ đã gỡ marked text (setMarkedText "").
+private final class ToolkitField: TextClient {
+    var units: [UInt16] = []
+    var marked = ""
+    var winit: Bool
+    var pending: [String] = []          // GTK: các lần chèn trong phím đang xử lý
+    var committedThisKey = false        // winit: trạng thái Committed
+    let session = Session()
+    var options = EngineOptions()
+    init(winit: Bool = false) { self.winit = winit }
+
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { winit ? nil : (0, 0) }
+    func text(location: Int, length: Int) -> String? { nil }
+    func replaceText(location: Int, length: Int, with t: String) { XCTFail("không thay trực tiếp ở \(winit ? "winit" : "GTK")") }
+    func replaceViaMarkedText(location: Int, length: Int, with t: String) { XCTFail("không thay trực tiếp") }
+    func setMarkedText(_ t: String) {
+        marked = t
+        if winit, t.isEmpty { committedThisKey = false }
+    }
+    func insertText(_ t: String) {
+        if winit {
+            guard !marked.isEmpty || committedThisKey else { return }      // không có marked text: bỏ
+            units += Array(t.utf16)
+            committedThisKey = true
+            marked = ""
+            return
+        }
+        marked = ""
+        pending.append(t)
+    }
+    func hasMarkedText() -> Bool { !marked.isEmpty }
+
+    /// Một phím: `chars` là chữ phím ra (nil: phím không ra chữ như ⏎ thì ô tự xử lý thành `effect`).
+    func press(_ key: Key, chars: String?, effect: String? = nil) {
+        committedThisKey = false
+        pending = []
+        let handled = session.handle(key, self, options: options, forceMarked: true, combinedCommit: true,
+                                     clearAfterCommit: winit, trustMarked: true, keyText: chars)
+        if winit {
+            if !handled, !committedThisKey { units += Array((chars ?? effect ?? "").utf16) }   // còn Committed: phím bị nuốt
+            return
+        }
+        if !handled, let chars { pending.append(chars) }                    // AppKit chèn chữ của phím
+        if let last = pending.last { units += Array(last.utf16) }           // chỉ giữ lần chèn cuối
+        if !handled, chars == nil, let effect { units += Array(effect.utf16) }   // ⏎: GTK tự xử lý sau lần chốt
+    }
+
+    func type(_ keys: String) {
+        for k in keys {
+            if k == "\n" { press(.char("\r"), chars: nil, effect: "\n") } else { press(.char(k), chars: String(k)) }
+        }
+    }
+}
+
 /// Ô tự vẽ (GPUI, terminal nhúng…) của ứng dụng chưa kiểm chứng, dùng với `markedAtCaretZero`:
 /// - `blind`: như view terminal của Herdr / Zed — con trỏ luôn báo {độ dài marked text}, `insertText` bỏ qua vùng thay (ghi
 ///   thêm vào cuối), không đọc được chữ;
@@ -927,6 +986,20 @@ final class SessionTests: XCTestCase {
 
     /// Ô kiểu Qt 5 (con trỏ luôn báo 0, bỏ qua vùng cần thay): không bao giờ chèn ư / ơ vào giữa từ ("awesome" → "aưesome");
     /// thấy rồi thì các từ sau gõ bằng marked text (GTVInput còn nhận ra Qt 5 trước cả từ đầu tiên, xem `AppToolkit`).
+    /// GTK (CherryTree…) và winit (egui, iced, Alacritty): từ đang gạch chân được chốt cùng chữ của phím kết thúc từ trong một lần
+    /// chèn; ⏎ ngay sau từ vẫn có tác dụng (winit: gỡ marked text để không bị nuốt).
+    func testGtkAndWinitKeepWordAndTerminator() {
+        for winit in [false, true] {
+            let f = ToolkitField(winit: winit)
+            f.type("vieejt nam, ddaij hocj.\nxong ")
+            XCTAssertEqual(f.text, "việt nam, đại học.\nxong ", winit ? "winit" : "GTK")
+            let g = ToolkitField(winit: winit)
+            g.options.method = .vni
+            g.type("vie65t\nd9a82ng ")
+            XCTAssertEqual(g.text, "việt\nđằng ", winit ? "winit" : "GTK")
+        }
+    }
+
     /// Ô tự vẽ không cho biết con trỏ (view terminal của Herdr / Zed khi chưa nhận ra): mọi từ gõ bằng marked text, không từ nào
     /// đi nguyên văn hay thành chữ rác ("dd9"); ô soạn thảo thật bắt đầu trống: chỉ từ đầu gạch chân, từ sau gõ trực tiếp.
     func testCustomViewAtCaretZeroTypesMarked() {

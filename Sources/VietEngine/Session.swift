@@ -164,6 +164,11 @@ public final class Session {
     /// Ô từng báo con trỏ ở đầu văn bản trong khi từ đang gõ nằm sau đó (Qt 5: luôn báo 0): ô không cho biết con trỏ thật, các
     /// từ sau gõ bằng marked text (chèn tại con trỏ, không cần vị trí).
     private var caretBlind = false
+    /// Gạch chân: ô chỉ giữ một lần chèn chữ cho mỗi phím (GTK) hoặc nuốt phím ngay sau lần chốt (winit) — chốt từ cùng chữ của
+    /// phím kết thúc từ trong một lần `insertText` (xem `handle(combinedCommit:)`).
+    private var combinedCommit = false
+    /// Gạch chân: ô báo đúng `hasMarkedText` ngay từ đầu (GTK, winit) — không cần chờ thấy nó báo một lần (`markedReported`).
+    private var trustMarked = false
 
     public init() {}
 
@@ -212,11 +217,18 @@ public final class Session {
     /// `markedAtCaretZero`: ô tự vẽ của ứng dụng chưa kiểm chứng (GPUI, terminal nhúng, Rust/winit…): từ bắt đầu khi ô báo con
     /// trỏ ở {0, 0} thì gõ bằng marked text — không phân biệt được ô trống với ô không cho biết con trỏ (luôn báo 0, bỏ qua
     /// vùng thay), mà marked text đúng ở cả hai. Ô báo vị trí thật thì từ sau gõ trực tiếp như thường.
+    /// `combinedCommit` (GTK, winit): phím kết thúc từ đang gạch chân mà ra chữ (`keyText`: dấu cách, dấu câu, ⌥+chữ…) thì chốt
+    /// từ cùng chữ đó trong một lần `insertText` và bộ gõ giữ phím; phím không ra chữ (⏎, ⇥, mũi tên…) thì chốt từ rồi cho phím
+    /// đi, kèm gỡ marked text nếu `clearAfterCommit` (winit nuốt phím ngay sau lần chốt khi còn trạng thái "vừa chốt").
+    /// `trustMarked`: ô báo đúng `hasMarkedText` ngay từ đầu (GTK, winit).
     public func handle(_ key: Key, _ client: TextClient, options: EngineOptions, forceMarked: Bool,
                        qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil,
                        earlyCommit: Bool = false, gap: KeyGap = .none, legacy: String? = nil,
-                       markedAtCaretZero: Bool = false) -> Bool {
+                       markedAtCaretZero: Bool = false, combinedCommit: Bool = false, clearAfterCommit: Bool = false,
+                       trustMarked: Bool = false, keyText: String? = nil) -> Bool {
         self.qtApp = qtApp
+        self.combinedCommit = combinedCommit
+        self.trustMarked = trustMarked
         self.earlyCommit = earlyCommit
         inTerminal = terminal != nil
         if let terminal {
@@ -227,7 +239,7 @@ public final class Session {
         if marked, !preedit.isEmpty {
             if client.hasMarkedText() {
                 markedReported = true
-            } else if markedReported {
+            } else if markedReported || trustMarked {
                 // Ứng dụng đã tự chốt / bỏ phần gạch chân mà bộ gõ không thấy (JetBrains Runtime tự chốt khi click, ứng dụng
                 // đổi ô hay đổi chữ bằng chương trình…): phần đó không còn để sửa. Dựng lại cả từ ở chỗ mới sẽ thành chữ
                 // đôi — bắt đầu từ mới.
@@ -266,8 +278,11 @@ public final class Session {
         }
         switch key {
         case .other:
-            breakWord(client)
             continueWordOnNextChar = false
+            if combinedCommit, marked, !engine.isEmpty {
+                return endMarkedWord(with: keyText, client, clear: clearAfterCommit)
+            }
+            breakWord(client)
             return false
         case .backspace:
             let handled = backspace(client)
@@ -312,6 +327,10 @@ public final class Session {
             }
             let before = engine.displayed
             guard let action = engine.process(ch) else {
+                if combinedCommit, marked, !engine.isEmpty {
+                    return endMarkedWord(with: Self.producesText(ch) ? keyText ?? String(ch) : nil, client,
+                                         clear: clearAfterCommit)
+                }
                 breakWord(client)
                 return false
             }
@@ -400,7 +419,7 @@ public final class Session {
 
     /// Ô đã tự chốt / bỏ phần gạch chân của bộ gõ (ô vốn báo đúng `hasMarkedText`): chốt lại sẽ chèn chữ lần hai.
     private func markedTextLost(_ client: TextClient) -> Bool {
-        markedReported && !preedit.isEmpty && !client.hasMarkedText()
+        (markedReported || trustMarked) && !preedit.isEmpty && !client.hasMarkedText()
     }
 
     // MARK: - Chế độ gạch chân
@@ -1071,6 +1090,11 @@ public final class Session {
         return o
     }
 
+    /// Phím ra chữ (không phải ký tự điều khiển hay mã phím chức năng U+F700… của AppKit: mũi tên, Home, F1…).
+    private static func producesText(_ ch: Character) -> Bool {
+        ch.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f && !(0xF700...0xF8FF).contains($0.value) }
+    }
+
     private static func isPrintable(_ ch: Character) -> Bool {
         guard let a = ch.asciiValue else { return false }
         return a >= 0x20 && a != 0x7f
@@ -1121,6 +1145,21 @@ public final class Session {
             return false
         }
         engine.reset()              // không thay được: ứng dụng xoá ký tự cuối, bỏ từ
+        return false
+    }
+
+    /// Kết thúc từ đang gạch chân bằng một phím (`combinedCommit`): phím ra chữ thì chốt từ + chữ đó trong một lần `insertText`
+    /// và bộ gõ giữ phím (true); không thì chốt từ, gỡ marked text nếu `clear`, rồi cho phím đi (false).
+    private func endMarkedWord(with text: String?, _ client: TextClient, clear: Bool) -> Bool {
+        let tail = String(engine.finishWord().text.dropFirst(committed.count))
+        let hadPreedit = !preedit.isEmpty
+        endMarkedWord()
+        if let text, !text.isEmpty {
+            client.insertText(tail + text)
+            return true
+        }
+        if !tail.isEmpty || hadPreedit { client.insertText(tail) }
+        if clear { client.setMarkedText("") }
         return false
     }
 

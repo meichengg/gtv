@@ -203,6 +203,9 @@ final class Settings {
         // Herdr (GPUI + libghostty-vt, đọc mã nguồn herdrdev/herdr-app src/terminal.rs): insertText ghi nguyên chuỗi xuống
         // shell, bỏ qua vùng thay; phím in được tới bộ gõ trước (GPUI: nguồn nhập là bộ gõ).
         "dev.herdr.app",
+        // Kaku: bản fork của WezTerm (cùng lớp cửa sổ macOS, đọc mã nguồn tw93/Kaku). Iruka: SwiftTerm — insertText ghi nguyên
+        // chuỗi xuống shell (bản cũ báo con trỏ NSNotFound, bản mới là chỉ số ô màn hình: xem `InputController.refineKind`).
+        "fun.tw93.kaku", "dorienherremans.com.Iruka",
     ]
 
     /// Mọi terminal (kể cả terminal chưa kiểm chứng, chỉ dùng gạch chân): khi gõ có gạch chân thì chốt sớm phần

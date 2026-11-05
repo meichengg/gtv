@@ -19,6 +19,11 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
 - Herdr: gõ thẳng xuống shell như Ghostty / Muxy (không gạch chân); thanh Find và ô prompt gõ như ô văn bản thường.
 - Ứng dụng chưa kiểm chứng có ô tự vẽ không cho biết con trỏ (GPUI, terminal nhúng, ứng dụng Rust…): không còn từ nào ra
   nguyên văn (`d9a82ng`) — từ bắt đầu khi ô báo con trỏ ở đầu được gõ bằng gạch chân, cách đúng ở mọi ô.
+- Kaku (bản fork của WezTerm) và Iruka (SwiftTerm): gõ thẳng xuống shell như các terminal khác.
+- Ứng dụng GTK (CherryTree, GIMP, Inkscape…) và winit (egui, iced, Alacritty…): gõ được dấu (gạch chân trong lúc gõ một từ).
+  Trước đây GTK mất cả từ khi gõ dấu cách, winit nuốt dấu cách / ⏎ ngay sau từ.
+- Terminal SwiftTerm nhúng trong ứng dụng khác (SSH client, agent…): gõ bằng gạch chân thay vì ra chữ rác.
+- Ứng dụng Flutter (LocalSend, RustDesk, Reqable…): ô văn bản gõ trực tiếp như trước; terminal xterm.dart gõ bằng gạch chân.
 - Chế độ V/E giữ cố định: đổi ứng dụng, quay lại sau ô mật khẩu / màn hình khoá không làm nhảy chế độ. Người dùng tự
   đổi (⌘⇧, ⌃Space, 🌐, menu bộ gõ, kể cả khi đang ở bộ gõ khác) thì theo.
 

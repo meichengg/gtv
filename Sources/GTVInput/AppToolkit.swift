@@ -6,16 +6,40 @@ import AppKit
 ///   (qnsview_complextext.mm) — chỉ gõ được bằng marked text.
 /// - LibreOffice (VCL): con trỏ luôn báo ở 0 — marked text.
 /// - Emacs (bản NS) và MacVim: bỏ qua vùng cần thay — marked text.
+/// - GTK 3 / 4 (CherryTree, GIMP, Inkscape 1.x…, gdk/quartz): con trỏ giả, chỉ dùng độ dài vùng thay, mỗi phím chỉ giữ lần chèn
+///   chữ cuối cùng — marked text, chữ chốt từ gửi cùng phím kết thúc từ (`combinedCommit`).
+/// - winit (egui/eframe, iced, Alacritty…): bỏ chữ chèn khi không có marked text, nuốt phím ngay sau lần chốt — marked text,
+///   `combinedCommit`, gỡ marked text sau khi chốt bằng phím không ra chữ.
+/// - SwiftTerm (Iruka, ứng dụng SSH / agent nhúng terminal): view terminal bỏ qua vùng thay, con trỏ là chỉ số ô màn hình —
+///   marked text nếu không phải terminal đã kiểm chứng (bản mới khai báo thuộc tính như ô văn bản: xem `swiftTermView`).
+/// - Flutter: ô văn bản thay đúng vùng, con trỏ thật (FlutterTextInputPlugin là NSTextView) nhưng không khai báo thuộc tính
+///   marked text nào — không gõ từ đầu ở ô trống bằng marked text (flutter#194199); terminal xterm.dart thì có.
+/// Đọc mã nguồn từng bộ (IME toolkit audit 2026-11-05).
 ///
-/// Dấu hiệu: framework trong gói (Qt liên kết động, LibreOffice), hoặc chuỗi trong file chạy (Qt liên kết tĩnh như Telegram:
-/// tên lớp "QNSView"; Qt 5: "qt_version_tag_5"). Trong lúc chưa có kết quả thì coi như ứng dụng thường.
+/// Dấu hiệu: framework / thư viện trong gói, hoặc chuỗi trong file chạy (Qt liên kết tĩnh như Telegram: tên lớp "QNSView";
+/// Qt 5: "qt_version_tag_5"; GTK: đường dẫn thư viện; winit: lớp "WinitView"; SwiftTerm: "_TtC9SwiftTerm12TerminalView").
+/// Trong lúc chưa có kết quả thì coi như ứng dụng thường.
 enum AppToolkit {
     struct Profile: Equatable, Sendable, CustomStringConvertible {
         var qt = false
         /// Chỉ gõ được bằng marked text (gạch chân).
         var markedOnly = false
+        /// Chốt từ đang gạch chân cùng chữ của phím kết thúc từ trong một lần `insertText` (GTK, winit).
+        var combinedCommit = false
+        /// Sau khi chốt bằng phím không ra chữ (⏎, ⇥, mũi tên…), gỡ marked text để ô không nuốt phím đó (winit).
+        var clearAfterCommit = false
+        /// Ô báo đúng `hasMarkedText` ngay từ đầu: không còn marked text là ô đã tự chốt / bỏ nó (GTK, winit).
+        var trustMarked = false
+        var flutter = false
+        /// Ứng dụng Flutter có terminal xterm.dart (ô terminal chốt rồi đặt lại về rỗng — gõ bằng marked text).
+        var flutterTerminal = false
+        var swiftTerm = false
+        var gtk = false
+        var winit = false
 
-        var description: String { "qt=\(qt) markedOnly=\(markedOnly)" }
+        var description: String {
+            "qt=\(qt) gtk=\(gtk) winit=\(winit) markedOnly=\(markedOnly) combined=\(combinedCommit) flutter=\(flutter)/\(flutterTerminal) swiftTerm=\(swiftTerm)"
+        }
     }
 
     private static var cache: [String: Profile] = [:]
@@ -55,19 +79,43 @@ enum AppToolkit {
         var p = Profile(markedOnly: markedBundleIDs.contains(bundleID))
         guard let bundle = Bundle(url: app) else { return p }
         let fm = FileManager.default
-        let frameworks = bundle.bundlePath + "/Contents/Frameworks/"
+        let contents = bundle.bundlePath + "/Contents/"
+        let frameworks = contents + "Frameworks/"
         if fm.fileExists(atPath: frameworks + "libvcllo.dylib") { p.markedOnly = true }      // LibreOffice
         for name in ["QtCore.framework", "QtGui.framework"] where fm.fileExists(atPath: frameworks + name) {
             p.qt = true
             if fm.fileExists(atPath: frameworks + name + "/Versions/5") { p.markedOnly = true }
         }
-        if !p.qt, let exe = bundle.executableURL {
-            let found = search(exe, for: ["QNSView", "qt_version_tag_5"])
-            if found.contains("QNSView") {
+        if fm.fileExists(atPath: frameworks + "FlutterMacOS.framework") {
+            p.flutter = true
+            // Snapshot Dart (AOT) giữ tên gói; bản build --obfuscate thì không thấy (coi như không có terminal).
+            p.flutterTerminal = !search(URL(fileURLWithPath: frameworks + "App.framework/App"), for: ["package:xterm/"]).isEmpty
+        }
+        // GTK đóng gói bằng gtk-mac-bundler để thư viện ở Contents/Resources/lib.
+        for dir in [frameworks, contents + "Resources/lib/"] {
+            let names = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
+            if names.contains(where: { $0.hasPrefix("libgtk-3") || $0.hasPrefix("libgdk-3") || $0.hasPrefix("libgtk-4") }) {
+                p.gtk = true
+            }
+        }
+        if fm.fileExists(atPath: frameworks + "SwiftTerm.framework") { p.swiftTerm = true }
+        if let exe = bundle.executableURL {
+            let found = search(exe, for: ["QNSView", "qt_version_tag_5", "libgtk-3.0", "libgdk-3.0", "libgtk-4.", "WinitView",
+                                          "_TtC9SwiftTerm12TerminalView"])
+            if !p.qt, found.contains("QNSView") {
                 p.qt = true
                 if found.contains("qt_version_tag_5") { p.markedOnly = true }
             }
+            if !found.isDisjoint(with: ["libgtk-3.0", "libgdk-3.0", "libgtk-4."]) { p.gtk = true }
+            if found.contains("WinitView") { p.winit = true }
+            if found.contains("_TtC9SwiftTerm12TerminalView") { p.swiftTerm = true }
         }
+        if p.gtk || p.winit {
+            p.markedOnly = true
+            p.combinedCommit = true
+            p.trustMarked = true
+        }
+        if p.winit { p.clearAfterCommit = true }
         return p
     }
 
