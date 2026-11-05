@@ -103,6 +103,15 @@ jobs:
           xcodebuild -project GTV.xcodeproj -scheme GTV -configuration Debug -derivedDataPath build/dd build \
             | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
 
+      - name: Package GTV.app (Debug, có log) để cài thử
+        run: ditto -c -k --sequesterRsrc --keepParent build/dd/Build/Products/Debug/GTV.app "$RUNNER_TEMP/GTV-debug.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gtv-debug-app-${{ github.run_number }}
+          path: ${{ runner.temp }}/GTV-debug.zip
+          retention-days: 7
+
       - name: Install GTV
         run: |
           mkdir -p /tmp/l "$OUT/shots"

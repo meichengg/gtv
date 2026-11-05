@@ -14,8 +14,9 @@ import VietEngine
 final class LiveInput {
     static let shared = LiveInput()
 
-    /// Return, Enter, Tab, Delete, ⌦, Esc, ←, →, ↓, ↑, Home, End, PgUp, PgDn.
-    static let watchedKeys: [CGKeyCode] = [36, 76, 48, 51, 117, 53, 123, 124, 125, 126, 115, 119, 116, 121]
+    /// Return, Enter, Tab, Delete, ⌦, Esc, ←, →, ↓, ↑, Home, End, PgUp, PgDn, F1–F12.
+    static let watchedKeys: [CGKeyCode] = [36, 76, 48, 51, 117, 53, 123, 124, 125, 126, 115, 119, 116, 121,
+                                           122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
     static let interval = 0.008
 
     private(set) var log = PressLog()
@@ -23,10 +24,11 @@ final class LiveInput {
     private var timer: DispatchSourceTimer?
     private var activity: NSObjectProtocol?
     private let hid: io_service_t = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOHIDSystem"))
-    /// Sự kiện HID gần nhất (bàn phím / chuột thật) không đi kèm đổi phím bổ trợ, lúc đọc thấy.
-    private(set) var lastForeignHID: Double?
+    /// Các sự kiện HID mới (bàn phím / chuột thật), lúc đọc thấy (chỉ đọc lúc `trackHID(for:)`). Sự kiện không trùng lần
+    /// đổi phím bổ trợ nào là phím ký tự hay di chuột (`Hotkey.isCleanTap`).
+    private(set) var hidEvents: [Double] = []
     private var lastHIDEvent: Double?
-    private var flagsChangedAt: Double?
+    private var hidUntil = 0.0
 
     private init() {}
 
@@ -58,6 +60,18 @@ final class LiveInput {
         activity = nil
     }
 
+    /// Đọc thêm `HIDIdleTime` trong `seconds` giây tới (lúc giữ phím tắt đổi chế độ: đọc nó tốn hơn, cần một lời gọi
+    /// tới kernel). Mốc tính lại từ bây giờ: các sự kiện trước đó (kể cả chính lần nhấn phím bổ trợ) không tính.
+    func trackHID(for seconds: Double) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now >= hidUntil {
+            lastHIDEvent = nil
+            hidEvents = []
+        }
+        hidUntil = max(hidUntil, now + seconds)
+        keep(for: seconds)
+    }
+
     /// Đọc ngay.
     func sample() {
         let now = ProcessInfo.processInfo.systemUptime
@@ -70,25 +84,25 @@ final class LiveInput {
         let mask: CGEventFlags = [.maskAlphaShift, .maskShift, .maskControl, .maskAlternate, .maskCommand,
                                   .maskSecondaryFn]
         let flags = CGEventSource.flagsState(.combinedSessionState).intersection(mask).rawValue
-        let flagsBefore = log.flagChanges.last
-        log.sample(at: now, held: held, button: button, flags: flags)
-        if log.flagChanges.last != flagsBefore { flagsChangedAt = now }
-        trackHID(now)
+        let count = CGEventSource.counterForEventType(.combinedSessionState, eventType: .keyDown)
+        log.sample(at: now, held: held, button: button, flags: flags, keyDownCount: count)
+        if now < hidUntil { readHID() }
     }
 
     /// Thời điểm sự kiện HID cuối (`HIDIdleTime` của IOHIDSystem: không làm tròn, không cần quyền) — chỉ có với bàn phím /
     /// chuột thật, không có với phím do chương trình gõ hay điều khiển từ xa. Sự kiện mới mà không có đổi phím bổ trợ quanh
     /// đó là phím ký tự (hay di chuột): dùng cho phím tắt đổi chế độ (⌘⇧Z không phải ⌘⇧ "trơn").
-    private func trackHID(_ now: Double) {
-        guard hid != 0, let value = IORegistryEntryCreateCFProperty(hid, "HIDIdleTime" as CFString,
-                                                                     kCFAllocatorDefault, 0)?.takeRetainedValue(),
-              let ns = (value as? NSNumber)?.doubleValue else { return }
+    private func readHID() {
+        guard hid != 0 else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let value = IORegistryEntryCreateCFProperty(hid, "HIDIdleTime" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue(), let ns = (value as? NSNumber)?.doubleValue else { return }
         let event = now - ns / 1e9
         defer { if lastHIDEvent.map({ event > $0 }) ?? true { lastHIDEvent = event } }
+        // Lần đọc đầu (sau khi bắt đầu theo dõi) chỉ lấy mốc. HIDIdleTime dao động vài ms giữa các lần đọc: chỉ tính khi
+        // nhảy hẳn lên.
         guard let last = lastHIDEvent, event > last + 0.012 else { return }
-        // Đổi phím bổ trợ (nhấn / nhả ⌘ ⇧…) cũng là sự kiện HID.
-        if let changed = flagsChangedAt, abs(changed - now) <= 0.02 { return }
-        lastForeignHID = now
+        hidEvents.append(now)
     }
 
     /// Bộ gõ nhận keyDown.
@@ -96,19 +110,25 @@ final class LiveInput {
         log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat)
     }
 
-    /// Phím đặc biệt bộ gõ không nhận và click, trước phím vừa tới lúc `time` (lấy ra).
-    func takeMissed(before time: Double) -> [PressLog.Press] {
-        log.takeMissed(before: time)
+    /// Lấy ra các lần nhấn đang chờ thoả `condition` (phím bộ gõ không nhận, click).
+    func take(where condition: (PressLog.Press) -> Bool) -> [PressLog.Press] {
+        log.take(where: condition)
     }
 
     /// Bỏ các lần nhấn đang chờ đối chiếu (đổi ô nhập liệu, click bộ gõ thấy…).
     func forgetPending() {
-        _ = log.takeMissed(before: .infinity)
+        log.forget()
     }
 
-    /// Người dùng có nhấn phím đặc biệt, nút chuột hay đổi phím bổ trợ trong [from, to] không — chỉ biết khi đã đọc liên tục
-    /// suốt khoảng đó (`covered`).
+    /// Đang giữ phím đặc biệt hay nút chuột nào không (đọc ngay).
+    func anyHeld() -> Bool {
+        sample()
+        return log.anyHeld
+    }
+
+    /// Người dùng có nhấn phím đặc biệt, nút chuột hay nhấn thêm phím bổ trợ (nhả thì không tính) trong [from, to] không —
+    /// chỉ biết khi đã đọc liên tục suốt khoảng đó (`covered`).
     func activity(from: Double, to: Double) -> (seen: Bool, covered: Bool) {
-        (log.pressed(from: from, to: to) || log.flagsChanged(from: from, to: to), log.covered(since: from))
+        (log.pressed(from: from, to: to) || log.flagsPressed(from: from, to: to), log.covered(since: from))
     }
 }

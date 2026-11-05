@@ -393,45 +393,62 @@ def main():
     delays = os.environ.get("DEFER_DELAYS", "").split()
     # COUNTER_MODES: "auto" = GTV tự nhận biết bộ đếm sự kiện (macOS 26: cập nhật ngay); "coarse" = ép chế độ của macOS 27
     # (bộ đếm chỉ công bố mỗi 0,5 s: không dùng sổ phím, chỉ đọc trạng thái phím / nút chuột) — máy GitHub chưa có macOS 27.
+    # Mỗi terminal chỉ mở một lần, chạy lần lượt các chế độ (mở lại iTerm2 lần hai hay kẹt hộp thoại).
     counter_modes = os.environ.get("COUNTER_MODES", "auto").split()
-    results = []
-    for counter_mode in counter_modes:
+
+    def set_counter_mode(mode):
         d = "com.gtv.inputmethod.GTV"
-        if counter_mode == "auto":
+        if mode == "auto":
             sh(["defaults", "delete", d, "counterMode"])
         else:
-            sh(["defaults", "write", d, "counterMode", "-string", counter_mode])
-        suffix = "" if counter_mode == "auto" else f"·{counter_mode}"
-        part = []
-        for key in terms:
-            if key not in TERMINALS or not pathlib.Path(TERMINALS[key][1]).exists():
-                part.append({"terminal": key, "test": "-", "error": "chưa cài"})
-                continue
-            bid = None
-            try:
-                bid = open_terminal(key)
-                shot(f"{key}{suffix}-opened")
-                for style in styles:
-                    for delay in (delays if key == "ghostty" and delays else [None]):
-                        for method in methods:
-                            part += run_suite(key, bid, style, delay, method, repeat)
-                if os.environ.get("FIELDS", "1") == "1" and counter_mode == counter_modes[0]:
-                    configure("vni", styles[0])
-                    part += probe_fields(key, bid)
-            except Exception as e:  # noqa: BLE001
-                part.append({"terminal": key, "test": "-", "error": str(e)})
-                shot(f"{key}{suffix}-fatal")
-            finally:
-                close_terminal(key)
+            sh(["defaults", "write", d, "counterMode", "-string", mode])
+        sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+        time.sleep(0.4)
+        return "" if mode == "auto" else f"·{mode}"
 
-        if os.environ.get("MODES_TEST", "1") == "1":
+    results = []
+    for key in terms:
+        if key not in TERMINALS or not pathlib.Path(TERMINALS[key][1]).exists():
+            results.append({"terminal": key, "test": "-", "error": "chưa cài"})
+            continue
+        bid = None
+        try:
+            bid = open_terminal(key)
+            shot(f"{key}-opened")
+            for counter_mode in counter_modes:
+                suffix = set_counter_mode(counter_mode)
+                part = []
+                try:
+                    for style in styles:
+                        for delay in (delays if key == "ghostty" and delays else [None]):
+                            for method in methods:
+                                part += run_suite(key, bid, style, delay, method, repeat)
+                    if os.environ.get("FIELDS", "1") == "1" and counter_mode == counter_modes[0]:
+                        configure("vni", styles[0])
+                        part += probe_fields(key, bid)
+                except Exception as e:  # noqa: BLE001
+                    part.append({"terminal": key, "test": "-", "error": str(e)})
+                    shot(f"{key}{suffix}-fatal")
+                for r in part:
+                    r["terminal"] = r.get("terminal", key) + suffix
+                results += part
+        except Exception as e:  # noqa: BLE001
+            results.append({"terminal": key, "test": "-", "error": str(e)})
+            shot(f"{key}-fatal")
+        finally:
+            close_terminal(key)
+
+    if os.environ.get("MODES_TEST", "1") == "1":
+        for counter_mode in counter_modes:
+            suffix = set_counter_mode(counter_mode)
             try:
-                part += run_modes()
+                part = run_modes()
             except Exception as e:  # noqa: BLE001
-                part.append({"terminal": "modes", "test": "-", "error": str(e)})
-        for r in part:
-            r["terminal"] = r.get("terminal", "") + suffix
-        results += part
+                part = [{"terminal": "modes", "test": "-", "error": str(e)}]
+            for r in part:
+                r["terminal"] = r.get("terminal", "modes") + suffix
+            results += part
+    set_counter_mode("auto")
     (OUT / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1))
     rows = ["| terminal | kiểu | bài | kết quả | shell nhận | xoá tách rời | ghi chú |", "|---|---|---|---|---|---|---|"]
     for r in results:

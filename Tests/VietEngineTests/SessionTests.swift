@@ -399,7 +399,19 @@ private final class ScreenTerminal: TextClient {
     /// ← không qua bộ gõ, shell chưa in lại (màn hình vẫn như cũ).
     func bypassLeftNotEchoed() { inFlight.append("\u{1b}[D") }
 
-    func tick(_ ms: Double) { now += ms / 1000 }
+    /// Việc bộ gõ hẹn giờ (đo thời gian in lại…), chạy theo đồng hồ giả trong `tick`.
+    var scheduled: [(due: Double, work: () -> Void)] = []
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { scheduled.append((now + delay, work)) }
+
+    func tick(_ ms: Double) {
+        let end = now + ms / 1000
+        while let i = scheduled.indices.min(by: { scheduled[$0].due < scheduled[$1].due }), scheduled[i].due <= end {
+            let item = scheduled.remove(at: i)
+            now = max(now, item.due)
+            item.work()
+        }
+        now = end
+    }
 
     /// Gõ (mỗi phím cách nhau `ms`), shell in lại ngay sau mỗi phím nếu `echoes`; `gap`: sổ phím báo gì cho mỗi phím.
     func type(_ keys: String, ms: Double = 120, echoes: Bool = true, gap: KeyGap = .none) {
@@ -989,6 +1001,18 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(h.text, "echo tô")
         XCTAssertEqual(h.controls, ["\u{05}"])
         XCTAssertTrue(h.mark.isEmpty)
+    }
+
+    /// Ghostty (không đọc được màn hình): click dời con trỏ ở dấu nhắc fish (bộ gõ thấy qua trạng thái nút chuột: phím sau
+    /// nhận `.bypassed`): bỏ từ cũ, phím này bắt đầu từ mới — không gửi DEL nào theo từ cũ.
+    func testGhosttyBypassStartsFreshWord() {
+        let g = GhosttySim()
+        g.options = EngineOptions(method: .vni)
+        g.type("echo tie")
+        g.press(.char("6"), ledger: .bypassed)
+        XCTAssertEqual(g.text, "echo tie6")
+        g.type(" to6i")
+        XCTAssertEqual(g.text, "echo tie6 tôi")
     }
 
     /// Ghostty: từ có phím đi nguyên văn lúc chưa chắc rồi Enter (đã chắc): sửa cả từ cùng Enter trong keyDown — Ghostty

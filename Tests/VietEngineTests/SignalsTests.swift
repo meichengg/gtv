@@ -286,6 +286,27 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(l.observe(reading(15, at: 1.4, code: 4)), .clean)
     }
 
+    /// Lần nhấn sớm hơn phím vừa tới (lúc `t`) quá `lead` giây.
+    private func missed(_ p: inout PressLog, before t: Double, lead: Double = 0.01) -> [PressLog.Press] {
+        p.take { $0.at <= t - lead }
+    }
+
+    /// Chỉ nhấn thêm phím bổ trợ mới là thao tác (nhả ⌘ sau ⌘Tab thì không); quên phím đã nhận khi đổi ô nhập liệu.
+    func testPressLogFlagPressesAndForget() {
+        var p = PressLog()
+        p.sample(at: 1.000, held: [], button: false, flags: 0x100000)
+        p.sample(at: 1.008, held: [], button: false, flags: 0)              // nhả ⌘
+        XCTAssertTrue(p.flagsChanged(from: 1.0, to: 1.01))
+        XCTAssertFalse(p.flagsPressed(from: 1.0, to: 1.01))
+        p.sample(at: 1.016, held: [], button: false, flags: 0x40000)        // nhấn ⌃
+        XCTAssertTrue(p.flagsPressed(from: 1.01, to: 1.02))
+        p.keyReceived(51, at: 1.020, isRepeat: false)                        // ⌫ ở ứng dụng khác…
+        p.forget()                                                           // …rồi đổi ô nhập liệu
+        p.sample(at: 1.024, held: [51], button: false, flags: 0x40000)      // ⌫ Terminal.app tự xử lý
+        XCTAssertEqual(p.pending.map(\.key), [51])
+        XCTAssertTrue(p.anyHeld)
+    }
+
     /// Đọc trạng thái phím đặc biệt / nút chuột: phím bộ gõ nhận được đối chiếu, phím terminal tự xử lý và click thì không.
     func testPressLogMatchesKeysAndFindsBypass() {
         var p = PressLog()
@@ -295,15 +316,15 @@ final class SignalsTests: XCTestCase {
         p.keyReceived(51, at: 1.010, isRepeat: false)                            // …và tới bộ gõ (Ghostty)
         p.sample(at: 1.016, held: [], button: false, flags: 0)
         p.keyReceived(0, at: 1.100, isRepeat: false)
-        XCTAssertTrue(p.takeMissed(before: 1.100).isEmpty)
+        XCTAssertTrue(missed(&p, before: 1.100).isEmpty)
         p.sample(at: 1.200, held: [123], button: false, flags: 0)               // ← (Terminal.app không đưa bộ gõ)
         p.sample(at: 1.208, held: [], button: false, flags: 0)
         p.keyReceived(14, at: 1.300, isRepeat: false)
-        XCTAssertEqual(p.takeMissed(before: 1.300), [PressLog.Press(key: 123, at: 1.200)])
-        XCTAssertTrue(p.takeMissed(before: 1.400).isEmpty)                       // đã lấy ra
+        XCTAssertEqual(missed(&p, before: 1.300), [PressLog.Press(key: 123, at: 1.200)])
+        XCTAssertTrue(missed(&p, before: 1.400).isEmpty)                       // đã lấy ra
         p.sample(at: 1.248, held: [], button: true, flags: 0)                    // click
         p.keyReceived(15, at: 1.400, isRepeat: false)
-        XCTAssertEqual(p.takeMissed(before: 1.400), [PressLog.Press(key: nil, at: 1.248)])
+        XCTAssertEqual(missed(&p, before: 1.400), [PressLog.Press(key: nil, at: 1.248)])
     }
 
     /// Bộ gõ nhận phím trước lần đọc thấy nó được nhấn: vẫn đối chiếu được. Phím bấm ngay sau phím vừa tới (trong `lead`)
@@ -317,8 +338,8 @@ final class SignalsTests: XCTestCase {
         p.sample(at: 1.016, held: [], button: false, flags: 0)
         p.sample(at: 1.024, held: [48], button: false, flags: 0)                 // ⇥ nhấn ngay trước phím sau…
         p.keyReceived(3, at: 1.028, isRepeat: false)
-        XCTAssertTrue(p.takeMissed(before: 1.028).isEmpty)                       // …chưa chắc là trước hay sau nó
-        XCTAssertEqual(p.takeMissed(before: 1.2).map(\.key), [48])
+        XCTAssertTrue(missed(&p, before: 1.028).isEmpty)                       // …chưa chắc là trước hay sau nó
+        XCTAssertEqual(missed(&p, before: 1.2).map(\.key), [48])
     }
 
     /// Đọc có khoảng hở: không biết gì xảy ra giữa chừng (`covered`); phím / nút đang giữ lúc đọc lại không tính là vừa

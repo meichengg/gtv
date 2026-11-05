@@ -141,7 +141,8 @@ final class Settings {
             autoRestore: defaults.bool(forKey: "autoRestore"))
         Session.deferDelay = defaults.object(forKey: "deferDelayMs") == nil
             ? Session.defaultDeferDelay : defaults.double(forKey: "deferDelayMs") / 1000
-        DebugLog.write("lab: nạp lại cài đặt, method=\(options.method), terminalStyle=\(terminalMode), markedApps=\(markedApps.count), deferDelay=\(Session.deferDelay)")
+        KeyWatch.shared.reloadCounterModeForLab()
+        DebugLog.write("lab: nạp lại cài đặt, method=\(options.method), terminalStyle=\(terminalMode), markedApps=\(markedApps.count), deferDelay=\(Session.deferDelay), counterMode=\(KeyWatch.shared.counterMode.rawValue)")
     }
     #endif
 

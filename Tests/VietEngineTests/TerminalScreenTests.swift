@@ -75,10 +75,24 @@ private final class LagTerm: TextClient {
             write(String(c))
         }
         if echoed { echo() }
-        now += 0.05
+        tick(50)
     }
     func type(_ s: String) { for c in s { key(c, .none) } }
-    func bypass(_ bytes: String) { write(bytes); now += 0.01 }
+    func bypass(_ bytes: String) { write(bytes); tick(10) }
+
+    /// Việc bộ gõ hẹn giờ (đo thời gian in lại…), chạy theo đồng hồ giả.
+    var scheduled: [(due: Double, work: () -> Void)] = []
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { scheduled.append((now + delay, work)) }
+
+    func tick(_ ms: Double) {
+        let end = now + ms / 1000
+        while let i = scheduled.indices.min(by: { scheduled[$0].due < scheduled[$1].due }), scheduled[i].due <= end {
+            let item = scheduled.remove(at: i)
+            now = max(now, item.due)
+            item.work()
+        }
+        now = end
+    }
 }
 
 /// Như `ScreenTerminal` (SessionTests) nhưng biết ký tự nào do shell gõ (Tab tự hoàn thành) để đếm DEL xoá nhầm.
@@ -127,7 +141,19 @@ private final class CompletingTerminal: TextClient {
         inFlight = []
     }
 
-    func tick(_ ms: Double) { now += ms / 1000 }
+    /// Việc bộ gõ hẹn giờ (đo thời gian in lại…), chạy theo đồng hồ giả.
+    var scheduled: [(due: Double, work: () -> Void)] = []
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { scheduled.append((now + delay, work)) }
+
+    func tick(_ ms: Double) {
+        let end = now + ms / 1000
+        while let i = scheduled.indices.min(by: { scheduled[$0].due < scheduled[$1].due }), scheduled[i].due <= end {
+            let item = scheduled.remove(at: i)
+            now = max(now, item.due)
+            item.work()
+        }
+        now = end
+    }
 
     func type(_ keys: String, ms: Double = 120, echoes: Bool = true, gap: KeyGap = .none) {
         for k in keys {
@@ -202,7 +228,9 @@ final class TerminalScreenTests: XCTestCase {
         XCTAssertEqual(t.executed, ["git pull origin ma1"])
     }
 
-    /// Phím chưa chắc thứ hai (phím đang tới được thay bằng phím đi vòng bấm sau nó, số dư không đổi), màn hình cũ.
+    /// Phím chưa chắc thứ hai: phím đang tới ("s") được thay bằng ⌫ bấm ngay sau nó, số dư không đổi — sổ phím vẫn báo "không
+    /// có gì mới". ⌫ là phím đặc biệt: KeyWatch thấy nó và sắp thứ tự bằng bộ đếm, nên "n" nhận `.bypassed`. Màn hình cũ
+    /// ("ba os|") không được dùng: không xoá dấu cách của từ trước.
     func testStaleScreenAtSecondSteadyKey() {
         let t = LagTerm(.telex)
         t.type("ba ")
@@ -210,9 +238,10 @@ final class TerminalScreenTests: XCTestCase {
         t.key("s", .unsureSteady, echoed: false)
         t.bypass("\u{7f}")
         t.echo(2)
-        t.key("n", .unsureSteady, echoed: false)
+        t.key("n", .bypassed, echoed: false)
         t.echo()
-        XCTAssertEqual(t.line, "ba on")
+        t.key(" ", .none)
+        XCTAssertEqual(t.line, "ba on ")
     }
 
     /// iTerm2 qua ssh: k, ← (đã in), rồi h o 6 n g lúc sổ phím chưa chắc, → bấm ngay sau g, ␣ đọc lúc màn hình đã in
@@ -255,22 +284,40 @@ final class TerminalScreenTests: XCTestCase {
         XCTAssertEqual(t.line, "tiệt")
     }
 
-    /// Terminal.app VNI: "ti", → (không đổi gì), "e" khi shell chưa in "i" (nghi từ "e"), "6" khi màn hình đã cho thấy
-    /// "tie" (từ cũ đúng, thêm dấu), ⌫ (không qua bộ gõ), "e6n" gõ liền: từ phải bắt đầu lại từ "e" gõ sau ⌫ — "tiên".
+    /// Terminal.app VNI: "ti", → (không đổi gì; Terminal.app tự xử lý, bộ gõ thấy qua trạng thái phím: phím sau nhận
+    /// `.bypassed`), "e" khi shell chưa in "i", "6" khi màn hình đã cho thấy "tie" (từ cũ đúng, thêm dấu), ⌫ (không qua bộ
+    /// gõ), "e6n" gõ liền: từ bắt đầu lại từ "e" gõ sau ⌫ — "tiên".
     func testRestartAfterOldWordWasConfirmed() {
         let t = CompletingTerminal(.vni)
-        t.type("echo ", ms: 100)                         // shell in lại ngay: bộ gõ biết thời gian in lại ngắn
+        t.type("echo ", ms: 100)                         // shell in lại ngay: bộ gõ đo được thời gian in lại ngắn
+        t.type("t", ms: 100)
+        t.type("i", ms: 25, echoes: false)
+        t.bypassNoop()
+        t.type("e", ms: 100, echoes: false, gap: .bypassed)
+        t.echo()
+        t.type("6", ms: 100)
+        XCTAssertEqual(t.line, "echo tiê")
+        t.bypassBackspace()
+        t.type("e", ms: 100, gap: .bypassed)
+        t.type("6n", ms: 100)
+        XCTAssertEqual(t.line, "echo tiên")
+    }
+
+    /// Cùng các phím nhưng sổ phím chỉ biết "có phím chưa thấy" (`.unsure`: phím đó có thể được bấm ngay sau "e"): màn hình
+    /// in lại "e" chưa chứng minh gì, "6" đi nguyên văn — không bao giờ xoá gì ngoài chữ bộ gõ gõ.
+    func testUnsureLeadKeyNeedsALaterKey() {
+        let t = CompletingTerminal(.vni)
+        t.type("echo ", ms: 100)
         t.type("t", ms: 100)
         t.type("i", ms: 25, echoes: false)
         t.bypassNoop()
         t.type("e", ms: 100, echoes: false, gap: .unsure)
         t.echo()
         t.type("6", ms: 100, gap: .unsureSteady)
-        XCTAssertEqual(t.line, "echo tiê")
-        t.bypassBackspace()
-        t.type("e", ms: 100, gap: .unsure)
-        t.type("6n", ms: 100, gap: .unsureSteady)
-        XCTAssertEqual(t.line, "echo tiên")
+        XCTAssertEqual(t.line, "echo tie6")
+        t.type("t ", ms: 100, gap: .unsureSteady)          // giờ đã có ký tự gõ sau phím nghi vấn: sửa cả từ
+        XCTAssertEqual(t.line, "echo tiêt ")
+        XCTAssertEqual(t.foreignDeletes, 0)
     }
 
     /// Telex, còn phím chưa thấy; màn hình lệch ở "a", màn hình cho thấy "va" ở "o", rồi "f" tới khi "o" chưa in: không

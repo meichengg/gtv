@@ -197,7 +197,8 @@ final class GTVInputController: IMKInputController {
                 if flags == hotkey {
                     if hotkeyArmedAt == nil {
                         hotkeyArmedAt = ProcessInfo.processInfo.systemUptime
-                        LiveInput.shared.keep(for: 3)            // phím / click lúc đang giữ: xem `Hotkey.isCleanTap`
+                        Hotkey.heldAtArm = LiveInput.shared.anyHeld()
+                        LiveInput.shared.trackHID(for: 3)        // phím / click lúc đang giữ: xem `Hotkey.isCleanTap`
                     }
                 } else if flags.isEmpty {
                     // Phím tắt như ⌘⇧Z được ứng dụng xử lý trước, bộ gõ không thấy phím Z:
