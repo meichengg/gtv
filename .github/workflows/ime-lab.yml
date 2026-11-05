@@ -114,6 +114,20 @@ jobs:
           path: ${{ runner.temp }}/GTV-debug.zip
           retention-days: 7
 
+      # Bản Release cùng commit (không có log chẩn đoán) để cài lên máy thật sau khi lab qua.
+      - name: Build + package GTV.app (Release)
+        run: |
+          set -o pipefail
+          xcodebuild -project GTV.xcodeproj -scheme GTV -configuration Release -derivedDataPath build/dd-release build \
+            | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
+          ditto -c -k --sequesterRsrc --keepParent build/dd-release/Build/Products/Release/GTV.app "$RUNNER_TEMP/GTV-release.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gtv-release-app-${{ github.run_number }}
+          path: ${{ runner.temp }}/GTV-release.zip
+          retention-days: 14
+
       - name: Install GTV
         run: |
           mkdir -p /tmp/l "$OUT/shots"

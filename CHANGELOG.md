@@ -28,7 +28,17 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   chế độ mà macOS gửi sau mỗi lần gắn bộ gõ, tới sau phím đầu tiên, làm GTV quên chữ vừa gõ.
 - Ứng dụng Java (Burp Suite, IntelliJ, Ghidra… — AWT / Swing / JavaFX / Compose Desktop) không gõ được dấu: Java bỏ qua
   cách thay chữ trực tiếp, GTV tự nhận ra và gõ bằng marked text (có gạch chân trong lúc gõ một từ, như bộ gõ tiếng
-  Nhật / Trung — cách duy nhất Java hỗ trợ).
+  Nhật / Trung — cách duy nhất Java hỗ trợ). Từ đang gạch chân được chốt sau 1 giây không gõ: Java nuốt phím ←, ⌘A, ⌘S,
+  Esc… nếu bộ gõ chốt từ ngay lúc phím đó tới.
+- Qt 5 (VLC 3, KeePassXC, Wireshark, VirtualBox 6…), LibreOffice, Emacs, MacVim: không ra dấu, có lúc chèn "ư" vào giữa từ
+  ("awesome" → "aưesome"). Các ứng dụng này bỏ qua cách thay chữ trực tiếp: GTV tự nhận ra và gõ bằng marked text.
+- Chrome, Electron (VS Code, Slack, Claude…): ⌫ làm dời dấu thanh xoá mất hai ký tự (kiểu dấu cũ: `hoafn⌫` ra `hò`
+  thay vì `hòa`).
+- Gõ rất nhanh khi trang web xử lý chậm: không bao giờ sửa sai chỗ (đảo thứ tự `nhw` → `nưh`, xoá chữ sau từ) — GTV thấy
+  ô chưa cập nhật thì để các chữ còn lại của từ đi nguyên văn.
+- Chọn một mục trong menu bộ gõ khi đang có chữ gạch chân làm mất chữ đó.
+- Spotlight / Raycast / Alfred mở trên một ứng dụng bị loại trừ: không bật được tiếng Việt.
+- Hiếm: ứng dụng tự chốt phần gạch chân (đổi ô, click mà bộ gõ không thấy) rồi gõ tiếp thì chữ bị nhân đôi.
 
 ### Lưu ý
 - vim / nvim, vi-mode của shell: ở normal mode các phím là lệnh — chuyển sang tiếng Anh (⌘⇧) khi gõ lệnh, hoặc dùng

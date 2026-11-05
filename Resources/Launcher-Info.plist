@@ -31,9 +31,9 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>SUFeedURL</key>
-	<string>https://github.com/S0nnyHoang/gtv/releases/latest/download/appcast.xml</string>
+	<string>https://github.com/meichengg/gtv/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>CpAFY8ae8FhSh0TFeVnXbMNpQ4VR7i3KOAREz7dZ+OE=</string>
+	<string>JTqw/K4rR+3DpF0akfIIKrPA7mp9nyjHhhi81O7xBTw=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUScheduledCheckInterval</key>
