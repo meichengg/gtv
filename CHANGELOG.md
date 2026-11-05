@@ -39,6 +39,24 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
 - Chọn một mục trong menu bộ gõ khi đang có chữ gạch chân làm mất chữ đó.
 - Spotlight / Raycast / Alfred mở trên một ứng dụng bị loại trừ: không bật được tiếng Việt.
 - Hiếm: ứng dụng tự chốt phần gạch chân (đổi ô, click mà bộ gõ không thấy) rồi gõ tiếp thì chữ bị nhân đôi.
+- Terminal: ⏎ / ⇥ ngay sau ← / ↑ / click có thể chạy một lệnh đã bị sửa sai (`echo àa`, xoá chữ của lệnh lấy từ lịch sử).
+  Từ không phải tiếng Việt kết thúc bằng ⏎ / ⇥ nay cũng được khôi phục (`nvm use⏎` chạy `nvm use`, không phải `nvm úe`).
+- Terminal qua ssh chậm (in lại 200–300 ms), ứng dụng toàn màn hình (Claude Code…): không còn mất dấu khi gõ liền tay.
+- Ghostty: ⏎ / ⌫ / ⇥ ngay sau ⌘V hay click không còn bị nuốt. ⇧⇥ tới shell.
+- macOS 27: ⌘⇧ + phím bấm nhanh (⌘⇧Z…) không đổi chế độ nhầm; dừng tay giữa từ quá 5 giây trong iTerm2 / Terminal.app
+  không mất từ.
+- Gõ nhầm rồi ⌫ giữa từ tiếng Việt ra lại đúng chữ (`tieengd⌫s` → `tiếng`, không còn `tieengs`); ⌫ trong từ tiếng Anh
+  không tắt tự khôi phục (`sr⌫erver` → `server`).
+- Telex: từ tiếng Anh có chữ cái gõ lặp được khôi phục đúng (`sorry`, `password`, `message`, `coffee`, `worry`, `cheese`…);
+  gõ được `ngoèo`, `khoèo`, `thuở` (`thuwor`), `Đắk Lắk`, `Krông Pắk`, `goòng`, `moóc`.
+- Unicode tổ hợp: ⌫ rồi gõ tiếp dấu vào từ có dấu đã gõ xong hoạt động như với Unicode dựng sẵn.
+
+### Cài đặt / cập nhật
+- Cập nhật bộ gõ nguyên khối: chép và kiểm bản mới trước, rồi mới thay và tắt bản cũ — lỗi giữa chừng (vd. đĩa đầy) thì
+  bộ gõ cũ vẫn chạy. Không bao giờ cài đè bằng bản cũ hơn (mở một GTV.app cũ thì hỏi trước).
+- Bộ gõ tự chạy GTV.app ngầm (vd. sau khi Sparkle cài bản mới) không còn giành bộ gõ khác người dùng đang dùng.
+- Tự cập nhật đọc bản phát hành của repo này (meichengg/gtv), ký bằng khoá riêng.
+- "Chọn GTV khi đăng nhập" hiện đúng trạng thái thật; mục đăng nhập người dùng đã gỡ không bị thêm lại.
 
 ### Lưu ý
 - vim / nvim, vi-mode của shell: ở normal mode các phím là lệnh — chuyển sang tiếng Anh (⌘⇧) khi gõ lệnh, hoặc dùng

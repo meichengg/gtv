@@ -16,7 +16,9 @@ packages:
 settings:
   base:
     MARKETING_VERSION: "1.12"
-    # Số build = phiên bản: Sparkle so sánh CFBundleVersion (hiểu dạng 1.11.1), chỉ cần tăng MARKETING_VERSION.
+    # Số build mặc định = phiên bản (bản build bằng Xcode / IME Lab). build.sh (DMG, install.sh, phát hành) ghi đè
+    # CFBundleVersion = YYYYMMDD.HHMMSS và GTVBuildStamp: Sparkle so CFBundleVersion, nên mọi bản phát hành phải qua
+    # build.sh (số luôn tăng; bản đã cài có số dạng ngày sẽ không nhận bản có số kiểu 1.12).
     CURRENT_PROJECT_VERSION: "$(MARKETING_VERSION)"
     SWIFT_VERSION: "5.0"
     # Mặc định ký ad-hoc (chạy được trên máy build). Khi phát hành, build.sh truyền

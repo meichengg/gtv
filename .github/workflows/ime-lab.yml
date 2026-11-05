@@ -21,6 +21,9 @@ on:
   push:
     branches: ['lab/**']
 
+permissions:
+  contents: read
+
 concurrency:
   group: ime-lab-${{ github.ref }}
   cancel-in-progress: true
@@ -34,6 +37,8 @@ jobs:
       runner: ${{ steps.r.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: r
         run: |
           r="$(grep -E '^RUNNER=' tools/lab/lab.env 2>/dev/null | tail -1 | cut -d= -f2-)"
@@ -51,6 +56,8 @@ jobs:
       OUT: ${{ github.workspace }}/lab-out
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Lab config (tools/lab/lab.env ghi đè TERMS/METHODS/STYLES/MODE)
         run: |

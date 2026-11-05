@@ -143,7 +143,7 @@ final class GTVInputController: IMKInputController {
         switch event.keyCode {
         case 53: return "\u{1b}"                                 // Esc
         case 36, 76: return flags.isEmpty ? "\r" : nil           // Return, Enter
-        case 48: return flags.isEmpty ? "\t" : nil               // Tab
+        case 48: return flags.isEmpty ? "\t" : (flags == [.shift] ? "\u{1b}[Z" : nil)   // Tab, ⇧⇥
         case 51: return flags.isEmpty ? "\u{7f}" : nil           // Delete
         case 123: return flags.isEmpty ? "\u{1b}[D" : nil        // ←
         case 115: return flags.isEmpty ? "\u{1b}[H" : nil        // Home
@@ -194,6 +194,7 @@ final class GTVInputController: IMKInputController {
         DebugLog.write("deactivateServer \(bundleID)")
         javaCommit?.cancel()
         commit(sender)
+        LiveInput.shared.endTerminal()      // rời ô: không cần đọc trạng thái phím cho nó nữa (pin)
     }
 
     /// Ứng dụng (hay InputMethodKit) muốn chốt — không phải lúc mất focus (đó là `deactivateServer`). Gõ trực tiếp thì giữ
