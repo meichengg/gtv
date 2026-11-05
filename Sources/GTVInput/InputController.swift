@@ -270,24 +270,7 @@ final class GTVInputController: IMKInputController {
 
         adapter.insertedDuringKey = false
         let handled = handleKeyDown(event, client, flags: flags)
-        if !handled && adapter.insertedDuringKey && javaView == true { rearmJavaKey(event, client) }
         return handled
-    }
-
-    /// Ô Java: phím đi thẳng ngay sau khi bộ gõ chốt marked text (←, ⌘A, ⌘S, Esc… kết thúc từ). AWTView coi chữ bộ gõ chốt
-    /// trong keyDown là "đã thay cho phím này" và không phát phím cho Java nữa (`fKeyEventsNeeded = NO`); chỉ ⏎, ⇥, ⌫ được
-    /// bật lại — phím khác bị nuốt (IME Lab: "vie65t←x" ra "việtx"). Gửi thêm đúng ký tự của chính phím đó khi không còn
-    /// marked text: OpenJDK chỉ bật lại cờ phát phím, không chèn chuỗi; JetBrains Runtime phát phím kèm chuỗi đó — trùng
-    /// ký tự của phím, như phím gốc.
-    private func rearmJavaKey(_ event: NSEvent, _ client: Client) {
-        let marked = client.markedRange()
-        guard let chars = event.characters, chars.utf16.count == 1,
-              marked.location == NSNotFound || marked.length == 0 else {
-            DebugLog.write("Java: không bật lại cờ phát phím \(event.keyCode) (marked=\(marked))")
-            return
-        }
-        client.insertText(chars, replacementRange: notFound)
-        DebugLog.write("Java: bật lại cờ phát phím \(event.keyCode) (marked trước đó=\(marked), sau=\(client.markedRange()))")
     }
 
     private func handleKeyDown(_ event: NSEvent, _ client: Client, flags: NSEvent.ModifierFlags) -> Bool {

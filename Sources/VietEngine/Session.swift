@@ -123,6 +123,16 @@ public final class Session {
     /// Ô nhập liệu đã từng báo đúng là đang có marked text của bộ gõ (`hasMarkedText`): từ đó, không thấy marked text nữa nghĩa
     /// là ứng dụng đã tự chốt / bỏ nó. Ô không báo (hay báo sai) thì không bao giờ dựa vào dấu hiệu này.
     private var markedReported = false
+    /// Gõ trực tiếp: không còn biết chắc từ đang gõ nằm đâu (ô không cho biết con trỏ thật — Qt5 luôn báo 0; bộ đệm phía ứng
+    /// dụng chưa cập nhật — Chromium / Electron khi trang xử lý chậm): các chữ còn lại của từ đi nguyên văn tới hết từ. Không
+    /// đoán, nên không bao giờ thay sai chỗ (chữ ở giữa từ thành "ư", xoá mất chữ sau từ).
+    private var untracked = false
+    /// Gõ trực tiếp: phím trước đi thẳng (ứng dụng tự chèn chữ) và vị trí con trỏ đọc được lúc đó — ở phím sau, con trỏ phải
+    /// đã nhích.
+    private var passedAt: Int?
+    /// Lần thay gần nhất của bộ gõ trong từ đang gõ: từ trước (`from`) và sau (`to`) lần thay. Bộ đệm phía ứng dụng chưa có
+    /// lần thay đó thì vẫn cho đọc `from` (xem `staleWord`).
+    private var lastEdit: (from: String, to: String)?
 
     public init() {}
 
@@ -136,6 +146,14 @@ public final class Session {
         suspectSettled = false
         endMarkedWord()
         continueWordOnNextChar = false
+        endDirectWord()
+    }
+
+    /// Bỏ những gì biết về từ gõ trực tiếp (xem `untracked`, `passedAt`, `lastEdit`).
+    private func endDirectWord() {
+        untracked = false
+        passedAt = nil
+        lastEdit = nil
     }
 
     private func endMarkedWord() {
@@ -196,27 +214,53 @@ public final class Session {
                 reset()          // ô nhập liệu tự xử lý (xem bên dưới)
             }
         }
+        if untracked {
+            // Từ không theo dõi được (xem `untracked`): chữ trong từ đi nguyên văn, phím khác kết thúc từ.
+            switch key {
+            case let .char(ch) where Self.continuesWord(ch):
+                return false
+            case .backspace:
+                return false
+            case .char, .other:
+                reset()
+            }
+        }
         switch key {
         case .other:
             breakWord(client)
             continueWordOnNextChar = false
             return false
         case .backspace:
+            passedAt = nil           // con trỏ lùi lại: phép thử "con trỏ chưa nhích" (`lostTrack`) không còn đúng
             let handled = backspace(client)
             if engine.isEmpty && !marked { continueWordOnNextChar = true }
             return handled
         case let .char(ch):
+            var sel: (location: Int, length: Int)?
             if engine.isEmpty {
                 engine.options = options
-                let sel = client.selectedRange()
-                marked = forceMarked || sel == nil
+                endDirectWord()
+                if forceMarked {
+                    marked = true            // gạch chân: không cần vị trí con trỏ (bớt một lần hỏi ứng dụng)
+                    anchor = 0
+                } else {
+                    sel = client.selectedRange()
+                    marked = sel == nil
+                    anchor = sel?.location ?? 0
+                }
                 committed = ""
                 preedit = ""
-                anchor = sel?.location ?? 0
                 if continueWordOnNextChar && !marked { resync(client) }
                 continueWordOnNextChar = false
-            } else if !marked && !inSync(client.selectedRange()) {
-                resync(client)
+            } else if !marked {
+                sel = client.selectedRange()
+                if let reason = lostTrack(sel) {
+                    log?("gõ trực tiếp: \(reason) — các chữ còn lại của từ \(engine.displayed.debugDescription) đi nguyên văn")
+                    engine.reset()
+                    untracked = true
+                    return false
+                }
+                if !inSync(sel) { resync(client) }     // con trỏ đã bị dời (vị trí không đổi trong keyDown này)
             }
             let before = engine.displayed
             guard let action = engine.process(ch) else {
@@ -224,8 +268,46 @@ public final class Session {
                 return false
             }
             if marked { return showMarked(ch, action, before: before, client) }
-            return perform(action, client, retry: ch)
+            let handled = perform(action, client, retry: ch, sel: sel)
+            // Phím đi thẳng: ứng dụng tự chèn chữ, con trỏ phải nhích ở phím sau (`lostTrack`).
+            passedAt = handled || engine.isEmpty ? nil : sel?.location
+            return handled
         }
+    }
+
+    /// Ký tự còn nằm trong một từ (chữ, số — VNI dùng số làm dấu, `[ ] { }` — Telex dùng cho ư ơ).
+    private static func continuesWord(_ ch: Character) -> Bool {
+        ch.isLetter || ch.isNumber || "[]{}".contains(ch)
+    }
+
+    /// Gõ trực tiếp, giữa từ: ô nhập liệu cho thấy điều bộ gõ không thể đoán chắc — trả về lý do, khi đó không sửa gì nữa trong
+    /// từ này. nil: theo dõi tiếp (kể cả khi con trỏ đã bị dời — `resync` đọc lại từ ở chỗ mới).
+    /// - phím trước đi thẳng mà con trỏ chưa nhích: ứng dụng chưa xử lý xong phím đó (Chromium / Electron khi trang chậm: vị trí
+    ///   và chữ đọc được đến từ bộ đệm chưa cập nhật), hay không cho biết con trỏ thật (Qt5: luôn báo 0);
+    /// - con trỏ ở đúng chỗ của từ trước lần thay gần nhất của bộ gõ (bộ đệm chưa có lần thay đó);
+    /// - ô báo con trỏ ở đầu văn bản trong khi từ đang gõ nằm sau đó (Qt5).
+    private func lostTrack(_ sel: (location: Int, length: Int)?) -> String? {
+        guard let sel else { return "ô không còn cho biết vị trí con trỏ" }
+        let expected = anchor + engine.displayed.utf16.count
+        if sel.location == expected { return nil }
+        if let at = passedAt, sel.location == at {
+            return "con trỏ chưa nhích sau phím đi thẳng (\(at))"
+        }
+        if let stale = staleWord(engine.displayed), stale.utf16.count != engine.displayed.utf16.count,
+           sel.location == anchor + stale.utf16.count {
+            return "ô chưa có lần thay trước của bộ gõ (con trỏ \(sel.location))"
+        }
+        if sel.location == 0, sel.length == 0, expected > 0 {     // (⌘A chọn từ 0 thì là dời con trỏ thật: đọc lại)
+            return "ô báo con trỏ ở đầu văn bản"
+        }
+        return nil
+    }
+
+    /// Chữ của từ mà ô nhập liệu cho thấy nếu nó chưa có lần thay gần nhất của bộ gõ (`lastEdit`); các chữ đi thẳng sau lần
+    /// thay đó nằm ở cuối cả hai.
+    private func staleWord(_ word: String) -> String? {
+        guard let edit = lastEdit, word.hasPrefix(edit.to) else { return nil }
+        return edit.from + word.dropFirst(edit.to.count)
     }
 
     /// Ứng dụng / InputMethodKit muốn chốt (`commitComposition`) mà ô nhập liệu không mất focus: ứng dụng tự đổi văn bản hay
@@ -251,17 +333,25 @@ public final class Session {
 
     /// Chốt từ đang gõ (khi ô nhập liệu mất focus, click chuột...).
     public func commit(_ client: TextClient?) {
-        if let client {
+        if let client, pending != nil {
             if client.lateEditSafe() {
                 settlePending(client)
             } else {
-                clearPending()     // có phím tắt / click sau lần sửa (vd. ⌘V): lần sửa có thể đã lỗi thời
+                // Có phím tắt / click sau lần sửa (vd. ⌘V): lần sửa có thể đã lỗi thời — bỏ, và gỡ luôn marked text rỗng
+                // (U+200B) đang giữ phím ở Ghostty, không thì ⏎ / ⌫ / mũi tên kế tiếp bị nuốt.
+                if pendingClient === client, client.hasMarkedText() { client.setMarkedText("") }
+                clearPending()
             }
         }
-        if marked, !engine.isEmpty, let client {
+        if marked, !engine.isEmpty, let client, !markedTextLost(client) {
             insertMarkedTail(engine.finishWord().text, client)
         }
         reset()
+    }
+
+    /// Ô đã tự chốt / bỏ phần gạch chân của bộ gõ (ô vốn báo đúng `hasMarkedText`): chốt lại sẽ chèn chữ lần hai.
+    private func markedTextLost(_ client: TextClient) -> Bool {
+        markedReported && !preedit.isEmpty && !client.hasMarkedText()
     }
 
     // MARK: - Chế độ gạch chân
@@ -841,7 +931,17 @@ public final class Session {
             return false
         }
         if sel.length > 0 { return false }   // chỉ xoá phần gợi ý tự động đang bôi đen sau từ
-        return perform(engine.backspace(), client, retry: nil)
+        let old = engine.displayed
+        guard case let .replace(_, new) = engine.backspace(), let last = old.last else { return false }
+        // Xoá lùi làm đổi chữ còn lại (kiểu dấu cũ: "hoàn" ⌫ → "hòa"): thay phần đổi nhưng GIỮ ký tự cuối, rồi để chính ứng
+        // dụng xoá nó như mọi phím ⌫ — không trả lời "đã xử lý" cho ⌫. Chromium / Electron vẫn chạy ⌫ của nó sau lần thay
+        // của bộ gõ (IME Lab: "hoafn⌫" ra "hò").
+        if replace(old, new + String(last), client, sel: sel) {
+            passedAt = nil
+            return false
+        }
+        engine.reset()              // không thay được: ứng dụng xoá ký tự cuối, bỏ từ
+        return false
     }
 
     private func breakWord(_ client: TextClient) {
@@ -855,9 +955,14 @@ public final class Session {
         endMarkedWord()
     }
 
-    private func perform(_ action: Action, _ client: TextClient, retry ch: Character?) -> Bool {
+    private func perform(_ action: Action, _ client: TextClient, retry ch: Character?,
+                         sel: (location: Int, length: Int)? = nil) -> Bool {
         guard case let .replace(old, new) = action else { return false }
-        if replace(old, new, client, typed: ch) { return true }
+        if replace(old, new, client, typed: ch, sel: sel) { return true }
+        if untracked {
+            engine.reset()          // ô chưa cập nhật (xem `replace`): phím đi nguyên văn
+            return false
+        }
         // Không khớp với màn hình: đọc lại từ trước con trỏ rồi xử lý phím này tiếp từ đó.
         resync(client)
         guard let ch else { engine.reset(); return false }
@@ -882,14 +987,23 @@ public final class Session {
         if engine.seed(word) { anchor = sel.location - word.utf16.count }
     }
 
-    /// `typed`: ký tự của phím vừa bấm (nếu việc thay đổi do phím đó gây ra).
-    private func replace(_ old: String, _ new: String, _ client: TextClient, typed: Character? = nil) -> Bool {
+    /// `typed`: ký tự của phím vừa bấm (nếu việc thay đổi do phím đó gây ra). `known`: vị trí con trỏ vừa đọc trong cùng
+    /// keyDown (chưa gửi lần sửa nào kể từ đó) — khỏi hỏi lại ứng dụng.
+    private func replace(_ old: String, _ new: String, _ client: TextClient, typed: Character? = nil,
+                         sel known: (location: Int, length: Int)? = nil) -> Bool {
         let oldLen = old.utf16.count
-        guard let sel = client.selectedRange(), sel.location >= oldLen, sel.location == anchor + oldLen else {
+        guard let sel = known ?? client.selectedRange(), sel.location >= oldLen, sel.location == anchor + oldLen else {
             log?("thay \(old.debugDescription): con trỏ \(client.selectedRange().map { "\($0)" } ?? "-"), cần \(anchor + oldLen)")
             return false
         }
         if oldLen > 0, let current = client.text(location: sel.location - oldLen, length: oldLen), current != old {
+            if let stale = staleWord(old), current == stale {
+                // Ô vẫn cho đọc từ trước lần thay gần nhất của bộ gõ: bộ đệm phía ứng dụng chưa cập nhật (Chromium / Electron
+                // khi trang chậm). Đọc lại từ đó rồi thay sẽ tính sai chỗ — không sửa gì nữa trong từ này.
+                log?("thay \(old.debugDescription): ô chưa có lần thay trước (\(current.debugDescription)) — các chữ còn lại đi nguyên văn")
+                untracked = true
+                return false
+            }
             log?("thay \(old.debugDescription): trước con trỏ lại là \(current.debugDescription)")
             return false
         }
@@ -906,7 +1020,11 @@ public final class Session {
         let start = sel.location - deleteLen
         // Vùng đang bôi đen sau từ (gợi ý tự động) cũng bị thay luôn.
         let length = deleteLen + sel.length
-        if qtApp, let typed, insert == String(typed), length > 0 {
+        if deleteLen == 0 {
+            // Chỉ chèn thêm (Telex "w" đầu từ → "ư", "nhw" → "như"): chèn tại con trỏ thật của ứng dụng (thay cả vùng đang bôi
+            // đen), không theo vị trí đọc được — ô có bộ đệm chậm (Chromium) sẽ chèn trước phím còn chờ ("nưh").
+            client.insertText(insert)
+        } else if qtApp, let typed, insert == String(typed), length > 0 {
             // Chuỗi thay vào trùng ký tự phím vừa bấm (vd. "ơ" + "[" -> "[", "ư" + "w" -> "w"): ứng dụng Qt
             // (Telegram...) coi đó là nhấn phím thường, bỏ qua vùng cần thay (và bỏ qua cả lệnh thay bằng
             // chuỗi rỗng) -> "ơ[". Đi qua marked text thì Qt xử lý theo đường của bộ gõ.
@@ -916,6 +1034,7 @@ public final class Session {
         } else {
             client.replaceText(location: start, length: length, with: insert)
         }
+        lastEdit = (from: old, to: new)
         return true
     }
 }
