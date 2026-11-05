@@ -15,17 +15,20 @@ final class KeyWatch {
 
     enum CounterMode: String { case exact, coarse }
 
-    /// Bộ đếm / thời điểm sự kiện của WindowServer cập nhật ngay (`.exact`) hay chỉ ở mốc 0,5 s (`.coarse`).
-    private(set) var counterMode: CounterMode = .exact
+    /// Bộ đếm / thời điểm sự kiện của WindowServer cập nhật ngay (`.exact`) hay chỉ ở mốc 0,5 s (`.coarse`). Chưa đủ dữ liệu
+    /// để biết thì theo phiên bản macOS.
+    private(set) var counterMode: CounterMode = KeyWatch.defaultCounterMode
     /// Đã đủ dữ liệu để biết `counterMode` (lúc mới đăng nhập có thể chưa có sự kiện nào).
     private var counterModeKnown = false
+    /// Kết luận của lần nhận biết trước: chỉ tin khi hai lần liền nhau cùng kết luận.
+    private var counterModeCandidate: CounterMode?
     private var ledger = KeyLedger()
     private var pointer = PointerWatch()
     /// ⌘/⌃/⌥ được nhấn kể từ keyDown trước (theo flagsChanged bộ gõ nhận).
     private var modifierPressed = false
-    /// Click được thấy ở lần đọc trước: có thể nó xảy ra sau phím đó (bấm phím rồi click ngay, trước lúc bộ gõ đọc bộ
-    /// đếm), nên phím sau cũng coi là bị ngắt.
-    private var pointerCarry = false
+    /// macOS 27: phím trước có phím / click đi vòng bộ gõ (hay khoảng không đọc). Phím dồn ra ngay sau nó (loạt phím sau lúc
+    /// ứng dụng treo) có thể cũng được bấm trước lần nhấn đó: cũng báo.
+    private var burstCarry = false
     /// Số lần đọc: lần kiểm tra hẹn giờ chỉ chạy nếu không có phím nào tới sau lần đọc đã hẹn nó.
     private var readings = 0
     /// Bộ đếm click lúc đọc phím gần nhất (`lateEditSafe`).
@@ -40,6 +43,12 @@ final class KeyWatch {
         rebase()
     }
 
+    /// macOS 27 trở lên: `.coarse`. Ứng dụng build với SDK cũ thấy số phiên bản "tương thích" (macOS 26 báo 16, 27 báo 17).
+    private static var defaultCounterMode: CounterMode {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        return major >= 27 || (major >= 17 && major < 26) ? .coarse : .exact
+    }
+
     private static func keyDownCount() -> UInt32 {
         CGEventSource.counterForEventType(.combinedSessionState, eventType: .keyDown)
     }
@@ -49,9 +58,9 @@ final class KeyWatch {
     }
 
     /// macOS 27: thời điểm sự kiện công bố luôn là bội của 0,5 s (kể từ lúc khởi động); loại sự kiện chưa từng xảy ra thì
-    /// giữ thời điểm tạo phiên đăng nhập. Thời điểm thật thì gần như không bao giờ trùng bội 0,5 s ở hai loại cùng lúc.
-    /// Gọi lại (ở mỗi lần gắn vào ô nhập liệu) cho tới khi đủ dữ liệu. IME Lab ép được (`counterMode` = exact / coarse,
-    /// bản Debug).
+    /// giữ thời điểm tạo phiên đăng nhập. Thời điểm thật thì gần như không bao giờ trùng bội 0,5 s ở hai loại cùng lúc
+    /// (`KeyLedger.eventTimesQuantized`). Gọi lại (lúc gắn vào ô nhập liệu, ở mỗi phím) cho tới khi hai lần liền nhau cùng
+    /// kết luận. IME Lab ép được (`counterMode` = exact / coarse, bản Debug).
     func detectCounterMode() {
         #if DEBUG
         if let forced = UserDefaults.standard.string(forKey: "counterMode").flatMap(CounterMode.init) {
@@ -63,37 +72,31 @@ final class KeyWatch {
         guard !counterModeKnown else { return }
         let types: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, .mouseMoved, .leftMouseDown, .leftMouseUp,
                                     .rightMouseDown, .scrollWheel]
-        let now = ProcessInfo.processInfo.systemUptime
-        let times = types.compactMap { type -> Double? in
+        var times: [Double] = []
+        for type in types {
             let since = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: type)
-            return since < 1e6 ? now - since : nil
+            // Đọc đồng hồ ngay sau mỗi lần hỏi: luồng bị chen giữa các lần hỏi không làm lệch các loại sau.
+            let now = ProcessInfo.processInfo.systemUptime
+            if since < 1e6 { times.append(now - since) }
         }
-        // Loại sự kiện chưa từng xảy ra giữ đúng thời điểm tạo phiên (nhiều loại trùng nhau tới từng nano giây): không phải
-        // bằng chứng gì.
-        let distinct = times.filter { t in times.filter { abs($0 - t) < 1e-7 }.count == 1 }
-        let quantized = times.filter { t in
-            let off = t.truncatingRemainder(dividingBy: 0.5)
-            return min(off, 0.5 - off) < 0.0002
-        }.count
-        let exactTimes = distinct.filter { t in
-            let off = t.truncatingRemainder(dividingBy: 0.5)
-            return min(off, 0.5 - off) >= 0.0002
-        }.count
-        if quantized >= 3 || (quantized >= 2 && exactTimes == 0) {
-            counterMode = .coarse
+        guard let quantized = KeyLedger.eventTimesQuantized(times) else { return }
+        let verdict: CounterMode = quantized ? .coarse : .exact
+        if verdict == counterModeCandidate {
+            counterMode = verdict
             counterModeKnown = true
-        } else if exactTimes >= 2 && quantized <= 1 {
-            counterMode = .exact
-            counterModeKnown = true
+            DebugLog.write("bộ đếm sự kiện: \(verdict.rawValue)")
+        } else {
+            DebugLog.write("bộ đếm sự kiện: có vẻ \(verdict.rawValue) (chờ lần sau), đang dùng \(counterMode.rawValue)")
         }
-        let seen = times.count
-        DebugLog.write("bộ đếm sự kiện: \(counterMode.rawValue)\(counterModeKnown ? "" : " (chưa chắc)") — \(quantized)/\(seen) loại làm tròn 0,5 s")
+        counterModeCandidate = verdict
     }
 
     #if DEBUG
     /// IME Lab vừa đổi `counterMode` (ép / bỏ ép): nhận biết lại ngay.
     func reloadCounterModeForLab() {
         counterModeKnown = false
+        counterModeCandidate = nil
+        counterMode = Self.defaultCounterMode
         detectCounterMode()
         rebase()
     }
@@ -106,9 +109,13 @@ final class KeyWatch {
         checkTimer = nil
         ledger.rebase(keyDownCount: Self.keyDownCount())
         modifierPressed = false
-        pointerCarry = false
-        _ = pointer.changed(Self.pointerCount())
-        LiveInput.shared.forgetPending()
+        burstCarry = false
+        // macOS 27: click làm ô nhận focus có thể chỉ được công bố sau lúc này.
+        pointer.rebase(Self.pointerCount(), at: ProcessInfo.processInfo.systemUptime,
+                       quantum: counterMode == .coarse ? 0.5 : nil)
+        let live = LiveInput.shared
+        live.forgetPending()
+        live.endTerminal()
         lastTerminalRead = nil
     }
 
@@ -120,10 +127,13 @@ final class KeyWatch {
         case .exact:
             return Self.pointerCount() == clicksAtLastKey
         case .coarse:
-            let live = LiveInput.shared
-            live.sample()
-            let covered = lastTerminalRead.map { live.log.covered(since: $0) } ?? false
-            return covered && !live.log.pending.contains { $0.key == nil }
+            // Click hệ thống mới công bố (mỗi 0,5 s) mà lần đọc nút chuột không thấy (chạm để click trên trackpad…).
+            if pointer.differs(Self.pointerCount(), lastClickAt: Self.lastClickTime()) { return false }
+            let since = lastTerminalRead
+            return LiveInput.shared.sampled { log in
+                let covered = since.map { log.covered(since: $0) } ?? false
+                return covered && !log.pending.contains { $0.key == nil }
+            }
         }
     }
 
@@ -136,39 +146,55 @@ final class KeyWatch {
     /// mà bộ gõ thấy và phím này có phím / click nào bộ gõ không thấy không.
     /// `terminal`: ô nhập liệu của app terminal (chỉ ở đó các tín hiệu này được dùng: đọc trạng thái liên tục, hẹn kiểm tra).
     func observe(_ event: NSEvent, terminal: Bool) -> KeyGap {
+        if !counterModeKnown {
+            let before = counterMode
+            detectCounterMode()
+            if counterMode != before { rebase() }        // sổ / mốc click lấy theo kiểu cũ: lấy lại
+        }
         readings += 1
         checkTimer?.cancel()
         checkTimer = nil
         let previousStamp = lastKeyAt
         lastKeyAt = event.timestamp
         let live = LiveInput.shared
+        live.endHID()                       // phím tới: InputController đã bỏ lần nhấn phím tắt đổi chế độ (nếu có)
         let previousRead = lastTerminalRead
-        if terminal { live.keep(for: 5) }
-        live.sample()
-        // Đọc liên tục từ lần đọc ở phím terminal trước tới giờ thì mới biết chắc có gì xen giữa không (đã ngừng đọc vì lâu
-        // không gõ thì lần đọc vừa rồi bắt đầu lại từ đầu).
-        let covered = previousRead.map { live.log.covered(since: $0) } ?? true
-        if terminal { lastTerminalRead = live.log.lastSample }
-        live.keyReceived(event)
+        if terminal { live.keepTerminal(for: 5) }
         let modifier = modifierPressed
         modifierPressed = false
         let keyModifier = !event.modifierFlags.isDisjoint(with: [.command, .control, .option])
         let shortcut = modifier && !keyModifier
+        let coarse = counterMode == .coarse
+        // macOS 27 (không có bộ đếm tức thời để sắp thứ tự): lần nhấn được đọc thấy sớm hơn lúc ứng dụng nhận phím này quá độ
+        // trễ giao phím lớn nhất thì chắc là trước nó — trừ khi phím này nằm trong loạt phím dồn ra sau lúc ứng dụng treo
+        // (cách phím trước dưới 5 ms: có thể đã được bấm từ trước đó). Lần nhấn đọc thấy chưa giữ ở một lần đọc sau phím này
+        // thì chắc là sau nó. Còn lại thì chưa chắc: vẫn báo, giữ lại cho phím sau.
+        let burst = coarse && event.timestamp - previousStamp < 0.005
+        var covered = true
+        var read: Double?
+        var order: (taken: [PressLog.Press], uncertain: Bool) = ([], false)
+        live.sampled { log in
+            // Đọc liên tục từ lần đọc ở phím terminal trước tới giờ thì mới biết chắc có gì xen giữa không (đã ngừng đọc vì lâu
+            // không gõ thì lần đọc vừa rồi bắt đầu lại từ đầu).
+            covered = previousRead.map { log.covered(since: $0) } ?? true
+            read = log.lastSample
+            log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat)
+            if coarse { order = log.order(keyAt: event.timestamp, maxDelivery: Self.maxDelivery, burst: burst) }
+        }
+        if terminal { lastTerminalRead = read }
 
         let gap: KeyGap
         switch counterMode {
         case .coarse:
-            // Không có bộ đếm tức thời để sắp thứ tự: lần nhấn được đọc thấy sớm hơn lúc ứng dụng nhận phím này quá độ trễ
-            // giao phím lớn nhất thì chắc là trước nó — trừ khi phím này nằm trong loạt phím dồn ra sau lúc ứng dụng treo
-            // (cách phím trước dưới 5 ms: có thể đã được bấm từ trước đó). Còn lại thì chưa chắc: vẫn báo, giữ lại cho phím
-            // sau.
-            let burst = event.timestamp - previousStamp < 0.005
-            let horizon = event.timestamp - Self.maxDelivery
-            let taken = burst ? [] : live.take { $0.at <= horizon }
-            let uncertain = live.log.pending.contains { $0.at <= ProcessInfo.processInfo.systemUptime }
-            if shortcut || (terminal && !covered) {
+            // Click mà lần đọc nút chuột không thấy (chạm để click trên trackpad, click rất nhanh): bộ đếm hệ thống công bố
+            // mỗi 0,5 s — biết muộn, nhưng vẫn hơn không.
+            let clicked = pointer.changed(Self.pointerCount(), lastClickAt: Self.lastClickTime())
+            let carried = burst && burstCarry
+            if shortcut {
                 gap = .interrupted
-            } else if !taken.isEmpty || uncertain {
+            } else if (terminal && !covered) || clicked || !order.taken.isEmpty || order.uncertain || carried {
+                // Khoảng không đọc (lâu không gõ nên đã ngừng đọc): không biết có gì xen giữa — như có phím đi vòng. Terminal
+                // cho đọc màn hình thì màn hình quyết định (từ đang gõ dở không mất vì dừng tay), terminal khác thì bỏ từ.
                 gap = .bypassed
             } else if IsSecureEventInputEnabled() {
                 // Secure input (ô mật khẩu, "Secure Keyboard Entry" của terminal, Ghostty lúc gặp dấu nhắc mật khẩu):
@@ -178,9 +204,11 @@ final class KeyWatch {
             } else {
                 gap = .none
             }
+            burstCarry = gap == .bypassed
             #if DEBUG
             if terminal {
-                DebugLog.write("sổ phím (thô): \(gap)\(taken.isEmpty ? "" : ", lỡ \(taken.map { $0.key.map(String.init) ?? "click" })")\(uncertain ? ", chưa chắc \(live.log.pending.map { $0.key.map(String.init) ?? "click" })" : "")\(covered ? "" : ", có khoảng không đọc")\(modifier ? ", có ⌘/⌃/⌥" : "")\(burst ? ", dồn" : "") phím \(event.keyCode)")
+                let pending = live.log.pending.map { $0.key.map(String.init) ?? "click" }
+                DebugLog.write("sổ phím (thô): \(gap)\(order.taken.isEmpty ? "" : ", lỡ \(order.taken.map { $0.key.map(String.init) ?? "click" })")\(order.uncertain ? ", chưa chắc \(pending)" : "")\(covered ? "" : ", có khoảng không đọc")\(clicked ? ", bộ đếm click đổi" : "")\(carried ? ", dồn sau phím có phím đi vòng" : "")\(modifier ? ", có ⌘/⌃/⌥" : "")\(burst ? ", dồn" : "") phím \(event.keyCode)")
             }
             #endif
         case .exact:
@@ -203,31 +231,34 @@ final class KeyWatch {
         // nên phím đặc biệt có số đếm (lúc thấy nó được nhấn) không vượt quá phần sổ đã xử lý xong là đã được xử lý trước
         // phím này; click thì trước phím này nếu số phím đã bấm trước nó nhỏ hơn. Lần nhấn sau phím này để lại cho phím sau
         // (sổ còn thấy nó là phím chưa thấy: "chưa biết").
-        var missedKeys = 0
-        var missedClick = false
-        if var acc = ledger.accounted {
-            let live = LiveInput.shared
-            let ordered = live.log.pending.sorted { ledger.unwrapped($0.count) < ledger.unwrapped($1.count) }
-            var take: [PressLog.Press] = []
-            for press in ordered where press.key != nil && ledger.unwrapped(press.count) <= acc {
-                take.append(press)
-                acc += 1
+        let accounted = ledger.accounted
+        let (taken, clickPending) = LiveInput.shared.withLog { log -> ([PressLog.Press], Bool) in
+            var taken: [PressLog.Press] = []
+            if var acc = accounted {
+                let ordered = log.pending.sorted { self.ledger.unwrapped($0.count) < self.ledger.unwrapped($1.count) }
+                var take: [PressLog.Press] = []
+                for press in ordered where press.key != nil && self.ledger.unwrapped(press.count) <= acc {
+                    take.append(press)
+                    acc += 1
+                }
+                for press in ordered where press.key == nil && self.ledger.unwrapped(press.count) < acc {
+                    take.append(press)
+                }
+                taken = log.take { press in take.contains(press) }
             }
-            for press in ordered where press.key == nil && ledger.unwrapped(press.count) < acc {
-                take.append(press)
-            }
-            let taken = live.take { press in take.contains(press) }
-            missedKeys = taken.filter { $0.key != nil }.count
-            missedClick = taken.contains { $0.key == nil }
-            if missedKeys > 0 { ledger.noteBypassed(missedKeys) }
+            return (taken, log.pending.contains { $0.key == nil })
         }
+        let missedKeys = taken.filter { $0.key != nil }.count
+        let missedClick = taken.contains { $0.key == nil }
+        if missedKeys > 0 { ledger.noteBypassed(missedKeys) }
         let clicks = Self.pointerCount()
         clicksAtLastKey = clicks
-        let clicked = pointer.changed(clicks)
-        let pointerMoved = clicked || pointerCarry
         // Click ngay trước lúc ứng dụng nhận phím này (thời điểm phím muộn hơn lúc bấm tới ~60 ms) có thể đã xảy ra sau
-        // khi bấm phím: phím sau cũng coi là bị ngắt. Click từ trước đó thì không.
-        pointerCarry = clicked && Self.secondsSinceClick() < ProcessInfo.processInfo.systemUptime - event.timestamp + 0.06
+        // khi bấm phím: phím sau cũng coi là bị ngắt — trừ khi lần đọc nút chuột đã thấy nó (đã sắp thứ tự với phím này,
+        // hay còn chờ báo ở phím sau). Click từ trước đó thì không.
+        let pointerMoved = pointer.moved(clicks, recentClick: Self.secondsSinceClick()
+                                            < ProcessInfo.processInfo.systemUptime - event.timestamp + 0.06,
+                                         sampled: missedClick || clickPending)
         if quietChecks { scheduleCheck(step: 0, reading: readings, since: event.timestamp) }
         #if DEBUG
         let delivery = (ProcessInfo.processInfo.systemUptime - event.timestamp) * 1000
@@ -273,6 +304,11 @@ final class KeyWatch {
     private static func secondsSinceClick() -> Double {
         [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown]
             .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? .infinity
+    }
+
+    /// Thời điểm click cuối hệ thống công bố (macOS 27: làm tròn xuống mốc 0,5 s).
+    private static func lastClickTime() -> Double {
+        ProcessInfo.processInfo.systemUptime - secondsSinceClick()
     }
 
     private static func pointerCount() -> UInt32 {

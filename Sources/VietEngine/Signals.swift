@@ -108,8 +108,16 @@ public struct KeyLedger {
     /// đang nằm chờ trong ứng dụng (treo) hay phím bấm gần như cùng lúc còn đang tới. Chỉ giữ nếu phím tới tiếp theo là
     /// phím duy nhất được bấm từ lần tính đó và tới ngay (phím mới nhất bấm cách đây không quá ngần này, giây); không thì
     /// huỷ, như chưa từng tính — các phím đó lại là "chưa thấy" (sổ "chưa biết": không DEL), một phím đi vòng thật không
-    /// bao giờ bị "bù" mất.
+    /// bao giờ bị "bù" mất. Đây là ngưỡng nhỏ nhất: ứng dụng giao phím chậm thì ngưỡng theo độ trễ đo được.
     public var promptWindow = 0.02
+    /// Ngưỡng "tới ngay" lớn nhất học được. Ứng dụng giao phím chậm (iTerm2 / Terminal.app bận: 25–60 ms) thì với ngưỡng cố
+    /// định không phím nào "tới ngay": lần tính phím lỡ không bao giờ được xác nhận, sổ kẹt ở "chưa biết" (mọi phím đi nguyên
+    /// văn). Vẫn xa dưới các lần treo mà quy tắc trên chặn (phím nằm chờ: từ `quietTime` trở lên).
+    public var promptWindowCap = 0.08
+    /// Độ trễ giao phím gần đây (thời gian từ lúc bấm của phím chắc là phím mới nhất được bấm), mới nhất ở cuối.
+    private var deliveries: [Double] = []
+    /// p90 của `deliveries` + 10 ms (0: chưa đủ số liệu).
+    private var learnedWindow = 0.0
 
     private var lastRaw: UInt32?
     private var unwrapped: Int64 = 0
@@ -133,6 +141,7 @@ public struct KeyLedger {
     public var debugState: String {
         "đếm \(unwrapped) thấy \(seen) mốc \(base.map(String.init) ?? "-") lỡ \(missedExact)"
             + (provisional.map { " tạm(\($0.count),\($0.excess))" } ?? "") + (resolved != nil ? " chờ-báo" : "")
+            + (learnedWindow > promptWindow ? " ngưỡng \(Int(learnedWindow * 1000)) ms" : "")
     }
 
     public init() {}
@@ -140,6 +149,24 @@ public struct KeyLedger {
     /// Các lần kiểm tra hẹn giờ sau mỗi phím (giây kể từ phím đó): phím đi vòng bộ gõ lúc người dùng dừng tay (Tab tự
     /// hoàn thành, mũi tên…) được biết trước khi gõ tiếp.
     public static let checkDelays: [Double] = [0.16, 0.3, 0.6, 1.2, 2.4]
+
+    /// Bộ đếm và thời điểm sự kiện của WindowServer (`CGEventSourceSecondsSinceLastEventType`…) cập nhật ngay, hay chỉ được
+    /// công bố mỗi `quantum` giây với thời điểm làm tròn xuống bội của nó, kể từ lúc khởi động (macOS 27: sổ phím không
+    /// dùng được). `times`: thời điểm sự kiện cuối của vài loại sự kiện, mỗi cái tính với đồng hồ đọc ngay sau lần hỏi. Loại
+    /// chưa từng xảy ra giữ thời điểm tạo phiên đăng nhập: nhiều loại trùng nhau (chỉ lệch vì lúc đọc đồng hồ, tới vài chục
+    /// micro giây) — không phải bằng chứng gì. true: làm tròn; false: tức thời; nil: chưa đủ dữ liệu (vd. mới đăng nhập).
+    public static func eventTimesQuantized(_ times: [Double], quantum: Double = 0.5) -> Bool? {
+        func onGrid(_ t: Double) -> Bool {
+            let off = abs(t.truncatingRemainder(dividingBy: quantum))
+            return min(off, quantum - off) < 0.0002
+        }
+        let distinct = times.filter { t in times.filter { abs($0 - t) < 50e-6 }.count == 1 }
+        let quantized = times.filter(onGrid).count
+        let exact = distinct.filter { !onGrid($0) }.count
+        if quantized >= 3 || (quantized >= 2 && exact == 0) { return true }
+        if exact >= 2 && quantized <= 1 { return false }
+        return nil
+    }
 
     /// Lấy mốc tại đây (bộ gõ vừa gắn vào ô nhập liệu, click…): những gì xảy ra trước đó không còn liên quan.
     public mutating func rebase(keyDownCount: UInt32) {
@@ -197,7 +224,7 @@ public struct KeyLedger {
         var resolution = resolved
         resolved = nil
         // Phím này vừa được bấm và ứng dụng đưa tới ngay (không có phím nào đang nằm chờ trong ứng dụng).
-        let prompt = !r.isRepeat && !duplicate && (r.sinceLastKeyDown ?? 0) <= promptWindow
+        let prompt = !r.isRepeat && !duplicate && (r.sinceLastKeyDown ?? 0) <= max(promptWindow, learnedWindow)
         // Lần tính bị huỷ bởi một phím không được đếm mà lại tới ngay (phím do chương trình gõ): phím đó "bù" đúng phím đi
         // vòng, số dư về 0 mà phím đi vòng chưa được báo — không được báo sạch.
         var cancelledByUncounted = false
@@ -206,6 +233,11 @@ public struct KeyLedger {
             // Phím xác nhận phải là phím bấm sau lần tính: duy nhất được đếm thêm, tới ngay, và (nếu thời điểm sự kiện là
             // lúc bấm) có thời điểm sau lần tính — phím cũ nằm chờ trong ứng dụng thì không.
             if !(prompt && u - p.count == 1 && r.timestamp > p.at) {
+                // Phím duy nhất bấm sau lần tính mà tới sau ngưỡng: thường là ứng dụng giao phím chậm — học độ trễ đó, không
+                // thì sổ kẹt ở "chưa biết" mãi (phím nằm chờ lúc treo thì lâu hơn `promptWindowCap`, không tính).
+                if !prompt, u - p.count == 1, r.timestamp > p.at, !r.isRepeat, !duplicate, let since = r.sinceLastKeyDown {
+                    noteDelivery(since)
+                }
                 missedExact -= p.excess        // như chưa từng tính: các phím đó vẫn là "chưa thấy"
                 resolution = nil
                 cancelledByUncounted = prompt && u == p.count
@@ -252,6 +284,8 @@ public struct KeyLedger {
         }
         if excess == 0 {
             run = nil
+            // Không còn phím nào chưa thấy: phím này là phím mới nhất được bấm, thời gian từ lúc bấm là độ trễ giao phím.
+            if !r.isRepeat && !duplicate, let since = r.sinceLastKeyDown { noteDelivery(since) }
             return .clean
         }
         if var current = run {
@@ -271,6 +305,16 @@ public struct KeyLedger {
         run = nil
         if excess > 0 { provisional = (unwrapped, excess, at) }
         return .missed(Int(excess))
+    }
+
+    /// Một độ trễ giao phím đo được. Lâu hơn `promptWindowCap` thì không phải độ trễ giao phím mà là ứng dụng treo: bỏ qua.
+    private mutating func noteDelivery(_ since: Double) {
+        guard since >= 0, since <= promptWindowCap else { return }
+        deliveries.append(since)
+        if deliveries.count > 32 { deliveries.removeFirst() }
+        guard deliveries.count >= 4 else { return }
+        let sorted = deliveries.sorted()
+        learnedWindow = min(promptWindowCap, sorted[min(sorted.count - 1, sorted.count * 9 / 10)] + 0.01)
     }
 
     public enum CheckResult: Equatable, Sendable {
@@ -405,14 +449,31 @@ public struct PressLog {
         public var key: UInt16?
         /// Lần đọc đầu tiên thấy đang giữ (muộn hơn lúc nhấn không quá một chu kỳ đọc).
         public var at: Double
+        /// Lần đọc ngay trước đó, lúc chưa giữ: lần nhấn xảy ra sau lúc này.
+        public var after: Double
         /// Bộ đếm keyDown của WindowServer lúc đó (macOS 26: cập nhật ngay — sắp được thứ tự so với các phím bộ gõ nhận,
         /// xem `KeyWatch`; macOS 27 thì chỉ công bố mỗi 0,5 s, không dùng).
         public var count: UInt32 = 0
 
-        public init(key: UInt16?, at: Double, count: UInt32 = 0) {
+        public init(key: UInt16?, at: Double, after: Double = -.infinity, count: UInt32 = 0) {
             self.key = key
             self.at = at
+            self.after = after
             self.count = count
+        }
+    }
+
+    /// Một lần đổi phím bổ trợ: đọc thấy lúc `at`, lần đọc ngay trước đó (chưa đổi) lúc `after`; `keys`: số phím bổ trợ
+    /// đổi trạng thái (nhả cả ⌘ lẫn ⇧ giữa hai lần đọc: 2).
+    public struct FlagChange: Equatable, Sendable {
+        public var after: Double
+        public var at: Double
+        public var keys: Int
+
+        public init(after: Double, at: Double, keys: Int = 1) {
+            self.after = after
+            self.at = at
+            self.keys = keys
         }
     }
 
@@ -420,8 +481,8 @@ public struct PressLog {
     public private(set) var pending: [Press] = []
     /// Mọi lần nhấn gần đây (cho phím tắt đổi chế độ, thao tác của người dùng).
     public private(set) var history: [Press] = []
-    /// Các lần đổi phím bổ trợ gần đây (lúc đọc).
-    public private(set) var flagChanges: [Double] = []
+    /// Các lần đổi phím bổ trợ gần đây.
+    public private(set) var flagChanges: [FlagChange] = []
     /// Các lần nhấn thêm phím bổ trợ (⌘ ⌃ ⌥ ⇧ fn, caps lock) gần đây — nhả thì không tính.
     public private(set) var flagPresses: [Double] = []
     /// Đọc liên tục (không hở quá `maxGap`) từ lúc này tới lần đọc cuối; nil: chưa đọc.
@@ -438,15 +499,37 @@ public struct PressLog {
     private var button = false
     private var flags: UInt64?
 
+    /// Phím tắt đổi chế độ (macOS 27, xem `hotkeyTapClean`): thời điểm các sự kiện HID mới (bàn phím / chuột thật,
+    /// `HIDIdleTime`) kể từ mốc lấy lúc nhấn tổ hợp (`startHID`).
+    public private(set) var hidEvents: [Double] = []
+    /// Lần đọc lúc nhấn tổ hợp; nil: không theo dõi.
+    public private(set) var hidSince: Double?
+    /// Mọi lần đọc từ `hidSince` tới giờ đều đọc cả HID (chưa hết hạn theo dõi).
+    public private(set) var hidActive = false
+    /// Hai sự kiện HID cách nhau dưới bấy nhiêu giây tính là một: sai số của lần đọc (`HIDIdleTime` tính với đồng hồ đọc trước
+    /// và sau lời gọi kernel, lệch dưới 0,25 ms).
+    public var hidDeadband = 0.002
+    /// Sự kiện HID mới nhất lúc nhấn tổ hợp (mốc).
+    private var hidBaseline: Double?
+    private var lastHID: Double?
+    /// Lần đổi phím bổ trợ đọc thấy cuối cùng trước lúc nhấn tổ hợp, khi đã đọc liên tục từ trước nó: chính lần nhấn đủ tổ hợp.
+    private var armChange: FlagChange?
+    /// WindowServer cập nhật trạng thái phím bổ trợ sau sự kiện HID của nó một chút: sự kiện có thể được đọc thấy trước lần
+    /// đọc thấy phím bổ trợ đổi.
+    private static let flagLag = 0.004
+
     public init() {}
 
     /// Đang giữ phím đặc biệt hay nút chuột nào (theo lần đọc cuối).
     public var anyHeld: Bool { !held.isEmpty || button }
 
+    /// Phím bổ trợ theo lần đọc cuối.
+    public var lastFlags: UInt64? { flags }
+
     /// Một lần đọc lúc `t`: các phím đặc biệt đang giữ, có nút chuột nào đang giữ không, phím bổ trợ, bộ đếm keyDown.
     public mutating func sample(at t: Double, held keys: Set<UInt16>, button pressed: Bool, flags f: UInt64,
                                 keyDownCount: UInt32 = 0) {
-        if let last = lastSample, t - last <= maxGap {} else {
+        guard let last = lastSample, t - last <= maxGap else {
             // Sau khoảng hở: không biết phím / nút đang giữ được nhấn lúc nào (vd. chính cú click làm đổi ứng dụng) — không
             // tính là lần nhấn mới; ai cần biết khoảng hở thì hỏi `covered(since:)`.
             coveredSince = t
@@ -457,9 +540,10 @@ public struct PressLog {
             prune(before: t - keep)
             return
         }
+        guard t >= last else { return }         // lần đọc cũ hơn lần đọc cuối: không có gì mới
         lastSample = t
         for k in keys.subtracting(held).sorted() {
-            let press = Press(key: k, at: t, count: keyDownCount)
+            let press = Press(key: k, at: t, after: last, count: keyDownCount)
             history.append(press)
             if let i = received.firstIndex(where: { $0.key == k }) {
                 received.remove(at: i)          // bộ gõ đã nhận phím này rồi
@@ -469,13 +553,13 @@ public struct PressLog {
         }
         held = keys
         if pressed && !button {
-            let press = Press(key: nil, at: t, count: keyDownCount)
+            let press = Press(key: nil, at: t, after: last, count: keyDownCount)
             history.append(press)
             pending.append(press)
         }
         button = pressed
         if let old = flags, old != f {
-            flagChanges.append(t)
+            flagChanges.append(FlagChange(after: last, at: t, keys: (old ^ f).nonzeroBitCount))
             if f & ~old != 0 { flagPresses.append(t) }
         }
         flags = f
@@ -499,6 +583,16 @@ public struct PressLog {
         return taken
     }
 
+    /// Đối chiếu các lần nhấn đang chờ với phím bộ gõ vừa nhận (thời điểm sự kiện `stamp`) khi không có bộ đếm tức thời để
+    /// sắp thứ tự (macOS 27). `taken`: lấy ra các lần nhấn chắc là trước phím — đọc thấy sớm hơn `stamp` quá `maxDelivery`
+    /// (độ trễ giao phím lớn nhất) — trừ khi phím nằm trong loạt phím dồn ra sau lúc ứng dụng treo (`burst`: có thể đã được
+    /// bấm từ trước đó). `uncertain`: còn lần nhấn có thể trước phím. Lần nhấn mà một lần đọc từ `stamp` trở đi vẫn thấy chưa
+    /// giữ thì chắc là sau phím (dù `stamp` là lúc bấm hay lúc ứng dụng nhận phím): để lại cho phím sau, không báo.
+    public mutating func order(keyAt stamp: Double, maxDelivery: Double, burst: Bool) -> (taken: [Press], uncertain: Bool) {
+        let taken = burst ? [] : take { $0.at <= stamp - maxDelivery }
+        return (taken, pending.contains { $0.after < stamp })
+    }
+
     /// Bỏ mọi lần nhấn đang chờ và phím đã nhận chưa đối chiếu (đổi ô nhập liệu, click bộ gõ thấy…).
     public mutating func forget() {
         pending = []
@@ -512,7 +606,7 @@ public struct PressLog {
 
     /// Có lần đổi phím bổ trợ nào trong [from, to] không.
     public func flagsChanged(from: Double, to: Double) -> Bool {
-        flagChanges.contains { $0 >= from && $0 <= to }
+        flagChanges.contains { $0.at >= from && $0.at <= to }
     }
 
     /// Có lần nhấn thêm phím bổ trợ nào trong [from, to] không.
@@ -529,8 +623,65 @@ public struct PressLog {
     private mutating func prune(before t: Double) {
         history.removeAll { $0.at < t }
         pending.removeAll { $0.at < t }
-        flagChanges.removeAll { $0 < t }
+        flagChanges.removeAll { $0.at < t }
         flagPresses.removeAll { $0 < t }
+    }
+
+    // MARK: Phím tắt đổi chế độ (macOS 27)
+
+    /// Vừa nhấn tổ hợp phím tắt đổi chế độ, ngay sau một lần đọc: bắt đầu theo dõi HID lại từ đầu. Lần `noteHID` kế tiếp là
+    /// mốc: mọi sự kiện tới lúc đó (kể cả chính lần nhấn phím bổ trợ) không tính.
+    public mutating func startHID() {
+        hidEvents = []
+        hidBaseline = nil
+        lastHID = nil
+        hidSince = lastSample
+        hidActive = lastSample != nil
+        armChange = flagChanges.last.flatMap { covered(since: $0.after) ? $0 : nil }
+    }
+
+    /// Một lần đọc `HIDIdleTime` lúc đang theo dõi: `event` là thời điểm sự kiện HID mới nhất.
+    public mutating func noteHID(_ event: Double) {
+        guard hidActive else { return }
+        guard let last = lastHID else {
+            hidBaseline = event
+            lastHID = event
+            return
+        }
+        if event > last + hidDeadband { hidEvents.append(event) }
+        if event > last { lastHID = event }
+    }
+
+    /// Hết hạn theo dõi HID: sự kiện sau đó không còn thấy.
+    public mutating func endHID() {
+        hidActive = false
+    }
+
+    /// Tổ hợp phím tắt đổi chế độ nhấn lúc `armedAt` (lúc bộ gõ nhận) rồi nhả (lần đọc cuối) có phải là nhấn "trơn" không:
+    /// không có phím, click hay di chuột nào xen vào (⌘⇧Z, ⌘⇧4, ⌘⇧←, ⌘⇧+click…).
+    /// - Phím đặc biệt, nút chuột: lần nhấn đọc thấy từ lúc nhấn đủ tổ hợp.
+    /// - Phím ký tự, di chuột: sự kiện HID không lần đổi phím bổ trợ nào giải thích được. Mỗi phím bổ trợ đổi trạng thái (nhả
+    ///   ⌘, ⇧…) giải thích nhiều nhất một sự kiện, nằm giữa lần đọc trước lần đổi và lần đọc thấy nó: một lần nhả phím bổ trợ
+    ///   không che được chữ Z của ⌘⇧Z bấm nhanh. Sự kiện mới nhất lúc nhấn tổ hợp (mốc) mà sau lần đọc thấy tổ hợp được nhấn:
+    ///   có gì đó xen giữa lúc nhấn và lúc ứng dụng đưa tổ hợp tới bộ gõ (ứng dụng giao chậm).
+    /// - Một sự kiện lẻ không quá 0,2 s sau phím bộ gõ nhận cuối (`lastKeyAt`) có thể chỉ là lần nhả phím đó (giữ phím chữ
+    ///   lâu hơn thế hiếm; rộng hơn thì chữ Z của ⌘⇧Z gõ ngay sau một từ dễ lọt).
+    /// Không đọc liên tục (cả HID) suốt lúc giữ (giữ quá hạn theo dõi, khoảng hở) thì không biết: không phải nhấn trơn.
+    public func hotkeyTapClean(armedAt: Double, lastKeyAt: Double) -> Bool {
+        guard hidActive, let since = hidSince, let now = lastSample, covered(since: since) else { return false }
+        if pressed(from: min(armedAt, armChange?.at ?? armedAt), to: now) { return false }
+        var foreign: [Double] = []
+        if let change = armChange, let baseline = hidBaseline, baseline > change.at + 0.001 { foreign.append(baseline) }
+        var changes = flagChanges.filter { $0.after >= since }
+        for event in hidEvents {
+            if let i = changes.firstIndex(where: { $0.keys > 0 && event > $0.after - Self.flagLag
+                                                    && event <= $0.at + 0.0005 }) {
+                changes[i].keys -= 1
+            } else {
+                foreign.append(event)
+            }
+        }
+        return foreign.isEmpty || (foreign.count == 1 && foreign[0] <= lastKeyAt + 0.2)
     }
 }
 
@@ -539,12 +690,46 @@ public struct PressLog {
 /// thường gặp, bỏ từ mỗi lần cuộn thì mất dấu.
 public struct PointerWatch {
     private var last: UInt32?
+    /// Click ngay trước phím trước mà `PressLog` không thấy: có thể đã xảy ra sau phím đó — báo cả ở phím này.
+    private var carry = false
+    /// macOS 27: bộ đếm và thời điểm click chỉ được công bố mỗi `quantum` giây, thời điểm làm tròn xuống. Click công bố
+    /// sau lúc lấy mốc mà thời điểm không sau ô `quantum` chứa mốc — thường là chính click làm ô nhận focus — không tính.
+    private var absorb: (upTo: Double, quantum: Double)?
 
     public init() {}
 
-    public mutating func changed(_ total: UInt32) -> Bool {
+    /// Lấy mốc lúc `t` (bộ gõ vừa gắn vào ô nhập liệu, click bộ gõ thấy…). `quantum`: chu kỳ công bố (macOS 27).
+    public mutating func rebase(_ total: UInt32, at t: Double = 0, quantum: Double? = nil) {
+        last = total
+        carry = false
+        if let q = quantum, q > 0 {
+            absorb = (upTo: (t / q).rounded(.down) * q, quantum: q)
+        } else {
+            absorb = nil
+        }
+    }
+
+    /// Có click kể từ lần trước không. `lastClickAt`: thời điểm click cuối hệ thống công bố (chỉ hỏi khi bộ đếm đổi).
+    public mutating func changed(_ total: UInt32, lastClickAt: @autoclosure () -> Double? = nil) -> Bool {
         defer { last = total }
-        return last.map { $0 != total } ?? false
+        return differs(total, lastClickAt: lastClickAt())
+    }
+
+    /// Như `changed` nhưng không ghi nhận.
+    public func differs(_ total: UInt32, lastClickAt: @autoclosure () -> Double? = nil) -> Bool {
+        guard let last, last != total else { return false }
+        if let absorb, let at = lastClickAt(), at < absorb.upTo + absorb.quantum / 2 { return false }
+        return true
+    }
+
+    /// Phím bộ gõ vừa nhận (bộ đếm cập nhật ngay, macOS 26): có click kể từ phím trước không — kể cả click ngay trước phím
+    /// trước (`recentClick`: trong độ trễ giao phím) mà có thể đã xảy ra sau nó. `sampled`: `PressLog` đã thấy nút chuột được
+    /// nhấn — đã sắp thứ tự với phím này, hay còn chờ để báo ở phím sau: không cần báo thêm lần nữa ở phím sau.
+    public mutating func moved(_ total: UInt32, recentClick: @autoclosure () -> Bool, sampled: Bool) -> Bool {
+        let clicked = changed(total)
+        let moved = clicked || carry
+        carry = clicked && !sampled && recentClick()
+        return moved
     }
 }
 

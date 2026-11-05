@@ -87,6 +87,54 @@ private final class Pty: TextClient {
     func bypassPaste(_ s: String) { write(s) }
 }
 
+/// Terminal cho đọc màn hình (iTerm2, Terminal.app): con trỏ thật, đọc được dòng lệnh; shell in lại ngay. Đồng hồ giả, mỗi
+/// phím cách nhau 50 ms.
+private final class ScreenPty: TextClient {
+    var line: [Character] = []
+    var cursor = 0
+    var now = 100.0
+    let session = Session()
+    let options = EngineOptions(method: .vni)
+    let prompt = "$ "
+
+    var text: String { String(line) }
+
+    func selectedRange() -> (location: Int, length: Int)? { ((prompt + String(line[..<cursor])).utf16.count, 0) }
+    func text(location: Int, length: Int) -> String? {
+        let all = Array((prompt + text).utf16)
+        guard location >= 0, length >= 0, location + length <= all.count else { return nil }
+        return String(decoding: all[location..<location + length], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with text: String) { XCTFail("terminal: không thay được chữ") }
+    func setMarkedText(_ text: String) { XCTFail("terminal: không được gạch chân (\(text))") }
+    func insertText(_ text: String) {
+        for scalar in text.unicodeScalars {
+            if scalar == "\u{7f}" {
+                if cursor > 0 { line.remove(at: cursor - 1); cursor -= 1 }
+            } else {
+                line.insert(Character(scalar), at: cursor); cursor += 1
+            }
+        }
+    }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("terminal: marked text") }
+    func currentTime() -> Double { now }
+    private var later: [() -> Void] = []
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { later.append(work) }
+
+    func key(_ k: Character, _ gap: KeyGap) {
+        if !session.handle(.char(k), self, options: options, forceMarked: false, terminal: .inline, gap: gap) {
+            insertText(String(k))
+        }
+        // Việc hẹn giờ (xem lại màn hình: đo thời gian in lại) chạy sau khi shell đã in lại phím.
+        while !later.isEmpty {
+            now += 0.004
+            later.removeFirst()()
+        }
+        now += 0.05
+    }
+    func type(_ keys: String) { for k in keys { key(k, .none) } }
+}
+
 /// Lịch kiểm tra hẹn giờ như `KeyWatch.scheduleCheck`: sau mỗi phím, ở các mốc `KeyLedger.checkDelays`; vừa có phím
 /// được bấm thì thử lại khi đã yên (tối đa 2 lần mỗi mốc); phím mới tới thì bỏ lịch cũ.
 private struct Checks {
@@ -320,11 +368,11 @@ final class SignalsTests: XCTestCase {
         p.sample(at: 1.200, held: [123], button: false, flags: 0)               // ← (Terminal.app không đưa bộ gõ)
         p.sample(at: 1.208, held: [], button: false, flags: 0)
         p.keyReceived(14, at: 1.300, isRepeat: false)
-        XCTAssertEqual(missed(&p, before: 1.300), [PressLog.Press(key: 123, at: 1.200)])
+        XCTAssertEqual(missed(&p, before: 1.300), [PressLog.Press(key: 123, at: 1.200, after: 1.016)])
         XCTAssertTrue(missed(&p, before: 1.400).isEmpty)                       // đã lấy ra
         p.sample(at: 1.248, held: [], button: true, flags: 0)                    // click
         p.keyReceived(15, at: 1.400, isRepeat: false)
-        XCTAssertEqual(missed(&p, before: 1.400), [PressLog.Press(key: nil, at: 1.248)])
+        XCTAssertEqual(missed(&p, before: 1.400), [PressLog.Press(key: nil, at: 1.248, after: 1.208)])
     }
 
     /// Bộ gõ nhận phím trước lần đọc thấy nó được nhấn: vẫn đối chiếu được. Phím bấm ngay sau phím vừa tới (trong `lead`)
@@ -360,6 +408,61 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(p.pending.map(\.key), [124, nil])
         XCTAssertTrue(p.flagsChanged(from: 2.0, to: 2.02))
         XCTAssertFalse(p.flagsChanged(from: 1.0, to: 1.99))
+    }
+
+    /// macOS 27: phím bộ gõ nhận lúc `stamp`. Lần nhấn mà ở lần đọc từ `stamp` trở đi vẫn chưa giữ thì chắc là sau phím đó (dù
+    /// thời điểm sự kiện là lúc bấm hay lúc ứng dụng nhận): để lại cho phím sau, không báo ở phím này (trước đây mọi lần nhấn
+    /// đang chờ đều "chưa chắc": phím có ⇥ bấm ngay sau nó bị bỏ từ oan).
+    func testPressLogOrderLeavesLaterPressPending() {
+        var p = PressLog()
+        p.sample(at: 1.000, held: [], button: false, flags: 0)
+        p.sample(at: 1.008, held: [], button: false, flags: 0)
+        p.sample(at: 1.016, held: [48], button: false, flags: 0)              // ⇥ (Muxy tự xử lý)
+        XCTAssertEqual(p.pending, [PressLog.Press(key: 48, at: 1.016, after: 1.008)])
+        var order = p.order(keyAt: 1.007, maxDelivery: 0.068, burst: false)  // ⇥ chưa giữ lúc 1.008: sau phím này
+        XCTAssertTrue(order.taken.isEmpty)
+        XCTAssertFalse(order.uncertain)
+        order = p.order(keyAt: 1.040, maxDelivery: 0.068, burst: false)      // có thể trước phím này: chưa chắc
+        XCTAssertTrue(order.taken.isEmpty)
+        XCTAssertTrue(order.uncertain)
+        order = p.order(keyAt: 1.200, maxDelivery: 0.068, burst: true)       // dồn ra sau lúc treo: không lấy gì
+        XCTAssertTrue(order.taken.isEmpty)
+        XCTAssertTrue(order.uncertain)
+        order = p.order(keyAt: 1.200, maxDelivery: 0.068, burst: false)
+        XCTAssertEqual(order.taken.map(\.key), [48])
+        XCTAssertFalse(order.uncertain)
+    }
+
+    /// macOS 27: bộ đếm click chỉ được công bố mỗi 0,5 s (thời điểm làm tròn xuống). Click làm ô nhận focus thường chỉ được
+    /// công bố sau lúc bộ gõ lấy mốc: không tính. Click ở ô 0,5 s sau đó thì tính — kể cả khi lần đọc nút chuột không thấy nó
+    /// (chạm để click trên trackpad).
+    func testPointerWatchAbsorbsLatePublishedFocusClick() {
+        var w = PointerWatch()
+        w.rebase(7, at: 100.31, quantum: 0.5)
+        XCTAssertFalse(w.differs(8, lastClickAt: 100.0))
+        XCTAssertFalse(w.changed(8, lastClickAt: 100.0))
+        XCTAssertFalse(w.changed(8, lastClickAt: 100.0))
+        XCTAssertTrue(w.differs(9, lastClickAt: 100.5))
+        XCTAssertTrue(w.changed(9, lastClickAt: 100.5))
+        XCTAssertFalse(w.changed(9, lastClickAt: 100.5))
+        var exact = PointerWatch()                                             // macOS 26: mọi lần đổi đều tính
+        exact.rebase(7)
+        XCTAssertTrue(exact.changed(8, lastClickAt: 0))
+    }
+
+    /// macOS 26: click ngay trước lúc phím tới có thể xảy ra sau phím đó, nên phím sau cũng báo — trừ khi lần đọc nút chuột
+    /// đã thấy click (đã sắp thứ tự với phím, hay còn chờ báo ở phím sau): không báo hai lần (click rồi gõ nhanh "qua1" thành
+    /// "qúa").
+    func testPointerWatchCarryOnlyForUnsampledClick() {
+        var w = PointerWatch()
+        w.rebase(3)
+        XCTAssertTrue(w.moved(4, recentClick: true, sampled: true))
+        XCTAssertFalse(w.moved(4, recentClick: false, sampled: false))
+        XCTAssertTrue(w.moved(5, recentClick: true, sampled: false))         // chạm để click: lần đọc không thấy
+        XCTAssertTrue(w.moved(5, recentClick: false, sampled: false))        // báo cả ở phím sau
+        XCTAssertFalse(w.moved(5, recentClick: false, sampled: false))
+        XCTAssertTrue(w.moved(6, recentClick: false, sampled: false))        // click từ trước đó: chỉ phím này
+        XCTAssertFalse(w.moved(6, recentClick: false, sampled: false))
     }
 
     /// Ứng dụng treo 0,4 s trong lúc gõ "Viet" (không phím nào đi vòng): lần kiểm tra lúc người dùng dừng tay tính nhầm
@@ -421,15 +524,100 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(l.observe(reading(41, at: 5.0, code: 2)), .clean)
     }
 
+    /// Ứng dụng giao phím chậm (35 ms sau lúc bấm): sổ học độ trễ đó từ các phím sạch — phím tắt đi vòng (⌘V) được tính là
+    /// lỡ ngay ở phím sau nó và phím kế tiếp xác nhận, như ở ứng dụng giao nhanh. Ngưỡng cố định 20 ms: phím kế tiếp vẫn
+    /// "chưa biết" (đi nguyên văn).
+    func testLedgerSlowDeliveryLearnsPromptWindow() {
+        for learn in [true, false] {
+            var l = ledger(at: 10)
+            if !learn { l.promptWindowCap = l.promptWindow }
+            func key(_ count: UInt32, _ t: Double, _ code: UInt16, modifier: Bool = false) -> GapVerdict {
+                l.observe(KeyReading(keyDownCount: count, timestamp: t, keyCode: code, isRepeat: false,
+                                     sinceLastKeyDown: 0.035), modifierPressed: modifier)
+            }
+            for i in 0..<6 { XCTAssertEqual(key(11 + UInt32(i), 1.0 + Double(i) * 0.2, UInt16(i)), .clean) }
+            XCTAssertEqual(key(18, 2.4, 20, modifier: true), .missed(1))      // ⌘V đi vòng rồi phím này
+            XCTAssertEqual(key(19, 2.6, 21), learn ? .clean : .unknown)
+        }
+    }
+
+    /// Sổ mới (chưa học), ứng dụng giao chậm (30 ms): ⌘V không được tính ngay; mỗi lần dừng tay, lần kiểm tra tính nó là lỡ
+    /// và phím sau (tới sau 30 ms) huỷ — trước đây sổ kẹt ở "chưa biết" mãi (mọi phím đi nguyên văn). Phím huỷ là phím duy
+    /// nhất bấm sau lần tính: sổ học độ trễ của nó, vài lần sau thì xác nhận được và sổ sạch lại.
+    func testLedgerSlowDeliveryRecoversFromUnbookedBypass() {
+        var l = ledger(at: 10)
+        func key(_ count: UInt32, _ t: Double, _ code: UInt16, modifier: Bool = false) -> GapVerdict {
+            l.observe(KeyReading(keyDownCount: count, timestamp: t, keyCode: code, isRepeat: false,
+                                 sinceLastKeyDown: 0.03), modifierPressed: modifier)
+        }
+        XCTAssertEqual(key(11, 1.0, 1), .clean)
+        XCTAssertEqual(key(13, 1.3, 2, modifier: true), .missed(1))     // chưa tính: phím này không "tới ngay" theo 20 ms
+        var count: UInt32 = 13, t = 1.3, verdicts: [GapVerdict] = []
+        for i in 0..<8 {
+            XCTAssertEqual(l.check(keyDownCount: count, secondsSinceLastKeyDown: 0.4, now: t + 0.4), .resolved)
+            count += 1
+            t += 0.5
+            verdicts.append(key(count, t, UInt16(10 + i)))
+            if verdicts.last != .unknown { break }
+        }
+        XCTAssertEqual(verdicts, [.unknown, .unknown, .unknown, .missed(1)])
+        XCTAssertEqual(key(count + 1, t + 0.2, 30), .clean)
+    }
+
+    /// Ngưỡng học được có trần (`promptWindowCap`): dù ứng dụng giao phím rất chậm, phím nằm chờ lúc ứng dụng treo (phím mới
+    /// nhất bấm cách đây 0,2 s) không xác nhận lần tính phím lỡ (như `testLedgerStallDoesNotInterrupt`).
+    func testLedgerLearnedWindowStillStopsStalls() {
+        var l = ledger(at: 10)
+        for i in 0..<12 {
+            XCTAssertEqual(l.observe(KeyReading(keyDownCount: 11 + UInt32(i), timestamp: 1.0 + Double(i) * 0.1,
+                                                keyCode: UInt16(i), isRepeat: false, sinceLastKeyDown: 0.075)), .clean)
+        }
+        XCTAssertEqual(l.check(keyDownCount: 23, secondsSinceLastKeyDown: 0.17, now: 2.3), .resolved)
+        let i = KeyReading(keyDownCount: 24, timestamp: 2.5, keyCode: 40, isRepeat: false, sinceLastKeyDown: 0.2)
+        XCTAssertEqual(l.observe(i), .unknown)
+        let e = KeyReading(keyDownCount: 24, timestamp: 2.501, keyCode: 41, isRepeat: false, sinceLastKeyDown: 0.2)
+        XCTAssertEqual(l.observe(e), .clean)
+    }
+
+    /// macOS 27 công bố thời điểm sự kiện ở mốc 0,5 s. Loại chưa từng xảy ra giữ thời điểm tạo phiên — trùng nhau, chỉ lệch vì
+    /// lúc đọc đồng hồ (có khi vài micro giây): không được coi là các thời điểm thật khác nhau (trước đây: "tức thời", sai
+    /// suốt phiên trên macOS 27).
+    func testEventTimesQuantized() {
+        let never = (0..<5).map { 42.637_215 + Double($0) * 3e-6 }        // 5 loại chưa xảy ra
+        XCTAssertEqual(KeyLedger.eventTimesQuantized([1000.5, 1000.5, 999.0] + never), true)
+        XCTAssertEqual(KeyLedger.eventTimesQuantized([1000.123_4, 1000.371_9, 998.004_1] + never), false)
+        XCTAssertNil(KeyLedger.eventTimesQuantized(never))                  // mới đăng nhập: chưa biết
+        XCTAssertNil(KeyLedger.eventTimesQuantized([1000.123_4] + never))
+    }
+
     /// Mô phỏng theo thời gian: phím bấm theo nhịp ngẫu nhiên (có lúc hai phím gần như cùng lúc), hệ thống đếm lúc
     /// bấm; phím qua bộ gõ tới theo thứ tự sau độ trễ ngẫu nhiên (có lúc ứng dụng treo 20–150 ms); ~6 % phím đi vòng
     /// (một nửa có ⌘/⌃/⌥); bộ gõ hẹn kiểm tra `quietTime` sau mỗi lần đọc còn dư. Mỗi kết luận phải đúng:
     /// sạch ở phím k thì không có phím đi vòng nào bấm trước k mà chưa được báo.
     func testLedgerVerdictsAreSoundFuzz() {
+        let stats = ledgerSoundFuzz(seeds: 0..<300, delivery: 0.0005...0.006)
+        print("sổ phím (mô phỏng theo thời gian):", stats.sorted { $0.key < $1.key })
+    }
+
+    /// Như trên với ứng dụng giao phím chậm (25–60 ms, iTerm2 / Terminal.app bận): ngưỡng "tới ngay" học theo độ trễ đo
+    /// được vẫn không báo sạch khi có phím đi vòng chưa báo; và sổ ít kẹt ở "chưa biết" hơn ngưỡng cố định 20 ms.
+    func testLedgerVerdictsAreSoundWithSlowDelivery() {
+        let learned = ledgerSoundFuzz(seeds: 0..<200, delivery: 0.025...0.06)
+        let fixed = ledgerSoundFuzz(seeds: 0..<200, delivery: 0.025...0.06, learn: false)
+        print("sổ phím (giao chậm, học ngưỡng):", learned.sorted { $0.key < $1.key })
+        print("sổ phím (giao chậm, ngưỡng cố định):", fixed.sorted { $0.key < $1.key })
+        let unsure = { (s: [String: Int]) in s["unknown", default: 0] + s["unknownSteady", default: 0] }
+        XCTAssertGreaterThan(unsure(fixed), unsure(learned) * 3 / 2, "học ngưỡng phải bớt kẹt ở chưa biết")
+    }
+
+    /// Mô phỏng sổ phím theo thời gian (xem `testLedgerVerdictsAreSoundFuzz`); độ trễ giao phím (ngoài lúc treo) trong
+    /// `delivery`. `learn`: false — ngưỡng "tới ngay" cố định (`promptWindow`).
+    private func ledgerSoundFuzz(seeds: Range<Int>, delivery: ClosedRange<Double>, learn: Bool = true) -> [String: Int] {
         var stats = [String: Int]()
-        for seed in 0..<300 {
+        for seed in seeds {
             var rng = SplitMix(state: UInt64(seed) &* 7919 &+ 17)
             var l = KeyLedger()
+            if !learn { l.promptWindowCap = l.promptWindow }
             struct Press { var t: Double; var seen: Bool; var modifier: Bool; var arrive = 0.0 }
             var presses: [Press] = []
             var t = 5.0
@@ -442,7 +630,8 @@ final class SignalsTests: XCTestCase {
             var lastArrive = 0.0
             for i in presses.indices where presses[i].seen {
                 let stall = rng.unit() < 0.04 ? rng.range(0.02, 1.0) : 0
-                lastArrive = max(presses[i].t + rng.range(0.0005, 0.006) + stall, lastArrive + 0.0002)
+                lastArrive = max(presses[i].t + rng.range(delivery.lowerBound, delivery.upperBound) + stall,
+                                 lastArrive + 0.0002)
                 presses[i].arrive = lastArrive
             }
             func counted(by time: Double) -> UInt32 { UInt32(1000 + presses.filter { $0.t <= time }.count) }
@@ -487,7 +676,7 @@ final class SignalsTests: XCTestCase {
                 previousSeen = p
             }
         }
-        print("sổ phím (mô phỏng theo thời gian):", stats.sorted { $0.key < $1.key })
+        return stats
     }
 
     /// Gõ bình thường (không phím nào đi vòng): ứng dụng không treo thì sổ không bao giờ báo lỡ, chỉ "chưa biết" khi có
@@ -538,6 +727,178 @@ final class SignalsTests: XCTestCase {
         print("bỏ từ oan khi ứng dụng treo:", falseInterruptions, "/", keys, "phím")
     }
 
+    // MARK: - Phím tắt đổi chế độ (macOS 27)
+
+    private static let cmd: UInt64 = 0x100000
+    private static let shift: UInt64 = 0x20000
+
+    /// ⌘⇧ nhấn rồi nhả, như `LiveInput` đọc: mỗi `tick` giây từ `readingFrom` (nil: chỉ từ lúc nhấn tổ hợp) tới lúc hỏi
+    /// (`release`, lúc bộ gõ nhận lần nhả). `mods`: phím bổ trợ từ mỗi thời điểm, WindowServer thấy trễ `flagLag`; `hid`: các
+    /// sự kiện HID (bàn phím / chuột thật). Bộ gõ nhận tổ hợp lúc `arm`: đọc, rồi lấy mốc HID ngay sau đó (`trackHID`).
+    private func hotkeyTap(hid: [Double], mods: [(t: Double, flags: UInt64)], arm: Double, release: Double,
+                           readingFrom start: Double? = nil, tick: Double = 0.002, flagLag: Double = 0,
+                           lastKeyAt: Double = -10) -> Bool {
+        func flags(_ t: Double) -> UInt64 { mods.last { $0.t <= t - flagLag }?.flags ?? 0 }
+        func latest(_ t: Double) -> Double { hid.filter { $0 <= t }.max() ?? -100 }
+        var log = PressLog()
+        var t = start ?? arm
+        while t < arm {
+            log.sample(at: t, held: [], button: false, flags: flags(t))
+            t += tick
+        }
+        log.sample(at: arm, held: [], button: false, flags: flags(arm))
+        log.startHID()
+        log.noteHID(latest(arm))
+        t = arm + tick
+        while t < release {
+            log.sample(at: t, held: [], button: false, flags: flags(t))
+            log.noteHID(latest(t))
+            t += tick
+        }
+        log.sample(at: release, held: [], button: false, flags: flags(release))
+        log.noteHID(latest(release))
+        return log.hotkeyTapClean(armedAt: arm, lastKeyAt: lastKeyAt)
+    }
+
+    /// Nhấn ⌘⇧ rồi nhả: các sự kiện HID sau lúc nhấn chỉ là lần nhả ⌘ và ⇧. Kể cả khi nhả cả hai giữa hai lần đọc phím bổ
+    /// trợ mà lần đọc HID thấy hai sự kiện (WindowServer cập nhật phím bổ trợ trễ): mỗi phím bổ trợ giải thích một sự kiện.
+    func testHotkeyCleanTap() {
+        let (c, s) = (Self.cmd, Self.shift)
+        XCTAssertTrue(hotkeyTap(hid: [10.000, 10.060, 10.180, 10.200],
+                                mods: [(10.000, c), (10.060, c | s), (10.180, c), (10.200, 0)],
+                                arm: 10.063, release: 10.204))
+        XCTAssertTrue(hotkeyTap(hid: [10.000, 10.060, 10.1825, 10.188],
+                                mods: [(10.000, c), (10.060, c | s), (10.1825, c), (10.188, 0)],
+                                arm: 10.063, release: 10.195, tick: 0.008, flagLag: 0.0008))
+    }
+
+    /// ⌘⇧] / ⌘⇧Z bấm nhanh (lab review: ⇧ lúc 40 ms, ] lúc 60, nhả ] lúc 130, ⇧ lúc 150, ⌘ lúc 170; đang đọc 8 ms một lần):
+    /// trước đây lần nhấn tổ hợp và lần nhả ⇧ "che" cả hai sự kiện của phím ] trong ±25 ms — đổi chế độ nhầm. Kể cả khi
+    /// vừa gõ chữ ngay trước đó (một sự kiện lẻ có thể là lần nhả phím chữ: ở đây có hai).
+    func testHotkeyFastChordIsNotATap() {
+        let (c, s) = (Self.cmd, Self.shift)
+        let hid = [10.000, 10.040, 10.060, 10.130, 10.150, 10.170]
+        let mods: [(t: Double, flags: UInt64)] = [(10.000, c), (10.040, c | s), (10.150, c), (10.170, 0)]
+        XCTAssertFalse(hotkeyTap(hid: hid, mods: mods, arm: 10.042, release: 10.172, readingFrom: 9.7, tick: 0.008))
+        XCTAssertFalse(hotkeyTap(hid: hid, mods: mods, arm: 10.042, release: 10.172, readingFrom: 9.7, tick: 0.008,
+                                 lastKeyAt: 9.95))
+        XCTAssertFalse(hotkeyTap(hid: hid, mods: mods, arm: 10.042, release: 10.172))
+    }
+
+    /// Gõ chữ rồi nhấn ⌘⇧ ngay, nhả phím chữ sau lúc nhấn tổ hợp: một sự kiện lẻ ngay sau phím chữ đó — vẫn là nhấn trơn. Không
+    /// có phím chữ nào ngay trước thì sự kiện đó là phím khác (⌘⇧ + phím ký tự).
+    func testHotkeyTapRightAfterTyping() {
+        let (c, s) = (Self.cmd, Self.shift)
+        let hid = [9.940, 10.000, 10.040, 10.060, 10.150, 10.170]
+        let mods: [(t: Double, flags: UInt64)] = [(10.000, c), (10.040, c | s), (10.150, c), (10.170, 0)]
+        XCTAssertTrue(hotkeyTap(hid: hid, mods: mods, arm: 10.043, release: 10.172, lastKeyAt: 9.945))
+        XCTAssertFalse(hotkeyTap(hid: hid, mods: mods, arm: 10.043, release: 10.172))
+        XCTAssertFalse(hotkeyTap(hid: hid, mods: mods, arm: 10.043, release: 10.172, lastKeyAt: 9.5))
+    }
+
+    /// Ứng dụng giao tổ hợp chậm: chữ Z của ⌘⇧Z được bấm trước lúc bộ gõ nhận ⇧ (lấy mốc HID), lần nhả Z trùng một lần đọc với
+    /// lần nhả ⇧. Đang đọc từ trước (gõ trong terminal): sự kiện mới nhất lúc lấy mốc là sau lần đọc thấy ⇧ được nhấn — có gì
+    /// đó xen giữa, không phải nhấn trơn.
+    func testHotkeyKeyPressedBeforeSlowArm() {
+        let (c, s) = (Self.cmd, Self.shift)
+        let hid = [10.000, 10.040, 10.046, 10.118, 10.120, 10.140]
+        let mods: [(t: Double, flags: UInt64)] = [(10.000, c), (10.040, c | s), (10.120, c), (10.140, 0)]
+        XCTAssertFalse(hotkeyTap(hid: hid, mods: mods, arm: 10.050, release: 10.150, readingFrom: 9.7, tick: 0.008))
+        // không có Z: nhấn trơn
+        XCTAssertTrue(hotkeyTap(hid: [10.000, 10.040, 10.120, 10.140], mods: mods, arm: 10.050, release: 10.150,
+                                readingFrom: 9.7, tick: 0.008))
+    }
+
+    /// Giữ ⌘⇧ lâu hơn hạn theo dõi (3 s) rồi mới bấm Z: không còn đọc HID (và timer đã dừng) — không biết, không phải nhấn trơn.
+    /// Trong hạn thì giữ lâu vẫn được. Lần nhấn sau bắt đầu lại từ đầu (sự kiện của lần trước không còn).
+    func testHotkeyHoldBeyondTracking() {
+        let both = Self.cmd | Self.shift
+        var log = PressLog()
+        log.sample(at: 10.0, held: [], button: false, flags: both)
+        log.startHID()
+        log.noteHID(9.99)
+        var t = 10.0
+        while t < 13.0 {
+            t += 0.002
+            log.sample(at: t, held: [], button: false, flags: both)
+            log.noteHID(9.99)
+        }
+        log.endHID()
+        log.sample(at: 14.0, held: [], button: false, flags: 0)       // Z lúc 13,5 không ai thấy; timer dừng: khoảng hở
+        XCTAssertFalse(log.hotkeyTapClean(armedAt: 10.0, lastKeyAt: -10))
+        var held = PressLog()
+        held.sample(at: 20.0, held: [], button: false, flags: both)
+        held.startHID()
+        held.noteHID(19.99)
+        held.noteHID(20.5)                                             // di chuột lúc đang giữ
+        XCTAssertEqual(held.hidEvents, [20.5])
+        held.sample(at: 20.6, held: [], button: false, flags: both)    // khoảng hở trước lần nhấn sau
+        held.startHID()
+        XCTAssertEqual(held.hidEvents, [])
+        held.noteHID(20.55)
+        t = 20.6
+        while t < 22.6 {
+            t += 0.002
+            held.sample(at: t, held: [], button: false, flags: t < 22.5 ? both : 0)
+            held.noteHID(t < 22.5 ? 20.55 : 22.499)
+        }
+        XCTAssertTrue(held.hotkeyTapClean(armedAt: 20.6, lastKeyAt: -10))
+    }
+
+    /// Mô phỏng: ⌘⇧ nhấn rồi nhả trơn, hay kèm một phím chữ (⌘⇧Z: ⇧→Z 5–80 ms, giữ Z 50–130 ms, nhả ⇧ lệch −10…+60 ms
+    /// so với Z), bộ gõ nhận tổ hợp sau 1–10 ms, đọc 2 ms một lần (đang đọc từ trước: 30 %), WindowServer thấy phím bổ trợ
+    /// trễ tới 1 ms; có lúc vừa gõ chữ ngay trước. Lab review đo cách cũ: đổi nhầm 12–17 %, tới 60–70 % khi vừa gõ chữ.
+    func testHotkeyTapFuzz() {
+        var rng = SplitMix(state: 2027)
+        var stats = [String: Int]()
+        let trials = 2000
+        for typed in [false, true] {
+            for chord in [false, true] {
+                var accepted = 0
+                for n in 0..<trials {
+                    let (c, s) = (Self.cmd, Self.shift)
+                    let shiftDown = 10 + rng.range(0.02, 0.15)
+                    var hid = [10.0, shiftDown]
+                    var lastKeyAt = -10.0
+                    if typed {
+                        let letter = 10 + rng.range(-0.25, -0.01)
+                        hid += [letter, letter + rng.range(0.04, 0.16)]
+                        lastKeyAt = letter + rng.range(0.001, 0.03)
+                    }
+                    let arm = shiftDown + rng.range(0.001, 0.01)
+                    var shiftUp: Double
+                    if chord {
+                        let zDown = shiftDown + rng.range(0.005, 0.08), zUp = zDown + rng.range(0.05, 0.13)
+                        hid += [zDown, zUp]
+                        shiftUp = max(zUp + rng.range(-0.01, 0.06), zDown + 0.01)
+                    } else {
+                        shiftUp = shiftDown + rng.range(0.04, 0.2)
+                    }
+                    let cmdUp = max(shiftUp + rng.range(-0.03, 0.05), shiftDown + 0.005)
+                    hid += [shiftUp, cmdUp]
+                    var mods: [(t: Double, flags: UInt64)] = [(10.0, c), (shiftDown, c | s)]
+                    if shiftUp < cmdUp {
+                        mods += [(shiftUp, c), (cmdUp, 0)]
+                    } else {
+                        mods += [(cmdUp, s), (shiftUp, 0)]
+                    }
+                    let release = max(shiftUp, cmdUp) + rng.range(0.001, 0.03)
+                    let start: Double? = n % 10 < 3 ? 9.7 + rng.range(0, 0.002) : nil
+                    if hotkeyTap(hid: hid, mods: mods, arm: arm, release: release, readingFrom: start,
+                                 flagLag: rng.range(0, 0.001), lastKeyAt: lastKeyAt) {
+                        accepted += 1
+                    }
+                }
+                stats["\(chord ? "⌘⇧Z" : "⌘⇧")\(typed ? " sau khi gõ" : "")"] = accepted
+            }
+        }
+        print("phím tắt đổi chế độ (\(trials) lần mỗi loại, số lần đổi chế độ):", stats.sorted { $0.key < $1.key })
+        XCTAssertGreaterThan(stats["⌘⇧", default: 0], trials * 99 / 100)
+        XCTAssertGreaterThan(stats["⌘⇧ sau khi gõ", default: 0], trials * 99 / 100)
+        XCTAssertGreaterThan(trials / 100, stats["⌘⇧Z", default: 0])
+        XCTAssertGreaterThan(trials * 5 / 100, stats["⌘⇧Z sau khi gõ", default: 0])
+    }
+
     // MARK: - Loại ô
 
     func testClientKindFromLabSignatures() {
@@ -572,6 +933,33 @@ final class SignalsTests: XCTestCase {
         q.key("x", .interrupted)
         q.type("6")
         XCTAssertEqual(q.text, "x6echo tie")
+    }
+
+    /// macOS 27: dừng tay giữa từ quá lâu thì `LiveInput` đã ngừng đọc — phím sau có khoảng không đọc, `KeyWatch` báo như có
+    /// phím đi vòng (`.bypassed`), không bỏ từ ngay. Terminal cho đọc màn hình: màn hình cho thấy dòng vẫn đúng như lúc dừng
+    /// tay, gõ tiếp từ đó ("Vie", dừng 6 s, "65t" → "Việt", trước đây "Vie65t"). Terminal khác: bỏ từ, như `.interrupted`.
+    func testCoverageGapReportedAsBypass() {
+        let s = ScreenPty()
+        s.type("Vie")
+        s.now += 6
+        s.key("6", .bypassed)
+        XCTAssertEqual(s.text, "Vie6")
+        s.key("5", .none)
+        s.key("t", .none)
+        XCTAssertEqual(s.text, "Việt")
+        let old = ScreenPty()
+        old.type("Vie")
+        old.now += 6
+        old.key("6", .interrupted)
+        old.type("5t")
+        XCTAssertEqual(old.text, "Vie65t")
+        for gap in [KeyGap.bypassed, .interrupted] {
+            let p = Pty()
+            p.type("Vie")
+            p.key("6", gap)
+            p.type("5t")
+            XCTAssertEqual(p.text, "Vie65t")
+        }
     }
 
     /// ⌘V giữa từ (Ghostty, mọi terminal): chữ dán không bị xoá.
