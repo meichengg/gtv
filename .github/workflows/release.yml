@@ -85,6 +85,8 @@ jobs:
           security import "$RUNNER_TEMP/sign.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
           rm -f "$RUNNER_TEMP/sign.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kpw" "$kc" >/dev/null 2>&1
+          # codesign chỉ thấy khoá trong keychain nằm trong danh sách tìm kiếm của user.
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
           id="$(security find-identity -p codesigning "$kc" | awk '/GTV Code Signing/ {print $2; exit}')"
           [ -n "$id" ] || { echo "::error::code signing identity not found in the imported certificate"; exit 1; }
           echo "SELF_SIGN_IDENTITY=$id" >> "$GITHUB_ENV"
