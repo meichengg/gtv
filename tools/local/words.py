@@ -7,7 +7,7 @@ WORDS = [
  ("bảo","ba3o","baor"),("mật","ma65t","maatj"),("ứng","u71ng","uwngs"),("dụng","du5ng","dungj"),("máy","ma1y","mays"),
  ("chủ","chu3","chur"),("tài","ta2i","taif"),("khoản","khoa3n","khoarn"),("ngân","nga6n","ngaan"),("hàng","ha2ng","hangf"),
  ("chuyển","chuye63n","chuyeenr"),("tiền","tie62n","tieenf"),("đăng","d9a8ng","ddawng"),("nhập","nha65p","nhaapj"),("mã","ma4","max"),
- ("lệnh","le65nh","leenhj"),("phản","pha3n","pharn"),("hồi","ho62i","hoof"),("được","d9u7o75c","dduwowcj"),("không","kho6ng","khoong"),
+ ("lệnh","le65nh","leenhj"),("phản","pha3n","pharn"),("hồi","ho62i","hooif"),("được","d9u7o75c","dduwowcj"),("không","kho6ng","khoong"),
  ("với","vo71i","vowis"),("những","nhu74ng","nhuwngx"),("trường","tru7o72ng","truwowngf"),("hợp","ho75p","howpj"),("này","na2y","nayf"),
  ("cần","ca62n","caanf"),("thêm","the6m","theem"),("đoạn","d9oa5n","ddoanj"),("văn","va8n","vawn"),("bản","ba3n","barn"),
  ("request","request","request"),("header","header","header"),("token","token","token"),("cookie","cookie","cookie"),
