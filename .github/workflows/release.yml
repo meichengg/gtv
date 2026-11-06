@@ -210,7 +210,7 @@ jobs:
       - name: Attack DMG to run
         uses: actions/upload-artifact@v4
         with:
-          name: GTV-${{ steps.meta.outputs.version }}-${{ github.ref_name }}
+          name: GTV-${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.build }}
           path: ${{ steps.meta.outputs.dmg }}
           if-no-files-found: error
 
