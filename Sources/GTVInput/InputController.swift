@@ -70,13 +70,15 @@ private final class ClientAdapter: TextClient {
 
     func lateEditSafe() -> Bool { KeyWatch.shared.lateEditSafe() }
 
-    /// Ô Java (AWT): trả lời "đã xử lý" không làm Java bỏ phím; marked text rỗng thì có (AWTView: fKeyEventsNeeded = NO).
+    /// Ô Java (AWT): trả lời "đã xử lý" không làm Java bỏ phím; marked text rỗng thì có (AWTView: fKeyEventsNeeded = NO) —
+    /// nhưng sau đó Java coi như đang có phần gõ dở rỗng và đưa các phím ⌫ giả vào đó thay vì xoá chữ (IME Lab 42187016328:
+    /// "Vieêệt"). Nên không giữ phím: phím đi thẳng, phím giả xoá luôn ký tự của nó.
     var swallowsWithEmptyMark = false
 
     func postKeys(deleting: Int, inserting: String) -> Bool {
         SyntheticKeys.shared.post(deleting: deleting, inserting: inserting)
     }
-    var keySwallowable: Bool { swallowsWithEmptyMark }
+    var keySwallowable: Bool { false }
     func swallowKey() {
         if swallowsWithEmptyMark {
             client?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: notFound)
@@ -324,7 +326,7 @@ final class GTVInputController: IMKInputController {
             case .some:
                 break                         // phím thật gửi lại sau phím giả: xử lý như thường
             case nil:
-                if SyntheticKeys.shared.inFlight, javaView == true {
+                if SyntheticKeys.shared.inFlight, javaView == true, adapter.keySwallowable {
                     // Phím thật tới trước phím giả của lần sửa trước: giữ lại, gửi lại sau chúng (đúng thứ tự gõ).
                     _ = KeyWatch.shared.observe(event, terminal: false)
                     adapter.client = client
