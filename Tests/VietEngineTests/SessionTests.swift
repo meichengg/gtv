@@ -1290,7 +1290,7 @@ final class SessionTests: XCTestCase {
         let cases: [(InputMethod, String, String, String)] = [
             (.telex, "abc ", "is⌫x ", "abc x "), (.vni, "abc\n", "d9⌫a ", "abc\na "), (.telex, "", "xyz\naa⌫b ", "xyz\nb "),
             (.telex, "abc\n", "ddi⌫⌫a ", "abc\na "), (.telex, "", "efi⌫⌫gegart ", "egegart "),
-            (.telex, "x\n", "ask⌫⌫nd ", "x\nand "), (.telex, "x\n", "ask⌫⌫⌫ok ", "x\nok "),
+            (.telex, "x\n", "ask⌫⌫nd ", "x\nand "), (.telex, "x\n", "ask⌫⌫⌫ok ", "x\nok "), (.telex, "", "ux⌫⌫n ", "n "),
         ]
         for (method, pre, keys, expect) in cases {
             for backlog in 0...3 {
@@ -1303,6 +1303,22 @@ final class SessionTests: XCTestCase {
                     f.type(keys)
                     XCTAssertEqual(f.text, expect, "\(keys.debugDescription) backlog \(backlog) commit \(commit)")
                 }
+            }
+        }
+        // ⌫ của người dùng nhiều hơn phần theo dõi lúc ứng dụng chậm: ⌫ thừa xoá vào chữ bộ gõ còn nợ — có thể thiếu một lần xoá,
+        // không bao giờ xoá lố vào chữ có sẵn.
+        let lenient: [(InputMethod, String, String, [String])] = [
+            (.telex, "ab ", "ux⌫⌫n ", ["abn ", "ab n "]), (.vni, "ab ", "d9⌫⌫⌫x ", ["ax ", "abx ", "ab x "]),
+            (.telex, "xin ", "chaof⌫⌫⌫⌫⌫ ", ["xin ", "xin c ", "xin  "]),
+        ]
+        for (method, pre, keys, ok) in lenient {
+            for backlog in 0...3 {
+                let f = SyntheticField()
+                f.options.method = method
+                f.backlog = backlog
+                f.prefill(pre)
+                f.type(keys)
+                XCTAssertTrue(ok.contains(f.text), "\(keys.debugDescription) backlog \(backlog): \(f.text.debugDescription)")
             }
         }
     }

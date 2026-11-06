@@ -229,6 +229,7 @@ public final class Session {
     private var synPending: [(prefix: String, started: Bool, deletes: Int, insert: String)] = []
     /// Lần sửa đang hoãn vì còn phím đặc biệt của người dùng chưa tới (`TextClient.keysQueued`).
     private var synDeferred = false
+
     private var synDeferSerial = 0
     /// ⌫ lùi qua dấu cách về cuối từ trước: chữ sau gõ tiếp từ đó.
     private var synResume: String?
@@ -1428,7 +1429,10 @@ public final class Session {
         }
         if engine.isEmpty {
             if synBefore.isEmpty {
-                synReset()                                   // xoá vào chữ có từ trước: không theo dõi
+                // ⌫ xoá vào chữ trước phần theo dõi. Ô còn chữ bộ gõ chưa kịp sửa (ứng dụng chậm) thì ⌫ này xoá vào chữ đó — không
+                // xoá bù ký tự người dùng định xoá (phím người dùng gõ tiếp có thể tới trước, ⌫ bù sẽ xoá lố): thiếu một lần xoá
+                // còn hơn xoá chữ không do bộ gõ gõ.
+                if synScreen.isEmpty, synPending.isEmpty, !synDeferred { synReset() }
             } else {
                 synBefore.removeLast()
                 // Lùi qua hết phần ngăn cách về cuối một từ: chữ sau gõ tiếp từ đó.
