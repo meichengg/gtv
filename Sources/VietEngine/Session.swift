@@ -1639,6 +1639,15 @@ public final class Session {
     private var webNextExpect: Character?
     /// Phím trước của chuỗi là ⌫.
     private var webLastWasBackspace = false
+    /// Chữ có sẵn ngay sau con trỏ (đọc lúc bộ đệm khớp đúng chuỗi, hay lúc bắt đầu chuỗi): gõ chèn trước nó thì chữ sau con trỏ
+    /// trong bộ đệm cũ trùng phần chuỗi chưa báo không phải dấu hiệu click lùi.
+    private var webSuffix = ""
+
+
+    private func webNoteSuffix(_ client: TextClient, at location: Int) {
+        webSuffix = client.text(location: location, length: 16) ?? ""
+        if webSuffix.isEmpty, let t = client.text(location: location, length: 1) { webSuffix = t }
+    }
     /// Trạng thái mới nhất của chuỗi lúc sổ phím báo click / phím tắt bộ gõ không thấy: bộ đệm cho thấy trạng thái đó hay cũ hơn
     /// thì trang chưa báo gì sau click (trang chậm) — không dùng làm bằng chứng vị trí.
     private var webGapSerial: Int?
@@ -1697,6 +1706,7 @@ public final class Session {
     }
 
     private func startWebChain(at location: Int, trusted: Bool = true) {
+        webSuffix = ""
         web = WebChain(caret: location, start: location, proven: false, trusted: trusted, expectBefore: webNextExpect)
         webNextExpect = nil
         anchor = location
@@ -1781,8 +1791,9 @@ public final class Session {
         }
         guard let chain = web else {
             // Đầu chuỗi đọc từ bộ đệm: chỉ tin khi đã ngừng gõ lâu và không có click / phím tắt bộ gõ không thấy ngay trước.
-            startWebChain(at: client.selectedRange()?.location ?? 0,
-                          trusted: client.currentTime() - webLastKeyAt > Self.webIdleBreak && !dropped)
+            let location = client.selectedRange()?.location ?? 0
+            startWebChain(at: location, trusted: client.currentTime() - webLastKeyAt > Self.webIdleBreak && !dropped)
+            webNoteSuffix(client, at: location)
             return
         }
         let text = webHistory.last?.text ?? webBefore
@@ -1794,6 +1805,7 @@ public final class Session {
            !webCacheIsOlder(client, sel.location, chain: chain, model: text) {
             webNextExpect = nil
             startWebChain(at: sel.location, trusted: chain.trusted && !dropped)
+            webNoteSuffix(client, at: sel.location)
             return
         }
         anchor = chain.caret
@@ -1849,6 +1861,7 @@ public final class Session {
         if t == model {
             if let gs = webGapSerial, (webHistory.last?.serial ?? 0) <= gs { return .lag }   // chưa có gì sau click
             webAccept(t)
+            webNoteSuffix(client, at: sel.location)
             webGapSerial = nil
             return .current
         }
@@ -1869,7 +1882,9 @@ public final class Session {
     private func webShowsRest(_ client: TextClient, _ location: Int, m: Int, model: String) -> Bool {
         let mu = Array(model.utf16)
         guard m >= 0, m < mu.count, let after = client.text(location: location, length: mu.count - m) else { return false }
-        return Array(after.utf16) == Array(mu[m...])
+        guard Array(after.utf16) == Array(mu[m...]) else { return false }
+        // Chữ đó cũng là phần đầu của chữ có sẵn sau chỗ gõ: có thể chỉ là trang chậm (bộ đệm chưa có các chữ vừa gõ) — không chắc.
+        return !webSuffix.hasPrefix(after)
     }
 
     /// Các trạng thái của chuỗi trong `webLagLimit` phím gần nhất (tính theo phím, không theo số trạng thái).
@@ -1973,12 +1988,12 @@ public final class Session {
             log?("ô web: chữ trước con trỏ khác chuỗi của bộ gõ — chờ trang báo rồi đọc lại")
             deferWebEdit(old: old, new: new, typed: typed, client)
             return true
-        case .moved where !trusted:
+        case let .moved(at) where !trusted && !webMovedConfirmed(client, at: at):
             deferWebEdit(old: old, new: new, typed: typed, client)
             return true
         case let .moved(at):
             webMove(to: at, word: old)
-        case .current where !proven && webProvable(old) && (trusted || webStartConfirmed(client)):
+        case .current where !proven && (trusted ? webProvable(old) : webStartConfirmed(client)):
             web?.proven = true
             web?.trusted = true
         case .current, .lag:
@@ -2017,7 +2032,8 @@ public final class Session {
         let trusted = web?.trusted ?? false
         switch webRead(c, word: p.old) {
         case .current:
-            let provable = webProvable(p.old) && (trusted || webStartConfirmed(c))
+            // Chuỗi chưa xác minh: thấy đúng ký tự biết trước ngay trước đầu chuỗi thì vị trí đã chắc (khớp một ký tự cũng đủ).
+            let provable = trusted ? webProvable(p.old) : webStartConfirmed(c)
             if check < (provable ? 1 : 2) { return }
             // Đầu chuỗi đọc từ bộ đệm có thể cũ: bộ đệm khớp có thể chỉ là trùng hợp trên vị trí cũ (dòng trên, chữ cũ).
             if !trusted, !provable { webGiveUp(c, p.typed); return }
@@ -2026,7 +2042,7 @@ public final class Session {
             // Bộ đệm vẫn chưa cho thấy chữ đang gõ mà đầu chuỗi chưa xác minh, hay trang chưa báo gì từ lúc có click: không đoán vị trí.
             if !trusted || webGapSerial != nil { webGiveUp(c, p.typed); return }
         case let .moved(at):
-            if !trusted {
+            if !trusted, !webMovedConfirmed(c, at: at) {
                 if check < 2 { return }
                 webGiveUp(c, p.typed)                      // từ trùng ở chỗ khác có thể là chữ có sẵn
                 return
@@ -2045,6 +2061,14 @@ public final class Session {
         web?.proven = true
         web?.trusted = true
         applyWebEdit(old: p.old, new: p.new, c, atPosition: true)
+    }
+
+    /// Chuỗi chưa xác minh, từ đang gõ nằm nguyên ở `at`: trước nó đúng là phần chuỗi trước từ và ký tự biết trước (hay đầu ô).
+    private func webMovedConfirmed(_ client: TextClient, at: Int) -> Bool {
+        guard let chain = web, let expect = chain.expectBefore else { return false }
+        let n = webBefore.utf16.count
+        guard at - n - 1 >= 0, let t = client.text(location: at - n - 1, length: n + 1) else { return false }
+        return t == String(expect) + webBefore || (expect == "\n" && t == "\r" + webBefore)
     }
 
     /// Chuỗi chưa xác minh: bộ đệm cho thấy đúng ký tự biết trước ngay trước đầu chuỗi (hay đầu chuỗi là đầu ô).
@@ -2134,6 +2158,7 @@ public final class Session {
                 webPush(webBefore)
                 web!.caret += String(ch).utf16.count
             } else {
+                webNoteArrow(ch, text: webBefore)
                 web = nil
             }
             return
@@ -2159,7 +2184,23 @@ public final class Session {
             webPush(webBefore)
             web!.caret = anchor + final.utf16.count + String(ch).utf16.count
         } else {
+            webNoteArrow(ch, text: webBefore + final)
             web = nil
+        }
+    }
+
+    /// ← / → kết thúc chuỗi: ký tự ngay trước con trỏ mới là ký tự biết trước (của chuỗi, hay chữ có sẵn ngay sau con trỏ) —
+    /// bằng chứng vị trí cho chuỗi sau (xem `WebChain.expectBefore`).
+    private func webNoteArrow(_ ch: Character?, text: String) {
+        guard web != nil else { return }
+        switch ch {
+        case "\u{F702}":                                      // ←
+            let chars = Array(text)
+            webNextExpect = chars.count >= 2 ? chars[chars.count - 2] : nil
+        case "\u{F703}":                                      // →
+            webNextExpect = webSuffix.first
+        default:
+            break
         }
     }
 
@@ -2243,6 +2284,7 @@ public final class Session {
         anchor = location
         webBefore = before
         webSetHistory(before)
+        webNoteSuffix(client, at: location)
         return true
     }
 

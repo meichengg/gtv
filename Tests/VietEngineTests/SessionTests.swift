@@ -382,10 +382,10 @@ private final class ChromiumField: TextClient {
             if k == "⌫" { backspace() } else if k == "←" { arrowLeft() } else { press(k) }
         }
     }
-    /// ← (phím không ra chữ: bộ gõ cho đi, trang dời con trỏ).
+    /// ← (InputController đưa phím mũi tên như ký tự U+F702; bộ gõ cho đi, trang dời con trỏ).
     func arrowLeft() {
         tick(stepMS)
-        if !session.handle(.other, self, options: options, forceMarked: false, web: true), caret > 0 {
+        if !session.handle(.char("\u{F702}"), self, options: options, forceMarked: false, web: true), caret > 0 {
             caret -= 1
             snapshot()
         }
@@ -1812,6 +1812,118 @@ final class SessionTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// Gõ chèn trước chữ có sẵn (VS Code tự đóng ngoặc / nháy): chữ có sẵn sau con trỏ trùng chữ vừa gõ mà trang chưa báo — không
+    /// phải click lùi.
+    func testChromiumTypingBeforeExistingText() {
+        typealias Case = (InputMethod, String, Int, String, [String])
+        let cases: [Case] = [
+            (.vni, "oc", 0, "ho⌫a1 ", ["há oc"]), (.telex, "oc", 0, "ho⌫as ", ["há oc"]),
+            (.telex, "an com", 2, "chaof gif Vieetj ", ["anchào gì Việt  com"]),
+            (.telex, "\")", 0, "xin chaof", ["xin chào\")"]),
+            (.telex, ")", 0, "ddi ddaau", ["đi đâu)"]),
+            (.vni, "\"", 0, "Vie65t Nam d9e5p", ["Việt Nam đẹp\""]),
+        ]
+        for (method, pre, at, keys, ok) in cases {
+            for lag in 0...6 {
+                for step in [10.0, 45.0, 120.0] {
+                    let f = ChromiumField()
+                    f.options.method = method
+                    f.pageSet(pre)
+                    f.finish()
+                    f.idle()
+                    f.click(at: at)
+                    f.finish()
+                    f.idle()
+                    f.lag = lag
+                    f.stepMS = step
+                    f.type(keys)
+                    f.finish()
+                    XCTAssertTrue(ok.contains(f.text), "\(pre.debugDescription) \(keys.debugDescription) lag \(lag) step \(step): \(f.text.debugDescription)")
+                }
+            }
+        }
+    }
+
+    /// Fuzz: gõ chèn giữa chữ có sẵn (sau click) ở mọi độ chậm 0–6 — cùng kết quả như trang không chậm, chữ có sẵn không bị đụng.
+    func testChromiumFuzzTypingInsideText() {
+        var seed: UInt64 = 12345
+        func rnd(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
+        let words = ["chaof", "gif", "Vieetj", "ddi", "hocj", "ddaau", "nhes", "toi", "xin", "an", "com", "tieengs", "ddepj", "ban"]
+        let pres = ["an com", "\")", ")", "oc", "abc def", " xyz", "\""]
+        var diverge = 0, corrupt = 0
+        for _ in 0..<300 {
+            let pre = pres[rnd(pres.count)]
+            let at = rnd(pre.utf16.count + 1)
+            var keys = ""
+            for _ in 0..<(1 + rnd(4)) { keys += words[rnd(words.count)] + (rnd(4) == 0 ? "⌫" : "") + " " }
+            var results: [String] = []
+            for lag in 0...6 {
+                let f = ChromiumField()
+                f.options.method = .telex
+                f.pageSet(pre); f.finish(); f.idle(); f.click(at: at); f.finish(); f.idle()
+                f.lag = lag; f.stepMS = 45
+                f.type(keys); f.finish()
+                results.append(f.text)
+                let head = String(decoding: Array(pre.utf16)[..<at], as: UTF16.self)
+                let tail = String(decoding: Array(pre.utf16)[at...], as: UTF16.self)
+                if !f.text.hasPrefix(head) || !f.text.hasSuffix(tail) {
+                    corrupt += 1
+                    print("CORRUPT", pre.debugDescription, at, keys.debugDescription, lag, f.text.debugDescription)
+                }
+            }
+            if Set(results).count > 1 {
+                diverge += 1
+                if diverge <= 5 { print("DIVERGE", pre.debugDescription, at, keys.debugDescription, results.map { $0.debugDescription }) }
+            }
+        }
+        XCTAssertEqual(diverge, 0)
+        XCTAssertEqual(corrupt, 0)
+    }
+
+    /// Fuzz: câu có ⏎ / ← / ⌫ ở mọi độ chậm 0–6, so với trang không chậm — chỉ được khác ở chỗ phím dấu đi nguyên văn (thêm chữ),
+    /// không bao giờ mất chữ hay dấu rơi sai chỗ.
+    func testChromiumFuzzNeverCorrupts() {
+        var seed: UInt64 = 777
+        func rnd(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
+        let words = ["chaof", "gif", "Vieetj", "ddi", "hocj", "ddaau", "nhes", "toi", "xin", "an", "com", "tieengs", "ddepj", "ban", "aa", "oo"]
+        var bad = 0, total = 0, literal = 0, same = 0
+        var perLag = [Int](repeating: 0, count: 7)
+        for _ in 0..<400 {
+            var keys = ""
+            for _ in 0..<(2 + rnd(5)) {
+                keys += words[rnd(words.count)]
+                switch rnd(8) { case 0: keys += "⌫"; case 1: keys += "⌫⌫"; case 2: keys += "←"; case 3: keys += "\r"; default: break }
+                keys += " "
+            }
+            // Kết quả đúng: gõ ở ô Cocoa thật (trực tiếp) — chuẩn.
+            for lag in 0...6 {
+                for step in [10.0, 80.0] {
+                    total += 1
+                    let f = ChromiumField()
+                    f.options.method = .telex
+                    f.lag = lag; f.stepMS = step
+                    f.type(keys); f.finish()
+                    let g = ChromiumField()
+                    g.options.method = .telex
+                    g.type(keys); g.finish()           // lag 0 nhịp 80: tham chiếu
+                    if f.text != g.text {
+                        if f.text.count < g.text.count {
+                            bad += 1
+                            if bad <= 6 { print("BAD", keys.debugDescription, lag, step, f.text.debugDescription, "ref", g.text.debugDescription) }
+                        } else if f.text.count == g.text.count {
+                            same += 1
+                            if same <= 10 { print("SAME", keys.debugDescription, lag, step, f.text.debugDescription, "ref", g.text.debugDescription) }
+                        } else { literal += 1; perLag[lag] += 1 }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(bad, 0, "mất chữ")
+        XCTAssertEqual(same, 0, "dấu rơi sai chỗ")
+        XCTAssertEqual(perLag[0], 0)
+        _ = (total, literal)
     }
 
     /// Phím ⌫ giả tới bộ gõ không được coi là lần nhấn ⌫ của người dùng (sổ nhấn phím): ⌫ thật bấm sau đó vẫn là phím chưa tới;
