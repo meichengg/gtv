@@ -139,6 +139,20 @@ jobs:
           path: ${{ runner.temp }}/GTV-release.zip
           retention-days: 14
 
+      # Thử cấp quyền Trợ năng / gửi phím cho bộ gõ (cần cho cách gõ bằng phím ⌫ giả ở Java, Qt 5, GTK…). GTVInput ghi kết
+      # quả vào log lúc khởi động ("quyền gửi phím=…").
+      - name: Grant accessibility to GTVInput (thử)
+        continue-on-error: true
+        run: |
+          csrutil status || true
+          for db in "/Library/Application Support/com.apple.TCC/TCC.db" "$HOME/Library/Application Support/com.apple.TCC/TCC.db"; do
+            for svc in kTCCServiceAccessibility kTCCServicePostEvent; do
+              sudo sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, flags, last_modified) VALUES ('$svc', 'com.gtv.inputmethod.GTV', 0, 2, 4, 1, NULL, 0, CAST(strftime('%s','now') AS INTEGER));" \
+                && echo "ok: $svc → $db" || echo "::warning::không ghi được $svc vào $db"
+            done
+          done
+          sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "SELECT service, client, auth_value FROM access WHERE client LIKE '%gtv%';" || true
+
       - name: Install GTV
         run: |
           mkdir -p /tmp/l "$OUT/shots"
