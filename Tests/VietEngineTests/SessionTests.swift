@@ -303,7 +303,7 @@ private final class ToolkitField: TextClient {
     }
 }
 
-/// Ô tự vẽ (GPUI, terminal nhúng…) của ứng dụng chưa kiểm chứng, dùng với `markedAtCaretZero`:
+/// Ô tự vẽ (GPUI, terminal nhúng…) của ứng dụng chưa kiểm chứng:
 /// - `blind`: như view terminal của Herdr / Zed — con trỏ luôn báo {độ dài marked text}, `insertText` bỏ qua vùng thay (ghi
 ///   thêm vào cuối), không đọc được chữ;
 /// - không `blind`: ô soạn thảo thật (bắt đầu trống) — báo con trỏ thật, thay đúng vùng.
@@ -352,14 +352,14 @@ private final class CustomView: TextClient {
     func hasMarkedText() -> Bool { marked != nil }
 
     func type(_ keys: String) {
-        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: false, markedAtCaretZero: true) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: false) {
             insertText(String(k))
         }
     }
 
     /// Phím không ra chữ: nếu bộ gõ cho đi thì ô làm `effect`.
     func press(_ key: Key, effect: () -> Void) {
-        if !session.handle(key, self, options: options, forceMarked: false, markedAtCaretZero: true) { effect() }
+        if !session.handle(key, self, options: options, forceMarked: false) { effect() }
     }
 }
 
@@ -1127,15 +1127,6 @@ final class SessionTests: XCTestCase {
         }
     }
 
-    /// SDL (ô chat trong game): con trỏ giả không bao giờ là 0 sau từ đầu — con trỏ không nhích sau dấu cách thì từ sau gõ bằng
-    /// marked text (review: trước đây từ thứ hai trở đi ra nguyên văn).
-    func testSDLStyleFakeCaretKeepsAllWords() {
-        let f = CustomView(blind: false)
-        f.sdl = true
-        f.type("vieejt nam vieejt dduowcj ")
-        XCTAssertEqual(f.text, "việt nam việt được ")
-    }
-
     /// Ô soạn thảo thật (GPUI, Qt 6…): End bấm ở đầu ô (con trỏ {0,0}) không được để lại chế độ gạch chân — ⌫ rồi gõ dấu vẫn
     /// nạp lại từ trước con trỏ ("hoi" + r → "hỏi").
     func testNonWordKeyAtCaretZeroKeepsContinueWord() {
@@ -1172,34 +1163,18 @@ final class SessionTests: XCTestCase {
         }
     }
 
-    /// Ô tự vẽ không cho biết con trỏ (view terminal của Herdr / Zed khi chưa nhận ra): mọi từ gõ bằng marked text, không từ nào
-    /// đi nguyên văn hay thành chữ rác ("dd9"); ô soạn thảo thật bắt đầu trống: chỉ từ đầu gạch chân, từ sau gõ trực tiếp.
-    func testCustomViewAtCaretZeroTypesMarked() {
-        for method in [InputMethod.vni, .telex] {
-            let blind = CustomView(blind: true)
-            blind.options.method = method
-            blind.type(method == .vni ? "d9a82ng tie61ng vie65t " : "ddawngf tieengs vieejt ")
-            XCTAssertEqual(blind.text, "đằng tiếng việt ", "\(method)")
-            XCTAssertNil(blind.marked)
-
-            let editor = CustomView(blind: false)
-            editor.options.method = method
-            editor.type(method == .vni ? "d9a82ng tie61ng " : "ddawngf tieengs ")
-            XCTAssertEqual(editor.text, "đằng tiếng ", "\(method)")
-            XCTAssertNil(editor.marked)
-        }
-    }
-
     func testQt5StyleFieldNeverInsertsMidWord() {
         for c in ["awesome", "how", "hello"] {
             let f = Qt5Field()
             f.type(c + " ")
             XCTAssertEqual(f.text, c + " ", c)
         }
+        // Ô không cho biết con trỏ mà không được nhận ra trước (Qt 5 được nhận ra theo bộ công cụ): không bao giờ chèn chữ rác
+        // giữa từ — phím đi nguyên văn.
         let g = Qt5Field()
         g.options.method = .vni
         g.type("ab vie65t ")
-        XCTAssertTrue(g.text.hasSuffix(" việt "), g.text)
+        XCTAssertEqual(g.text, "ab vie65t ")
     }
 
     /// Ứng dụng tự chốt phần gạch chân giữa từ: gõ tiếp là từ mới, không dựng lại cả từ ở chỗ mới (thành chữ đôi "việviệt").

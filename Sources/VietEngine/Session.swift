@@ -161,16 +161,11 @@ public final class Session {
     /// Gõ trực tiếp: ⌫ đi thẳng khi không còn từ đang gõ, và vị trí con trỏ lúc đó — ở chữ sau, nếu con trỏ chưa lùi thì ô chưa
     /// xử lý xong ⌫: không đọc lại từ trước con trỏ (`continueWordOnNextChar`) từ bản chụp cũ.
     private var deletedAt: Int?
-    /// Ô từng báo con trỏ ở đầu văn bản trong khi từ đang gõ nằm sau đó (Qt 5: luôn báo 0): ô không cho biết con trỏ thật, các
-    /// từ sau gõ bằng marked text (chèn tại con trỏ, không cần vị trí).
-    private var caretBlind = false
     /// Gạch chân: ô chỉ giữ một lần chèn chữ cho mỗi phím (GTK) hoặc nuốt phím ngay sau lần chốt (winit) — chốt từ cùng chữ của
     /// phím kết thúc từ trong một lần `insertText` (xem `handle(combinedCommit:)`).
     private var combinedCommit = false
     /// Gạch chân: ô báo đúng `hasMarkedText` ngay từ đầu (GTK, winit) — không cần chờ thấy nó báo một lần (`markedReported`).
     private var trustMarked = false
-    /// Ô tự vẽ của ứng dụng chưa kiểm chứng (`handle(markedAtCaretZero:)`).
-    private var customView = false
     /// Phím gần nhất được xử lý theo đường của ô web Chromium (`handleWeb`).
     private var inWeb = false
     private var web: WebChain?
@@ -184,9 +179,6 @@ public final class Session {
     private var webPending: (old: String, new: String, typed: Character)?
     private weak var webPendingClient: TextClient?
     private var webSerial = 0
-    /// Ô tự vẽ: vị trí con trỏ lúc phím kết thúc từ đi thẳng (dấu cách, dấu câu). Từ sau bắt đầu mà con trỏ vẫn ở đó thì ô không
-    /// cho biết con trỏ thật (SDL: luôn báo lại vùng chọn của lần setMarkedText gần nhất) — gõ bằng marked text từ đó.
-    private var boundaryAt: Int?
 
     public init() {}
 
@@ -209,7 +201,6 @@ public final class Session {
 
     /// Bỏ những gì biết về từ gõ trực tiếp (xem `untracked`, `passedAt`, `lastEdit`).
     private func endDirectWord() {
-        boundaryAt = nil
         untracked = false
         passedAt = nil
         lastEdit = nil
@@ -234,9 +225,6 @@ public final class Session {
     /// GTVInput, xem `KeyLedger`).
     /// `legacy`: terminal — byte terminal gửi xuống shell cho phím này khi không có bổ trợ (Enter "\r", Tab "\t", ⌫ DEL,
     /// Esc, ←, Ctrl+chữ); dùng để gửi kèm phím khi Ghostty sẽ nuốt nó (xem `handleTerminal`).
-    /// `markedAtCaretZero`: ô tự vẽ của ứng dụng chưa kiểm chứng (GPUI, terminal nhúng, Rust/winit…): từ bắt đầu khi ô báo con
-    /// trỏ ở {0, 0} thì gõ bằng marked text — không phân biệt được ô trống với ô không cho biết con trỏ (luôn báo 0, bỏ qua
-    /// vùng thay), mà marked text đúng ở cả hai. Ô báo vị trí thật thì từ sau gõ trực tiếp như thường.
     /// `combinedCommit` (GTK, winit): phím kết thúc từ đang gạch chân mà ra chữ (`keyText`: dấu cách, dấu câu, ⌥+chữ…) thì chốt
     /// từ cùng chữ đó trong một lần `insertText` và bộ gõ giữ phím; phím không ra chữ (⏎, ⇥, mũi tên…) thì chốt từ rồi cho phím
     /// đi, kèm gỡ marked text nếu `clearAfterCommit` (winit nuốt phím ngay sau lần chốt khi còn trạng thái "vừa chốt").
@@ -244,7 +232,7 @@ public final class Session {
     public func handle(_ key: Key, _ client: TextClient, options: EngineOptions, forceMarked: Bool,
                        qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil,
                        earlyCommit: Bool = false, gap: KeyGap = .none, legacy: String? = nil,
-                       markedAtCaretZero: Bool = false, combinedCommit: Bool = false, clearAfterCommit: Bool = false,
+                       combinedCommit: Bool = false, clearAfterCommit: Bool = false,
                        trustMarked: Bool = false, keyText: String? = nil, web: Bool = false) -> Bool {
         if web {
             inTerminal = false
@@ -256,7 +244,6 @@ public final class Session {
         self.qtApp = qtApp
         self.combinedCommit = combinedCommit
         self.trustMarked = trustMarked
-        self.customView = markedAtCaretZero
         self.earlyCommit = earlyCommit
         inTerminal = terminal != nil
         if let terminal {
@@ -307,14 +294,12 @@ public final class Session {
         switch key {
         case .other:
             continueWordOnNextChar = false
-            boundaryAt = nil
             if combinedCommit, marked, !engine.isEmpty {
                 return endMarkedWord(with: keyText, client, clear: clearAfterCommit)
             }
             breakWord(client)
             return false
         case .backspace:
-            boundaryAt = nil              // ⌫ đưa con trỏ về lại chỗ cũ: không phải dấu hiệu ô mù
             let handled = backspace(client)
             if engine.isEmpty && !marked {
                 continueWordOnNextChar = true
@@ -326,18 +311,13 @@ public final class Session {
             if engine.isEmpty {
                 engine.options = options
                 let deleted = deletedAt
-                let boundary = boundaryAt
                 endDirectWord()
-                if forceMarked || caretBlind {
+                if forceMarked {
                     marked = true            // gạch chân: không cần vị trí con trỏ (bớt một lần hỏi ứng dụng)
                     anchor = 0
                 } else {
                     sel = client.selectedRange()
-                    if markedAtCaretZero, let b = boundary, sel?.location == b, sel?.length == 0 {
-                        caretBlind = true
-                        log?("ô tự vẽ: con trỏ không nhích sau phím kết thúc từ (\(b)) — gõ bằng marked text")
-                    }
-                    marked = sel == nil || caretBlind || (markedAtCaretZero && sel?.location == 0 && sel?.length == 0)
+                    marked = sel == nil
                     anchor = sel?.location ?? 0
                 }
                 committed = ""
@@ -372,7 +352,6 @@ public final class Session {
                                          clear: clearAfterCommit)
                 }
                 breakWord(client)
-                if customView, Self.producesText(ch) { boundaryAt = client.selectedRange()?.location }
                 return false
             }
             if marked { return showMarked(ch, action, before: before, client) }
@@ -399,8 +378,7 @@ public final class Session {
         let expected = anchor + engine.displayed.utf16.count
         if sel.location == expected { return nil }
         if sel.location == 0, sel.length == 0, expected > 0 {     // (⌘A chọn từ 0 thì là dời con trỏ thật: đọc lại)
-            caretBlind = true
-            return "ô báo con trỏ ở đầu văn bản — các từ sau gõ bằng marked text"
+            return "ô báo con trỏ ở đầu văn bản"
         }
         if let at = passedAt, sel.location == at {
             return "con trỏ chưa nhích sau phím đi thẳng (\(at))"

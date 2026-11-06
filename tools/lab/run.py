@@ -118,6 +118,15 @@ BLIND_TESTS = [t for t in APP_TESTS if t[0] != "vni-shortcut"] + [
     ("telex-first-word", "telex", "ddawngf ", "đằng ", 45),
     ("vni-first-word-fast", "vni", "d9a82ng tie61ng ", "đằng tiếng ", 10),
 ]
+# Trang chậm (mỗi phím bận 100 ms): người dùng gõ "d9a38ng" ra "đa38ng" / "đả8ng" ở Electron.
+CHROME_SLOW_TESTS = [
+    ("slow-dang-60", "vni", "d9a38ng ", "đẳng ", 60),
+    ("slow-dang-120", "vni", "d9a38ng ", "đẳng ", 120),
+    ("slow-vni-words", "vni", "Vie65t Nam, d9a5i ho5c d9a38ng tie61ng ", "Việt Nam, đại học đẳng tiếng ", 70),
+    ("slow-telex-words", "telex", "Vieetj Nam ddaij hocj tieengs nguwowif ", "Việt Nam đại học tiếng người ", 70),
+    ("slow-bs-tone", "telex", "hoafn{BS} ", "hòa ", 70),
+    ("slow-bs-retype", "vni", "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 70),
+]
 CHROME = "/Applications/Google Chrome.app"
 CHROME_ID = "com.google.Chrome"
 FIELD_APP = L / "GTVField.app"
@@ -474,6 +483,9 @@ class _Web:
 <script>
 const t = document.getElementById('t');
 const send = () => fetch('/t', {method: 'POST', body: t.value});
+// ?slow=N: trang bận N ms ở mỗi phím (như VS Code / Zalo lúc nặng) — bộ đệm của Chromium chậm vài phím.
+const slow = +(new URLSearchParams(location.search).get('slow') || 0);
+if (slow) t.addEventListener('keydown', () => { const e = performance.now() + slow; while (performance.now() < e) {} });
 t.addEventListener('input', send);
 setInterval(async () => {
   t.focus();
@@ -541,17 +553,18 @@ def run_app_suite(app):
             bid, pid = FIELD_ID, None
             if app == "blind":
                 tests = BLIND_TESTS
-        elif app == "chrome":
+        elif app in ("chrome", "chromeslow"):
             if not pathlib.Path(CHROME).exists():
                 return [{"terminal": app, "test": "-", "error": "chưa cài Chrome"}]
             # Chrome cài bằng Homebrew cask có cờ quarantine: hộp thoại Gatekeeper "downloaded from the Internet" chặn lab.
             if sh(["xattr", "-dr", "com.apple.quarantine", CHROME]).returncode:
                 sh(["sudo", "-n", "xattr", "-dr", "com.apple.quarantine", CHROME])
             web = _Web(out_file, ready)
-            tests = CHROME_TESTS
+            tests = CHROME_TESTS if app == "chrome" else CHROME_SLOW_TESTS
+            query = "" if app == "chrome" else "?slow=100"
             sh(["open", "-na", CHROME, "--args", "--user-data-dir=/tmp/l/chrome-profile", "--no-first-run",
                 "--no-default-browser-check", "--disable-features=Translate", "--new-window",
-                f"http://127.0.0.1:{web.port}/"])
+                f"http://127.0.0.1:{web.port}/{query}"])
             bid, pid = CHROME_ID, None
         else:
             java = find_java()
@@ -564,7 +577,7 @@ def run_app_suite(app):
             shot(f"{app}-not-ready")
             return [{"terminal": app, "test": "-", "error": f"ô {app} không sẵn sàng (front={front()}, pid={front_pid()})"}]
         time.sleep(1.0)
-        if app == "chrome":
+        if app in ("chrome", "chromeslow"):
             # Chrome vừa mở còn ì (phím tới trễ cả giây): gõ nháp rồi xoá trước khi chấm.
             time.sleep(3)
             configure("vni", "auto")
@@ -604,7 +617,7 @@ def run_app_suite(app):
             shutil.copy(ev, OUT / "logs" / f"{app}-events.log")
         if proc:
             proc.terminate()
-        elif app == "chrome":
+        elif app in ("chrome", "chromeslow"):
             sh(["pkill", "-f", "chrome-profile"])
         else:
             sh(["pkill", "-f", str(FIELD_APP / "Contents/MacOS/field")])

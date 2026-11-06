@@ -376,13 +376,7 @@ final class GTVInputController: IMKInputController {
             // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, LibreOffice, Emacs, MacVim — gõ bằng marked text.
             forceMarked = toolkit.markedOnly || (toolkit.swiftTerm && clientKind == .terminalView) || isJavaView(client)
         }
-        // Ô tự vẽ (ít thuộc tính marked text) của ứng dụng chưa kiểm chứng: từ bắt đầu ở con trỏ {0, 0} gõ bằng marked text
-        // (xem `Session.handle(markedAtCaretZero:)`) — không từ nào đi nguyên văn ở ô không cho biết con trỏ.
         if clientKind == nil { classify(client) }
-        // Flutter: ô văn bản không khai báo thuộc tính nào nhưng thay đúng vùng, con trỏ thật — không cần (marked text vào ô
-        // trống còn vướng flutter#194199); terminal xterm.dart thì cần.
-        let markedAtCaretZero = !Settings.knownTerminals.contains(bundleID) && clientKind == .terminalView
-            && (!toolkit.flutter || toolkit.flutterTerminal)
         // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
         let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in
             s.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f && !(0xF700...0xF8FF).contains($0.value) } ? s : nil
@@ -391,7 +385,7 @@ final class GTVInputController: IMKInputController {
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: toolkit.qt, terminal: terminal, repeatDelay: repeatDelay,
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),
-                                     markedAtCaretZero: markedAtCaretZero, combinedCommit: toolkit.combinedCommit,
+                                     combinedCommit: toolkit.combinedCommit,
                                      clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
                                      keyText: keyText, web: chromiumWeb && !forceMarked && terminal == nil)
         if javaView == true { scheduleJavaCommit(client) }
