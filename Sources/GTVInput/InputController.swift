@@ -415,14 +415,22 @@ final class GTVInputController: IMKInputController {
             forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
                 || isJavaView(client)
         }
+        // Phím ⌫ giả chỉ ở nơi đã biết mọi phím (thật và ⌫ giả) đi qua bộ gõ: Java (AWT, IME Lab), Qt 5, GTK, winit, LibreOffice.
+        // Emacs, MacVim, terminal Flutter / SwiftTerm vẫn gõ bằng gạch chân (⌫ có thể không qua bộ gõ). Lựa chọn gạch chân của
+        // người dùng (từng ứng dụng, mọi ứng dụng, terminal) thì giữ nguyên. Chưa có quyền Trợ năng: gạch chân như trước (xin quyền
+        // trong menu — không bật hộp thoại của hệ thống giữa lúc đang gõ).
+        let syntheticToolkit = javaView == true
+            || (toolkit.markedOnly && !AppToolkit.isMarkedEditor(bundleID) && !toolkit.flutterTerminal)
         var synthetic = false
-        if forceMarked, !settings.alwaysMarked, !settings.useMarked(for: bundleID), terminal == nil {
-            if SyntheticKeys.shared.available {
-                synthetic = true
-                forceMarked = false
-            } else {
-                SyntheticKeys.shared.requestPermissionOnce()
-            }
+        if forceMarked, syntheticToolkit, !settings.alwaysMarked, !settings.useMarked(for: bundleID), terminal == nil,
+           !Settings.knownTerminals.contains(bundleID), SyntheticKeys.shared.available {
+            synthetic = true
+            forceMarked = false
+        }
+        if synthetic {
+            // Đọc liên tục nút chuột / phím đặc biệt trong lúc gõ (như terminal): click giữa từ mà bộ gõ không thấy thì phím ⌫
+            // giả của lần sửa sau sẽ xoá ở chỗ mới — macOS 27 chỉ công bố bộ đếm click mỗi 0,5 s.
+            LiveInput.shared.keepTerminal(for: 5)
         }
         adapter.swallowsWithEmptyMark = javaView == true
         if clientKind == nil { classify(client) }
@@ -436,11 +444,11 @@ final class GTVInputController: IMKInputController {
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),
                                      combinedCommit: toolkit.combinedCommit,
                                      clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
-                                     keyText: keyText, web: chromiumWeb && !forceMarked && terminal == nil,
+                                     keyText: keyText, web: chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil,
                                      synthetic: synthetic)
         if javaView == true, !synthetic { scheduleJavaCommit(client) }
         #if DEBUG
-        let route = synthetic ? "phím giả" : (chromiumWeb && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
+        let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
             : forceMarked ? "gạch chân" : "trực tiếp"
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         #endif

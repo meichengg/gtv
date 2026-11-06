@@ -99,6 +99,8 @@ APP_TESTS = [
     ("vni-arrow-fast", "vni", "vie65t{LEFT}x ", None, 45),
     ("vni-enter", "vni", "vie65t{RET}nam ", "việt\nnam ", 45),
     ("vni-punct", "vni", "d9a38ng, vie65t.", "đẳng, việt.", 45),
+    # ⌫ bấm ngay sau phím sửa (3 ms): phím ⌫ giả của lần sửa có thể tới ứng dụng sau ⌫ thật.
+    ("vni-bs-burst", "vni", "ho5{BS}a d9{BS}e ", "ha e ", 3),
 ]
 # Gõ ngay khi cửa sổ vừa được kích hoạt (như TinyCast: ⌘Space rồi gõ liền): phím đầu có thể tới trước lời gọi setValue mà
 # InputMethodKit gửi sau mỗi lần gắn bộ gõ — lỗi cũ: "d9a38ng" ra "d9ẳng".

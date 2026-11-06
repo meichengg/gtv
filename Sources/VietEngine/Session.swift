@@ -202,6 +202,9 @@ public final class Session {
     private var webResume: (anchor: Int, word: String)?
     /// Lần sửa đầu của một chuỗi chưa có bằng chứng vị trí, đang chờ trang báo (`deferWebEdit`).
     private var webPending: (old: String, new: String, typed: Character)?
+    /// ⌫ khi chưa có chuỗi (vừa click / vào ô / ngừng gõ): con trỏ và chữ trước nó trong bộ đệm lúc ⌫ đầu, số ⌫ — gõ tiếp
+    /// ngay thì trang có thể chưa báo các lần xoá.
+    private var webDeletes: (caret: Int, before: String, count: Int)?
     private weak var webPendingClient: TextClient?
     private var webSerial = 0
 
@@ -261,7 +264,9 @@ public final class Session {
                        combinedCommit: Bool = false, clearAfterCommit: Bool = false,
                        trustMarked: Bool = false, keyText: String? = nil, web: Bool = false,
                        synthetic: Bool = false) -> Bool {
-        if synthetic || (blindLatched && client.canPostKeys && terminal == nil && !web) {
+        // Ô mù (không cho biết con trỏ) mà chưa có quyền gửi phím: gạch chân còn hơn chữ đi nguyên văn.
+        let forceMarked = forceMarked || (blindLatched && !client.canPostKeys && terminal == nil && !web && !synthetic)
+        if synthetic || (blindLatched && client.canPostKeys && terminal == nil && !web && !forceMarked) {
             inTerminal = false
             inWeb = false
             if marked || literalTail { reset() }
@@ -273,7 +278,7 @@ public final class Session {
             inTerminal = false
             if marked || literalTail { reset() }
             inWeb = true
-            return handleWeb(key, client, options: options)
+            return handleWeb(key, client, options: options, gap: gap)
         }
         if inWeb { inWeb = false; resetWeb() }
         self.qtApp = qtApp
@@ -384,6 +389,11 @@ public final class Session {
                         synReset()
                         synScreen = engine.displayed          // các chữ của từ đều đã đi thẳng
                         return handleSyntheticChar(ch, client)
+                    }
+                    if blindReason(sel) {
+                        // Chưa có quyền gửi phím (Trợ năng): từ sau gõ bằng gạch chân.
+                        log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chưa có quyền gửi phím: từ sau gạch chân")
+                        blindLatched = true
                     }
                     log?("gõ trực tiếp: \(reason) — các chữ còn lại của từ \(engine.displayed.debugDescription) đi nguyên văn")
                     engine.reset()
@@ -1377,7 +1387,7 @@ public final class Session {
         } else {
             _ = engine.backspace()                           // chữ định gõ (kể cả dời dấu: "hoàn" ⌫ → "hòa")
         }
-        if !synScreen.isEmpty { synScreen.removeLast() }     // ⌫ của người dùng tới ứng dụng
+        if !synScreen.isEmpty { synScreen.unicodeScalars.removeLast() }     // ⌫ của người dùng tới ứng dụng
         synSync(client)
         return false
     }
@@ -1395,15 +1405,21 @@ public final class Session {
     /// Chữ trong ô sau khi ứng dụng xử lý xong các lần sửa đang chờ.
     private var synProjected: String {
         var t = synScreen
-        for e in synPending { t = String(t.dropLast(e.deletes)) + e.insert }
+        for e in synPending { t = Self.dropScalars(t, e.deletes) + e.insert }
         return t
+    }
+
+    private static func dropScalars(_ s: String, _ n: Int) -> String {
+        var u = s.unicodeScalars
+        u.removeLast(min(n, u.count))
+        return String(u)
     }
 
     /// Gửi phím sửa để chữ trong ô (sau các lần sửa đang chờ) thành chữ định gõ. Đồng bộ và không còn gì chờ thì dời mốc về đầu
     /// từ đang gõ (chuỗi theo dõi không dài ra mãi).
     private func synSync(_ client: TextClient) {
         let projected = synProjected, target = synIntended
-        if projected == target {
+        if Array(projected.unicodeScalars) == Array(target.unicodeScalars) {
             if synPending.isEmpty, synResume == nil {
                 // Dời mốc tới đầu từ cuối cùng đã xong (giữ nó và phần ngăn cách sau nó: ⌫ lùi về cuối nó rồi gõ tiếp).
                 let tail = String(synBefore.reversed().prefix(while: { !$0.isLetter }).reversed())
@@ -1413,7 +1429,13 @@ public final class Session {
             }
             return
         }
-        let (deletes, insert) = Self.synDiff(projected, target)
+        var (deletes, insert) = Self.synDiff(projected, target)
+        if deletes == 0, let last = projected.unicodeScalars.last {
+            // Chỉ chèn: vẫn xoá rồi gõ lại ký tự cuối — ⌫ giả đi qua bộ gõ cho biết lúc chữ giả tới ứng dụng (phím thật đang chờ
+            // trong hàng đợi của ứng dụng tới trước nó).
+            deletes = 1
+            insert = String(last) + insert
+        }
         guard client.postKeys(deleting: deletes, inserting: insert) else {
             log?("phím ⌫ giả: không gửi được — các chữ còn lại của từ đi nguyên văn")
             engine.reset()
@@ -1431,7 +1453,7 @@ public final class Session {
     /// Một phím ⌫ giả của bộ gõ vừa tới ứng dụng (InputController nhận ra nó): cập nhật chữ thật trong ô.
     public func syntheticBackspaceArrived() {
         guard inSynthetic, !synPending.isEmpty else { return }
-        if !synScreen.isEmpty { synScreen.removeLast() }
+        if !synScreen.isEmpty { synScreen.unicodeScalars.removeLast() }
         synPending[0].deletes -= 1
         if synPending[0].deletes <= 0 {
             synScreen += synPending[0].insert                // chữ giả nằm ngay sau ⌫ cuối của lần sửa
@@ -1439,23 +1461,24 @@ public final class Session {
         }
     }
 
-    /// Phần khác nhau giữa `old` và `new` (đếm theo ký tự — ⌫ xoá một ký tự dựng sẵn).
+    /// Phần khác nhau giữa `old` và `new`, theo mã Unicode: ⌫ của Java / Qt / Emacs xoá một mã (Unicode tổ hợp: từng dấu một),
+    /// chữ dựng sẵn thì mỗi chữ một mã.
     private static func synDiff(_ old: String, _ new: String) -> (deletes: Int, insert: String) {
-        var oi = old.startIndex, ni = new.startIndex
-        while oi < old.endIndex, ni < new.endIndex, old[oi] == new[ni] {
-            oi = old.index(after: oi)
-            ni = new.index(after: ni)
-        }
-        return (old[oi...].count, String(new[ni...]))
+        let o = Array(old.unicodeScalars), n = Array(new.unicodeScalars)
+        var i = 0
+        while i < o.count, i < n.count, o[i] == n[i] { i += 1 }
+        var ins = String.UnicodeScalarView()
+        ins.append(contentsOf: n[i...])
+        return (o.count - i, String(ins))
     }
 
     /// Lý do mất dấu của `lostTrack` là do ô không cho biết con trỏ thật (không phải ô đã đổi chữ / dời con trỏ).
     private func blindReason(_ sel: (location: Int, length: Int)?) -> Bool {
+        // Chỉ khi ô thật sự không cho biết con trỏ (nil, luôn {0,0}); con trỏ chưa nhích sau phím đi thẳng có thể chỉ là ô chậm
+        // (WebKit trả lời từ bộ đệm) — không chuyển hẳn sang phím ⌫ giả vì thế.
         guard let sel else { return true }
         let expected = anchor + engine.displayed.utf16.count
-        if sel.location == 0, sel.length == 0, expected > 0 { return true }
-        if let at = passedAt, sel.location == at { return true }
-        return false
+        return sel.location == 0 && sel.length == 0 && expected > 0
     }
 
     // MARK: - Ô web Chromium (Chrome, Electron)
@@ -1485,8 +1508,20 @@ public final class Session {
 
     /// Chữ của chuỗi trước từ đang gõ (từ `web.start`).
     private var webBefore = ""
+    private struct WebState {
+        /// Số thứ tự (tăng dần suốt phiên).
+        let serial: Int
+        let text: String
+    }
     /// Chữ của chuỗi (từ `web.start` tới con trỏ) sau mỗi phím / lần sửa, cũ trước mới sau.
-    private var webHistory: [String] = []
+    private var webHistory: [WebState] = []
+    private var webStateCount = 0
+    /// Trạng thái cũ nhất bộ đệm còn có thể cho thấy: trang báo theo đúng thứ tự xử lý, nên đã thấy trang báo một trạng thái
+    /// thì bộ đệm không quay về trạng thái trước nó nữa — quay về là trang đã tự đổi chữ (Notion "->" → "→"…), không phải chậm.
+    private var webSeen = 0
+    /// Chữ của lần chèn không vùng thay gần nhất trang nhận (phím đi thẳng, `insertText` của bộ gõ): Chromium đoán bộ đệm bằng
+    /// cách chèn đúng chữ đó vào vị trí trang báo lần cuối.
+    private var webLastInsert: String?
     /// Lúc phím gần nhất của chuỗi.
     private var webLastKeyAt = 0.0
     /// Trang chậm hợp lý tới chừng này phím; bộ đệm cho thấy trạng thái cũ hơn là chữ lạ.
@@ -1499,32 +1534,55 @@ public final class Session {
         web = nil
         webBefore = ""
         webHistory = []
+        webLastInsert = nil
         webPrev = nil
         webResume = nil
         webPending = nil
         webPendingClient = nil
+        webDeletes = nil
         webSerial &+= 1
     }
 
     private func webRecord() {
-        webHistory.append(webBefore + engine.displayed)
-        if webHistory.count > 64 { webHistory.removeFirst(webHistory.count - 64) }
+        webPush(webBefore + engine.displayed)
         web?.caret = anchor + engine.displayed.utf16.count
+    }
+
+    private func webPush(_ text: String) {
+        webStateCount += 1
+        webHistory.append(WebState(serial: webStateCount, text: text))
+        if webHistory.count > 64 { webHistory.removeFirst(webHistory.count - 64) }
+    }
+
+    /// Lịch sử mới chỉ có `text` — trạng thái bộ đệm vừa cho thấy.
+    private func webSetHistory(_ text: String) {
+        webHistory = []
+        webPush(text)
+        webSeen = webStateCount
     }
 
     private func startWebChain(at location: Int) {
         web = WebChain(caret: location, start: location, proven: false)
         anchor = location
         webBefore = ""
-        webHistory = [""]
+        webSetHistory("")
         webPrev = nil
     }
 
-    private func handleWeb(_ key: Key, _ client: TextClient, options: EngineOptions) -> Bool {
+    private func handleWeb(_ key: Key, _ client: TextClient, options: EngineOptions, gap: KeyGap) -> Bool {
         if webPending != nil { flushWebPending(client, final: true) }   // lần sửa còn chờ: tới trang trước phím này
         defer { webLastKeyAt = client.currentTime() }
+        if engine.isEmpty, !untracked, gap == .interrupted || gap == .bypassed {
+            // Có click / phím tắt bộ gõ không thấy (Chromium không đưa chuột cho bộ gõ): con trỏ có thể đã ở chỗ khác — từ sau
+            // đọc lại bộ đệm, không gõ liền chuỗi cũ. Giữa từ thì không: lần sửa đã so bộ đệm.
+            web = nil
+            webPrev = nil
+            webResume = nil
+            continueWordOnNextChar = false
+        }
         switch key {
         case .other:
+            webDeletes = nil
             endWebWord(client, terminator: nil)
             return false
         case .backspace:
@@ -1539,11 +1597,13 @@ public final class Session {
             if engine.isEmpty { startWebWord(client, options: options) }
             guard let action = engine.process(ch) else {
                 endWebWord(client, terminator: ch)
+                if Self.producesText(ch) { webLastInsert = String(ch) }
                 return false
             }
             switch action {
             case .passThrough:
                 webRecord()
+                webLastInsert = String(ch)
                 return false
             case let .replace(old, new):
                 return webEdit(old: old, new: new, typed: ch, client)
@@ -1561,15 +1621,18 @@ public final class Session {
         webResume = nil
         if web != nil, client.currentTime() - webLastKeyAt > Self.webIdleBreak { web = nil }
         if let chain = web {
-            let text = webHistory.last ?? webBefore
+            let text = webHistory.last?.text ?? webBefore
             if let r = resume, chain.caret == r.anchor + r.word.utf16.count, text.hasSuffix(r.word), engine.seed(r.word) {
                 anchor = r.anchor
                 webBefore = String(text.dropLast(r.word.count))
                 return
             }
-            // Gõ liền: từ mới bắt đầu ở con trỏ của bộ gõ. Trang đã báo con trỏ vượt quá đó (có chữ bộ gõ không biết: dán
-            // bằng chuột, gợi ý được chọn…) thì bắt đầu chuỗi mới từ đó.
-            if let sel = client.selectedRange(), sel.location > chain.caret {
+            // Gõ liền: từ mới bắt đầu ở con trỏ của bộ gõ — trừ khi trang báo con trỏ ở chỗ khác mà không phải trạng thái cũ của
+            // chuỗi (trang chậm, kể cả trước các ⌫: con trỏ báo có thể ở SAU chỗ của bộ gõ): có chữ bộ gõ không biết (dán bằng
+            // chuột, gợi ý được chọn…) hay người dùng đã click chỗ khác (Chromium không đưa click cho bộ gõ). Bắt đầu chuỗi mới ở
+            // đó (chưa có bằng chứng: lần sửa đầu chờ trang báo).
+            if let sel = client.selectedRange(), sel.length == 0, sel.location != chain.caret,
+               !webCacheIsOlder(client, sel.location, chain: chain, model: text) {
                 startWebChain(at: sel.location)
                 return
             }
@@ -1578,14 +1641,53 @@ public final class Session {
             trimWebChain()
             return
         }
-        startWebChain(at: client.selectedRange()?.location ?? 0)
+        let deletes = webDeletes
+        webDeletes = nil
+        let sel = client.selectedRange()
+        startWebChain(at: sel?.location ?? 0)
         if continueWordOnNextChar {
             // ⌫ khi chưa có chuỗi (vừa click / vào ô): gõ tiếp từ đang nằm trước con trỏ.
             continueWordOnNextChar = false
+            if let d = deletes, let sel, sel.length == 0, webSeedAfterDeletes(d, cacheCaret: sel.location) { return }
             resync(client)
             web = WebChain(caret: anchor + engine.displayed.utf16.count, start: anchor, proven: false)
-            webHistory = [engine.displayed]
+            webSetHistory(engine.displayed)
         }
+    }
+
+    /// Dựng chuỗi sau các ⌫ khi chưa có chuỗi từ chữ trong bộ đệm lúc ⌫ đầu: trang có thể chưa báo hết các lần xoá (con trỏ bộ
+    /// đệm còn trong khoảng từ lúc ⌫ đầu tới sau ⌫ cuối) — đọc lại bộ đệm thì chữ vừa xoá sống lại. Các trạng thái trước mỗi ⌫
+    /// vào lịch sử: bộ đệm còn cho thấy chúng là trang chậm.
+    private func webSeedAfterDeletes(_ d: (caret: Int, before: String, count: Int), cacheCaret: Int) -> Bool {
+        let chars = Array(d.before)
+        guard d.count <= chars.count else { return false }
+        let kept = String(chars.dropLast(d.count))
+        let base = d.caret - d.before.utf16.count                 // vị trí ký tự đầu của `before`
+        let location = base + kept.utf16.count                    // con trỏ thật sau các ⌫
+        guard cacheCaret >= location, cacheCaret <= d.caret else { return false }
+        engine.reset()
+        anchor = location
+        let word = String(kept.reversed().prefix(while: { $0.isLetter }).reversed())
+        if !word.isEmpty, word.utf16.count < kept.utf16.count || base == 0, engine.seed(word) {
+            anchor = location - word.utf16.count
+        }
+        web = WebChain(caret: location, start: anchor, proven: false)
+        webBefore = ""
+        let pre = String(d.before.utf16.dropFirst(anchor - base)) ?? ""
+        var states: [String] = []
+        var t = pre
+        states.append(t)
+        for _ in 0..<d.count where !t.isEmpty {
+            t.removeLast()
+            states.append(t)
+        }
+        webHistory = []
+        let first = webStateCount + 1
+        for st in states { webPush(st) }
+        webSeen = first
+        webPrev = nil
+        log?("ô web: ⌫ khi chưa có chuỗi — từ \(word.debugDescription) theo chữ lúc ⌫ đầu (trang có thể chưa báo các lần xoá)")
+        return true
     }
 
     /// Bỏ phần đầu chuỗi đã xa (giữ `webWindow` đơn vị UTF-16 trước từ đang gõ).
@@ -1601,7 +1703,8 @@ public final class Session {
         chain.start += drop
         web = chain
         webBefore.removeFirst(chars)
-        webHistory = webHistory.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(chars)) }
+        webHistory = webHistory.filter { $0.text.hasPrefix(prefix) }
+            .map { WebState(serial: $0.serial, text: String($0.text.dropFirst(chars))) }
     }
 
     /// So bộ đệm của Chromium với chữ của chuỗi (`webBefore` + từ đang gõ `word`).
@@ -1611,36 +1714,67 @@ public final class Session {
         let base = chain.start
         if sel.length > 0 {
             // Đang giữa lần sửa của bộ gõ (trang chọn vùng thay, chưa báo lần sau), hay gợi ý tự động bôi đen sau từ.
-            let longest = max(webHistory.map { $0.utf16.count }.max() ?? 0, model.utf16.count)
+            let longest = max(webHistory.map { $0.text.utf16.count }.max() ?? 0, model.utf16.count)
             if sel.location >= base, sel.location <= base + longest { return .lag }
             return webMoved(client, sel, word)
         }
         let m = sel.location - base
         guard m >= 0 else { return webMoved(client, sel, word) }
-        if m == 0 {
-            if model.isEmpty { return .current }
-            return webRecent.contains("") ? .lag : webMoved(client, sel, word)
+        if m == 0, model.isEmpty { return .current }
+        guard let t = m == 0 ? "" : client.text(location: base, length: m) else {
+            return m == model.utf16.count ? .current : .lag
         }
-        guard let t = client.text(location: base, length: m) else { return m == model.utf16.count ? .current : .lag }
-        if t == model { return .current }
-        if webOlder(t) { return .lag }
+        if t == model {
+            webAccept(t)
+            return .current
+        }
+        if !webShowsRest(client, sel.location, m: m, model: model), webAccept(t) { return .lag }
         return webMoved(client, sel, word)
     }
 
-    /// Các trạng thái của chuỗi trong `webLagLimit` phím gần nhất.
-    private var webRecent: ArraySlice<String> { webHistory.suffix(Self.webLagLimit + 1) }
+    /// Bộ đệm (con trỏ ở `location`, khác chỗ của bộ gõ) cho thấy một trạng thái gần đây của chuỗi: trang chậm.
+    private func webCacheIsOlder(_ client: TextClient, _ location: Int, chain: WebChain, model: String) -> Bool {
+        let m = location - chain.start
+        guard m >= 0 else { return false }
+        if webShowsRest(client, location, m: m, model: model) { return false }
+        guard let t = m == 0 ? "" : client.text(location: chain.start, length: m) else { return true }
+        return webAccept(t)
+    }
 
-    /// Chữ bộ đệm cho thấy (từ đầu chuỗi tới con trỏ) là một trạng thái gần đây của chuỗi: đúng một trạng thái (trang báo
-    /// chậm, kể cả trước các ⌫), trạng thái + một ký tự (Chromium tự đoán phím đi thẳng từ vị trí báo lần cuối), hay một phần đầu
-    /// (trang mới xử lý một phần).
-    private func webOlder(_ t: String) -> Bool {
+    /// Bộ đệm có cả phần chuỗi SAU con trỏ (`model` từ vị trí `m`): trang đã xử lý những chữ đó nên không chậm — con trỏ lùi vì
+    /// người dùng click / kéo chọn (Chromium không đưa chuột cho bộ gõ). Trang chậm thì sau con trỏ chỉ là chữ có sẵn từ trước.
+    private func webShowsRest(_ client: TextClient, _ location: Int, m: Int, model: String) -> Bool {
+        let mu = Array(model.utf16)
+        guard m >= 0, m < mu.count, let after = client.text(location: location, length: mu.count - m) else { return false }
+        return Array(after.utf16) == Array(mu[m...])
+    }
+
+    /// Các trạng thái của chuỗi trong `webLagLimit` phím gần nhất.
+    private var webRecent: ArraySlice<WebState> { webHistory.suffix(Self.webLagLimit + 1) }
+
+    /// Chữ bộ đệm cho thấy (từ đầu chuỗi tới con trỏ) là một trạng thái gần đây của chuỗi, không cũ hơn `webSeen`: đúng một
+    /// trạng thái (trang báo chậm — mỗi phím là một trạng thái, kể cả trước các ⌫), hay trạng thái + chữ của lần chèn gần nhất
+    /// (Chromium tự đoán từ vị trí báo lần cuối). Trả về số thứ tự nhỏ nhất của trạng thái trang có thể đang ở. Không nhận "phần
+    /// đầu của một trạng thái" (click lùi vào giữa văn bản cũng trông như vậy) hay trạng thái + chữ khác (trang tự đổi chữ).
+    private func webMatch(_ t: String) -> Int? {
         let tu = Array(t.utf16)
-        return webRecent.contains { s in
-            let su = Array(s.utf16)
-            if tu == su { return true }
-            if tu.count == su.count + 1, tu.starts(with: su) { return true }
-            return su.count > tu.count && su.starts(with: tu)
+        let guess = webLastInsert.map { Array($0.utf16) }
+        for s in webRecent where s.serial >= webSeen {
+            let su = Array(s.text.utf16)
+            if tu == su { return s.serial }
+            if let g = guess, tu.count == su.count + g.count, tu.starts(with: su), Array(tu[su.count...]) == g {
+                return s.serial
+            }
         }
+        return nil
+    }
+
+    /// `webMatch`, và ghi nhận trạng thái trang đã báo.
+    @discardableResult
+    private func webAccept(_ t: String) -> Bool {
+        guard let serial = webMatch(t) else { return false }
+        webSeen = max(webSeen, serial)
+        return true
     }
 
     /// Bộ đệm khớp mô hình ở vị trí cách đầu chuỗi từ 2 ký tự trở lên: chắc chắn trang đã báo (Chromium tự đoán thì con trỏ
@@ -1664,7 +1798,7 @@ public final class Session {
         web = WebChain(caret: at + word.utf16.count, start: at, proven: true)
         anchor = at
         webBefore = ""
-        webHistory = [word]
+        webSetHistory(word)
         webPrev = nil
     }
 
@@ -1730,7 +1864,7 @@ public final class Session {
         webPending = nil
         webSerial &+= 1
         web?.proven = true
-        applyWebEdit(old: p.old, new: p.new, c)
+        applyWebEdit(old: p.old, new: p.new, c, atPosition: true)
     }
 
     /// Chữ trước con trỏ không còn là chuỗi của bộ gõ: đọc lại từ đang nằm trước con trỏ (bộ đệm, sau khi trang đã có thời gian
@@ -1748,6 +1882,7 @@ public final class Session {
                         switch action {
                         case .passThrough:
                             client.insertText(String(typed))
+                            webLastInsert = String(typed)
                             webRecord()
                         case let .replace(old, new):
                             applyWebEdit(old: old, new: new, client)
@@ -1758,12 +1893,15 @@ public final class Session {
             }
         }
         client.insertText(String(typed))               // phím đã giữ lại: gõ nguyên văn
+        webLastInsert = String(typed)
         engine.reset()
         untracked = true
         web = nil
     }
 
-    private func applyWebEdit(old: String, new: String, _ client: TextClient) {
+    /// `atPosition`: chèn theo vị trí (lần sửa đã chờ, gửi trong keyDown của phím sau: chèn tại con trỏ thì Chromium gửi nó SAU
+    /// lần thay có vùng của chính phím đó — sai thứ tự).
+    private func applyWebEdit(old: String, new: String, _ client: TextClient, atPosition: Bool = false) {
         var common = 0
         var oi = old.startIndex, ni = new.startIndex
         while oi < old.endIndex, ni < new.endIndex, old[oi] == new[ni] {
@@ -1773,13 +1911,16 @@ public final class Session {
         }
         let deleteLen = old.utf16.count - common
         let insert = String(new[ni...])
-        if deleteLen == 0 {
-            if !insert.isEmpty { client.insertText(insert) }    // chèn tại con trỏ thật của trang, đúng thứ tự
-        } else {
+        if deleteLen == 0, !atPosition {
+            if !insert.isEmpty {
+                client.insertText(insert)                       // chèn tại con trỏ thật của trang, đúng thứ tự
+                webLastInsert = insert
+            }
+        } else if deleteLen > 0 || !insert.isEmpty {
             client.replaceText(location: anchor + common, length: deleteLen, with: insert)
         }
         lastEdit = (from: old, to: new)
-        webHistory.append(webBefore + new)
+        webPush(webBefore + new)
         web?.caret = anchor + new.utf16.count
     }
 
@@ -1789,7 +1930,7 @@ public final class Session {
         guard !engine.isEmpty else {
             if continues, web != nil, let ch {
                 webBefore += String(ch)
-                webHistory.append(webBefore)
+                webPush(webBefore)
                 web!.caret += String(ch).utf16.count
                 if webPrev != nil { webPrev!.sep += String(ch).utf16.count }
             } else {
@@ -1817,7 +1958,7 @@ public final class Session {
         if continues, web != nil, let ch {
             webPrev = (anchor, final, String(ch).utf16.count)
             webBefore += final + String(ch)
-            webHistory.append(webBefore)
+            webPush(webBefore)
             web!.caret = anchor + final.utf16.count + String(ch).utf16.count
         } else {
             web = nil
@@ -1837,12 +1978,19 @@ public final class Session {
         guard web != nil else {
             engine.reset()
             continueWordOnNextChar = true
+            if var d = webDeletes {
+                d.count += 1
+                webDeletes = d
+            } else if let sel = client.selectedRange(), sel.length == 0 {
+                let len = min(sel.location, 32)
+                webDeletes = (sel.location, client.text(location: sel.location - len, length: len) ?? "", 1)
+            }
             return false
         }
         if engine.isEmpty {
             if !webBefore.isEmpty {
                 webBefore.removeLast()
-                webHistory.append(webBefore)
+                webPush(webBefore)
             }
             if var p = webPrev, web!.caret == p.anchor + p.word.utf16.count + p.sep {
                 p.sep -= 1
@@ -1860,7 +2008,7 @@ public final class Session {
             if web!.caret < web!.start {
                 web!.start = web!.caret
                 webBefore = ""
-                webHistory = [""]
+                webSetHistory("")
             }
             return false
         }

@@ -289,9 +289,22 @@ private final class ChromiumField: TextClient {
         ready.forEach(report)
     }
 
+    /// Trang tự đổi chữ ngay khi xử lý phím (Notion "->" → "→", "- " ở đầu dòng → dấu đầu dòng): chữ trước con trỏ kết thúc
+    /// bằng `from` thì thay bằng `to`, báo như mọi lần xử lý phím.
+    var autoReplace: [(from: String, to: String)] = []
+
     func press(_ k: Character) {
         tick(stepMS)
-        if !session.handle(.char(k), self, options: options, forceMarked: false, web: true) { insertText(String(k)) }
+        if !session.handle(.char(k), self, options: options, forceMarked: false, web: true) {
+            insertText(String(k))
+            for r in autoReplace where String(decoding: units[..<caret], as: UTF16.self).hasSuffix(r.from) {
+                let n = r.from.utf16.count
+                units.replaceSubrange((caret - n)..<caret, with: Array(r.to.utf16))
+                caret += r.to.utf16.count - n
+                snapshot()
+                break
+            }
+        }
     }
     func backspace() {
         tick(stepMS)
@@ -309,6 +322,12 @@ private final class ChromiumField: TextClient {
     func jsSet(_ t: String) {
         units = Array(t.utf16)
         caret = units.count
+    }
+    /// Người dùng click vào chỗ khác (Chromium không đưa click cho bộ gõ); click là sự kiện nhập liệu nên trang báo ngay.
+    func click(at location: Int) {
+        caret = location
+        snapshot()
+        snapshots[snapshots.count - 1].due = 0
     }
 }
 
@@ -1159,6 +1178,10 @@ final class SessionTests: XCTestCase {
             (.vni, "tie61ng⌫⌫⌫e65t ", "tiệt "),
             (.telex, "text password coffee ", "text password coffee "),
             (.vni, "ho6i ⌫3 ", "hổi "),
+            // ⌫ thật bấm ngay sau phím sửa, tới ứng dụng trước các phím giả (bộ gõ nhận ra theo thời điểm bấm).
+            (.vni, "ho5⌫a ", "ha "), (.vni, "d9⌫a ", "a "), (.telex, "vieetj⌫⌫⌫ ", "v "), (.telex, "ddi⌫⌫a ", "a "),
+            // Telex "w" đứng riêng: lần sửa chỉ chèn.
+            (.telex, "w w ", "ư ư "),
         ]
         for (method, keys, expect) in cases {
             for backlog in 0...3 {
@@ -1217,6 +1240,84 @@ final class SessionTests: XCTestCase {
                     f.finish()
                     XCTAssertEqual(f.text, expect, "\(method) \(keys) lag \(lag) step \(step)")
                 }
+            }
+        }
+    }
+
+    /// Click lùi vào giữa văn bản (Chromium không đưa click cho bộ gõ) rồi gõ: từ mới ở chỗ click, không sửa vào chỗ cũ. ⌫ lùi qua
+    /// dấu cách về từ trước rồi gõ dấu: gõ tiếp từ đó.
+    func testChromiumClickAndBackspaceIntoPreviousWord() {
+        for lag in 0...1 {
+            let f = ChromiumField()
+            f.options.method = .vni
+            f.lag = lag
+            f.type("abc def ")
+            f.finish()
+            f.click(at: 2)
+            f.tick(300)
+            f.type("d9")
+            f.finish()
+            XCTAssertEqual(f.text, "abđc def ", "click lag \(lag)")
+
+        }
+        // ⌫ khi đã ngừng gõ (chuỗi đã hết) rồi gõ dấu ngay, lúc trang chưa báo lần xoá: chữ vừa xoá không sống lại.
+        for lag in 0...2 {
+            for step in [10.0, 45.0, 120.0] {
+                let h = ChromiumField()
+                h.options.method = .vni
+                h.lag = lag
+                h.stepMS = step
+                h.type("hoc ")
+                h.finish()
+                h.tick(1500)
+                h.type("⌫⌫5 ")
+                h.finish()
+                XCTAssertEqual(h.text, "họ ", "⌫ sau khi ngừng lag \(lag) step \(step)")
+            }
+        }
+        let cases: [(InputMethod, String, String)] = [
+            (.vni, "toi ⌫6 ", "tôi "), (.vni, "hoc ⌫5 ", "học "), (.vni, "ma ⌫⌫a1 ", "má "), (.vni, "to6i ⌫⌫⌫a ", "ta "),
+            (.vni, "d9i ⌫⌫a8ng ", "đăng "), (.telex, "hoc ⌫j ", "học "), (.telex, "ddi ⌫⌫ ⌫as ", "đá "),
+        ]
+        for (method, keys, expect) in cases {
+            for lag in 0...3 {
+                for step in [10.0, 45.0, 120.0] {
+                    let g = ChromiumField()
+                    g.options.method = method
+                    g.lag = lag
+                    g.stepMS = step
+                    g.type(keys)
+                    g.finish()
+                    XCTAssertEqual(g.text, expect, "\(keys) lag \(lag) step \(step)")
+                }
+            }
+        }
+    }
+
+    /// Trang tự đổi chữ khi xử lý phím (Notion, Slack, Discord): bộ đệm cho thấy chữ khác chuỗi của bộ gõ — không coi là trang
+    /// chậm, không sửa vào vị trí cũ.
+    /// Giới hạn: trang vừa tự đổi chữ vừa chậm từ 2 phím trở lên thì lúc sửa, bộ đệm chưa cho thấy lần đổi chữ (chỉ có trạng
+    /// thái cũ của chính chuỗi) — không phân biệt được với trang chậm.
+    func testChromiumPageRewritesTextWhileTyping() {
+        for lag in 0...1 {
+            for step in [10.0, 45.0, 120.0] {
+                let f = ChromiumField()
+                f.options.method = .vni
+                f.lag = lag
+                f.stepMS = step
+                f.autoReplace = [("->", "→")]
+                f.type("abc ->d9i ho5c ")
+                f.finish()
+                XCTAssertEqual(f.text, "abc →đi học ", "arrow lag \(lag) step \(step)")
+
+                let g = ChromiumField()
+                g.options.method = .vni
+                g.lag = lag
+                g.stepMS = step
+                g.autoReplace = [("- ", "")]
+                g.type("- to6i d9i ho5c ")
+                g.finish()
+                XCTAssertEqual(g.text, "tôi đi học ", "bullet lag \(lag) step \(step)")
             }
         }
     }
@@ -1288,6 +1389,16 @@ final class SessionTests: XCTestCase {
         XCTAssertNil(g.marked, "ô thật bị coi là ô mù sau dấu cách + ⌫")
     }
 
+    /// Ô mù khi chưa có quyền gửi phím (Trợ năng): từ đầu tiên lộ ra là ô mù đi nguyên văn phần còn lại, các từ sau gạch chân
+    /// (không đi nguyên văn mãi).
+    func testBlindViewWithoutPermissionFallsBackToMarked() {
+        let f = CustomView(blind: true)
+        f.options.method = .vni
+        f.type("d9a82ng tie61ng vie65t ")
+        XCTAssertTrue(f.text.hasSuffix("tiếng việt "), f.text)
+        XCTAssertTrue(f.session.blindLatched)
+    }
+
     /// GTK (CherryTree…) và winit (egui, iced, Alacritty): từ đang gạch chân được chốt cùng chữ của phím kết thúc từ trong một lần
     /// chèn; ⏎ ngay sau từ vẫn có tác dụng (winit: gỡ marked text để không bị nuốt).
     func testGtkAndWinitKeepWordAndTerminator() {
@@ -1308,12 +1419,12 @@ final class SessionTests: XCTestCase {
             f.type(c + " ")
             XCTAssertEqual(f.text, c + " ", c)
         }
-        // Ô không cho biết con trỏ mà không được nhận ra trước (Qt 5 được nhận ra theo bộ công cụ): không bao giờ chèn chữ rác
-        // giữa từ — phím đi nguyên văn.
+        // Ô không cho biết con trỏ mà không được nhận ra trước (Qt 5 được nhận ra theo bộ công cụ), chưa có quyền gửi phím:
+        // không bao giờ chèn chữ rác giữa từ; từ lộ ra là ô mù xong thì gõ bằng gạch chân.
         let g = Qt5Field()
         g.options.method = .vni
         g.type("ab vie65t ")
-        XCTAssertEqual(g.text, "ab vie65t ")
+        XCTAssertEqual(g.text, "ab việt ")
     }
 
     /// Ứng dụng tự chốt phần gạch chân giữa từ: gõ tiếp là từ mới, không dựng lại cả từ ở chỗ mới (thành chữ đôi "việviệt").

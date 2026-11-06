@@ -27,19 +27,31 @@ final class SyntheticKeys {
         let kind: Kind
         /// Có thể không tới bộ gõ (phím mang chữ Unicode): phím sau khớp thì bỏ qua nó.
         let optional: Bool
+        /// Lúc gửi (đồng hồ của NSEvent.timestamp).
+        let stamp: TimeInterval
     }
 
     private let source = CGEventSource(stateID: .privateState)
     private var expected: [Expected] = []
     private var postedAt: TimeInterval = 0
-    /// Phím giả chưa tới sau chừng này giây thì coi như không tới (ứng dụng đổi ô, bỏ phím…).
-    private static let timeout = 0.6
+    /// Phím giả chưa tới sau chừng này giây (tính từ lần gửi / lần khớp gần nhất) thì coi như không tới (ứng dụng đổi ô, bỏ
+    /// phím…). Đủ dài cho ứng dụng khựng (Java GC, Burp đang tải): ⌫ giả tới muộn mà bị coi là ⌫ của người dùng thì sai chữ.
+    private static let timeout = 3.0
     /// Mã phím mang chữ gõ giả: phím A (Java: KEY_PRESSED VK_A + KEY_TYPED đúng chữ; không phải phím chết, Enter, Tab…).
     private static let textKey: CGKeyCode = 0
     /// Chữ trong một sự kiện phím: hệ thống giữ tối đa ~20 đơn vị UTF-16.
     private static let chunk = 16
 
     private var permissionCache: (value: Bool, at: TimeInterval)?
+
+    /// Thời điểm phím InputMethodKit đưa tới là lúc phím vào hàng đợi sự kiện, cùng đồng hồ với `systemUptime` (phím dồn ra
+    /// sau lúc ứng dụng treo giữ thời điểm bấm): phím thật cùng mã (⌫) bấm TRƯỚC lúc gửi phím giả — nằm trước chúng trong hàng
+    /// đợi của ứng dụng — không phải phím giả. Chỉ dùng sau khi đã thấy vài phím giả tới với thời điểm hợp lý (không trước lúc
+    /// gửi, không quá xa); thấy thời điểm vô lý thì thôi hẳn — khi đó chỉ khớp theo thứ tự như trước.
+    private var stampAgreements = 0
+    private var stampsBroken = false
+    private static let stampSlack = 0.002
+    private var stampsUsable: Bool { !stampsBroken && stampAgreements >= 3 }
 
     /// Có quyền gửi phím không (hỏi lại hệ thống tối đa mỗi giây: người dùng có thể vừa cấp / gỡ quyền).
     var available: Bool {
@@ -69,6 +81,7 @@ final class SyntheticKeys {
     @discardableResult
     func post(deleting: Int, inserting text: String) -> Bool {
         guard available, deleting > 0 || !text.isEmpty else { return deleting == 0 && text.isEmpty }
+        let stamp = ProcessInfo.processInfo.systemUptime       // trước khi tạo phím: thời điểm của chúng không sớm hơn
         var events: [CGEvent] = []
         for _ in 0..<deleting {
             guard let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Delete), keyDown: true),
@@ -76,7 +89,7 @@ final class SyntheticKeys {
             down.flags = []
             up.flags = []
             events += [down, up]
-            expected.append(Expected(keyCode: UInt16(kVK_Delete), characters: nil, kind: .edit, optional: false))
+            expected.append(Expected(keyCode: UInt16(kVK_Delete), characters: nil, kind: .edit, optional: false, stamp: stamp))
         }
         for piece in Self.pieces(text) {
             let units = Array(piece.utf16)
@@ -87,7 +100,8 @@ final class SyntheticKeys {
             down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
             up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
             events += [down, up]
-            expected.append(Expected(keyCode: UInt16(Self.textKey), characters: piece, kind: .edit, optional: true))
+            expected.append(Expected(keyCode: UInt16(Self.textKey), characters: piece, kind: .edit, optional: true,
+                                     stamp: stamp))
         }
         postedAt = ProcessInfo.processInfo.systemUptime
         KeyWatch.shared.expectUnseen(Self.pieces(text).count)
@@ -106,7 +120,8 @@ final class SyntheticKeys {
         up.flags = flags
         let units = Array(chars.utf16)
         down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-        expected.append(Expected(keyCode: event.keyCode, characters: chars, kind: .user, optional: false))
+        expected.append(Expected(keyCode: event.keyCode, characters: chars, kind: .user, optional: false,
+                                 stamp: ProcessInfo.processInfo.systemUptime))
         DebugLog.write("phím giả: gửi lại phím thật \(event.keyCode) sau phím giả")
         postedAt = ProcessInfo.processInfo.systemUptime
         down.post(tap: .cghidEventTap)
@@ -121,8 +136,21 @@ final class SyntheticKeys {
         while i < expected.count {
             let e = expected[i]
             if event.keyCode == e.keyCode, e.characters == nil || event.characters == e.characters {
+                let dt = event.timestamp - e.stamp
+                if stampsUsable, dt < -Self.stampSlack {
+                    // Phím thật đã nằm trong hàng đợi trước các phím giả (gõ nhanh, ứng dụng chậm): để bộ gõ xử lý như phím gõ.
+                    DebugLog.write("phím giả: phím \(event.keyCode) bấm trước lúc gửi phím giả \(String(format: "%.1f", -dt * 1000)) ms — phím thật")
+                    return nil
+                }
+                if event.timestamp <= 0 || dt > 10 || dt < -1 {
+                    if !stampsBroken { DebugLog.write("phím giả: thời điểm phím không dùng được (Δ \(dt) s)") }
+                    stampsBroken = true
+                } else if dt >= -Self.stampSlack, dt < 2 {
+                    stampAgreements += 1
+                }
                 expected.removeFirst(i + 1)          // các phím chữ giả trước nó đã tới ứng dụng mà không qua bộ gõ
-                DebugLog.write("phím giả: khớp phím \(event.keyCode)\(e.kind == .user ? " (phím thật gửi lại)" : "")")
+                postedAt = ProcessInfo.processInfo.systemUptime
+                DebugLog.write("phím giả: khớp phím \(event.keyCode)\(e.kind == .user ? " (phím thật gửi lại)" : "") Δ \(String(format: "%+.1f", dt * 1000)) ms")
                 return (e.kind, e.optional)
             }
             guard e.optional else { return nil }
