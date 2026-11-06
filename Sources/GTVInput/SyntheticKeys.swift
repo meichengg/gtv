@@ -5,10 +5,11 @@ import Carbon
 /// dụng xử lý chúng như người dùng tự gõ — không gạch chân, không cần biết vị trí con trỏ. Không event tap (xem
 /// no-event-tap-in-gtv): chỉ gửi phím, cần quyền Trợ năng (CGPreflightPostEventAccess).
 ///
-/// Phím giả cũng đi qua bộ gõ (ứng dụng chuyển mọi keyDown cho InputMethodKit). InputMethodKit dựng lại NSEvent trong tiến
-/// trình bộ gõ chỉ với mã phím, chữ và phím bổ trợ — mất mọi đánh dấu riêng (eventSourceUserData) — nên bộ gõ nhận ra phím của
-/// mình theo hàng đợi đúng thứ tự đã gửi (mã phím + chữ). Phím thật của người dùng tới khi phím giả chưa tới hết: ô giữ được
-/// phím (Java) thì bộ gõ giữ lại và gửi lại sau phím giả, để đúng thứ tự gõ.
+/// Phím ⌫ giả đi qua bộ gõ (ứng dụng chuyển keyDown cho InputMethodKit). InputMethodKit dựng lại NSEvent trong tiến trình bộ gõ
+/// chỉ với mã phím, chữ và phím bổ trợ — mất mọi đánh dấu riêng (eventSourceUserData), chữ của ⌫ cũng có thể khác — nên bộ gõ
+/// nhận ra ⌫ của mình theo hàng đợi đúng thứ tự đã gửi (mã phím). Phím mang chữ Unicode thì thường KHÔNG qua bộ gõ (IME Lab: ứng
+/// dụng nhận thẳng): không chờ nó, báo trước cho sổ phím (`KeyWatch.expectUnseen`). Phím thật của người dùng tới khi ⌫ giả chưa
+/// tới hết: ô giữ được phím (Java) thì bộ gõ giữ lại và gửi lại sau phím giả, để đúng thứ tự gõ.
 final class SyntheticKeys {
     static let shared = SyntheticKeys()
 
@@ -21,8 +22,11 @@ final class SyntheticKeys {
 
     private struct Expected {
         let keyCode: UInt16
-        let characters: String
+        /// nil: không so chữ (⌫ — InputMethodKit có thể báo "\u{8}" hay "\u{7f}").
+        let characters: String?
         let kind: Kind
+        /// Có thể không tới bộ gõ (phím mang chữ Unicode): phím sau khớp thì bỏ qua nó.
+        let optional: Bool
     }
 
     private let source = CGEventSource(stateID: .privateState)
@@ -49,7 +53,8 @@ final class SyntheticKeys {
     /// Còn phím giả đã gửi mà chưa tới bộ gõ.
     var inFlight: Bool {
         expireIfStale()
-        return !expected.isEmpty
+        expected.removeAll { $0.optional && $0.kind == .edit && expected.firstIndex(where: { !$0.optional }) == nil }
+        return expected.contains { !$0.optional }
     }
 
     private func expireIfStale() {
@@ -70,7 +75,7 @@ final class SyntheticKeys {
             down.flags = []
             up.flags = []
             events += [down, up]
-            expected.append(Expected(keyCode: UInt16(kVK_Delete), characters: "\u{7f}", kind: .edit))
+            expected.append(Expected(keyCode: UInt16(kVK_Delete), characters: nil, kind: .edit, optional: false))
         }
         for piece in Self.pieces(text) {
             let units = Array(piece.utf16)
@@ -81,9 +86,11 @@ final class SyntheticKeys {
             down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
             up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
             events += [down, up]
-            expected.append(Expected(keyCode: UInt16(Self.textKey), characters: piece, kind: .edit))
+            expected.append(Expected(keyCode: UInt16(Self.textKey), characters: piece, kind: .edit, optional: true))
         }
         postedAt = ProcessInfo.processInfo.systemUptime
+        KeyWatch.shared.expectUnseen(Self.pieces(text).count)
+        DebugLog.write("phím giả: gửi ⌫×\(deleting) + \(text.debugDescription)")
         for e in events { e.post(tap: .cghidEventTap) }
         return true
     }
@@ -98,18 +105,29 @@ final class SyntheticKeys {
         up.flags = flags
         let units = Array(chars.utf16)
         down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-        expected.append(Expected(keyCode: event.keyCode, characters: chars, kind: .user))
+        expected.append(Expected(keyCode: event.keyCode, characters: chars, kind: .user, optional: false))
+        DebugLog.write("phím giả: gửi lại phím thật \(event.keyCode) sau phím giả")
         postedAt = ProcessInfo.processInfo.systemUptime
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
     }
 
-    /// Phím vừa tới bộ gõ có phải phím giả kế tiếp trong hàng đợi không (lấy nó ra khỏi hàng đợi nếu đúng).
-    func match(_ event: NSEvent) -> Kind? {
+    /// Phím vừa tới bộ gõ có phải phím giả kế tiếp trong hàng đợi không (lấy nó ra khỏi hàng đợi nếu đúng). `unseenAlready`:
+    /// phím chữ giả đã được báo trước cho sổ phím (không ghi vào sổ lần nữa).
+    func match(_ event: NSEvent) -> (kind: Kind, unseenAlready: Bool)? {
         expireIfStale()
-        guard let head = expected.first, event.keyCode == head.keyCode, event.characters == head.characters else { return nil }
-        expected.removeFirst()
-        return head.kind
+        var i = 0
+        while i < expected.count {
+            let e = expected[i]
+            if event.keyCode == e.keyCode, e.characters == nil || event.characters == e.characters {
+                expected.removeFirst(i + 1)          // các phím chữ giả trước nó đã tới ứng dụng mà không qua bộ gõ
+                DebugLog.write("phím giả: khớp phím \(event.keyCode)\(e.kind == .user ? " (phím thật gửi lại)" : "")")
+                return (e.kind, e.optional)
+            }
+            guard e.optional else { return nil }
+            i += 1
+        }
+        return nil
     }
 
     private static func pieces(_ text: String) -> [String] {

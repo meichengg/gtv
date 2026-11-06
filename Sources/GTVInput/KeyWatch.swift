@@ -102,6 +102,9 @@ final class KeyWatch {
     }
     #endif
 
+    /// Phím giả bộ gõ vừa gửi mà sẽ không tới bộ gõ (xem `KeyLedger.expectUnseen`).
+    func expectUnseen(_ n: Int) { ledger.expectUnseen(n) }
+
     /// Bộ gõ vừa gắn vào một ô nhập liệu, hoặc vừa có click: những gì xảy ra trước đó không còn liên quan.
     func rebase() {
         detectCounterMode()

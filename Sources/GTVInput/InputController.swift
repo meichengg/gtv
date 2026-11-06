@@ -316,11 +316,12 @@ final class GTVInputController: IMKInputController {
         case .keyDown:
             hotkeyArmedAt = nil
             switch SyntheticKeys.shared.match(event) {
-            case .edit?:
-                // Phím giả của chính bộ gõ: để ứng dụng xử lý (vẫn ghi vào sổ phím cho khớp bộ đếm của hệ thống).
-                _ = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID))
+            case let m? where m.kind == .edit:
+                // Phím giả của chính bộ gõ: để ứng dụng xử lý (ghi vào sổ phím cho khớp bộ đếm của hệ thống, trừ phím chữ giả đã
+                // báo trước).
+                if !m.unseenAlready { _ = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID)) }
                 return false
-            case .user?:
+            case .some:
                 break                         // phím thật gửi lại sau phím giả: xử lý như thường
             case nil:
                 if SyntheticKeys.shared.inFlight, javaView == true {
@@ -435,7 +436,11 @@ final class GTVInputController: IMKInputController {
                                      keyText: keyText, web: chromiumWeb && !forceMarked && terminal == nil,
                                      synthetic: synthetic)
         if javaView == true, !synthetic { scheduleJavaCommit(client) }
-        DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
+        #if DEBUG
+        let route = synthetic ? "phím giả" : (chromiumWeb && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
+            : forceMarked ? "gạch chân" : "trực tiếp"
+        DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
+        #endif
         return handled
     }
 

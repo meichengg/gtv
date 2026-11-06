@@ -303,6 +303,11 @@ private final class ChromiumField: TextClient {
         for k in keys { if k == "⌫" { backspace() } else { press(k) } }
     }
     func finish() { for _ in 0..<5 { tick(100) } }
+    /// Trang tự đổi chữ bằng JavaScript (xoá ô sau khi gửi, đổi nháp…): không qua phím nên trang không báo bộ đệm.
+    func jsSet(_ t: String) {
+        units = Array(t.utf16)
+        caret = units.count
+    }
 }
 
 /// Ô GTK 3 (gdk/quartz, imquartz.c): marked text thật, `hasMarkedText` đúng; mỗi phím chỉ giữ LẦN CHÈN CUỐI (TIC_INSERT_TEXT bị
@@ -1204,6 +1209,32 @@ final class SessionTests: XCTestCase {
                     f.type(keys)
                     f.finish()
                     XCTAssertEqual(f.text, expect, "\(method) \(keys) lag \(lag) step \(step)")
+                }
+            }
+        }
+    }
+
+    /// Trang xoá ô bằng JavaScript (không báo bộ đệm) rồi người dùng gõ tiếp: không coi đó là trang chậm (lab: mọi phím dấu biến
+    /// mất vì lần sửa gửi tới vị trí cũ, ngoài văn bản).
+    /// Giới hạn: trang đổi chữ mà không báo VÀ trang chậm hơn một phím ngay đó thì bộ đệm chỉ là lần đoán của Chromium trên vị trí
+    /// cũ — không phân biệt được với trạng thái đúng; lần sửa đầu có thể mất, các phím sau đọc lại từ và không bỏ dấu.
+    func testChromiumPageClearsFieldBetweenWords() {
+        for idle in [0.1, 2.0] {
+            for lag in 0...2 {
+                let f = ChromiumField()
+                f.options.method = .vni
+                f.lag = lag
+                f.type("khoi dong ")
+                f.finish()
+                f.jsSet("")
+                f.tick(idle * 1000)
+                f.type("d9a38ng ")
+                f.finish()
+                if lag == 0 || (idle > 1 && lag == 1) {
+                    XCTAssertEqual(f.text, "đẳng ", "idle \(idle) lag \(lag)")
+                } else {
+                    // Tệ nhất: phím đi nguyên văn — không bao giờ xoá / sửa nhầm chữ.
+                    XCTAssertTrue(["đẳng ", "dẳng ", "da38ng "].contains(f.text), "idle \(idle) lag \(lag): \(f.text)")
                 }
             }
         }
