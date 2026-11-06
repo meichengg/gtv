@@ -469,7 +469,9 @@ final class GTVInputController: IMKInputController {
         #if DEBUG
         let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
             : forceMarked ? "gạch chân" : "trực tiếp"
-        DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
+        // Đường phím giả không hỏi ứng dụng (Java trả lời qua luồng sự kiện của nó — hỏi ở mỗi phím làm app chậm, có lúc đứng).
+        let where_ = synthetic ? "" : " sel=\(client.selectedRange()) len=\(client.length())"
+        DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng")\(where_)")
         #endif
         return handled
     }

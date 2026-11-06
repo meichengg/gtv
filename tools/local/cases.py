@@ -1,0 +1,21 @@
+# (tên, kiểu gõ 0=telex 1=vni, phím, mong đợi, ms giữa 2 phím)
+CASES = [
+    ("vni-words", 1, "Vie65t Nam, d9a5i ho5c d9a38ng ", "Việt Nam, đại học đẳng ", 60),
+    ("vni-fast", 1, "Vie65t Nam, d9a5i ho5c d9a38ng ", "Việt Nam, đại học đẳng ", 15),
+    ("vni-veryfast", 1, "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c. ", "Việt Nam, tôi yêu tiếng Việt đại học. ", 6),
+    ("telex-words", 0, "Vieetj Nam, ddaij hocj ", "Việt Nam, đại học ", 60),
+    ("telex-fast", 0, "Vieetj Nam ddaij hocj tieengs Vieetj nguwowif ", "Việt Nam đại học tiếng Việt người ", 12),
+    ("vni-backspace", 1, "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 60),
+    ("vni-bs-burst", 1, "ho5{BS}a d9{BS}e ", "ha e ", 3),
+    ("vni-bs-after-space", 1, "tie61ng {BS}{BS}", "tiến", 60),
+    ("telex-bs-after-space", 0, "tieengs {BS}{BS} ", "tiến ", 60),
+    ("telex-bs-tone", 0, "hoafn{BS} ", "hòa ", 60),
+    ("long-word-bs-comma", 0, "documentation {BS}, ", "documentation, ", 40),
+    ("vni-enter", 1, "vie65t{RET}nam ", "việt\nnam ", 60),
+    ("vni-punct", 1, "d9a38ng, vie65t.", "đẳng, việt.", 60),
+    ("vni-arrow", 1, "vie65t{WAIT400}{LEFT}x ", "việx t", 60),
+    ("vni-sentence", 1, "Xin cha2o, to6i la2 ngu7o72i Vie65t Nam. Ho6m nay tro72i d9e5p qua1! ", "Xin chào, tôi là người Việt Nam. Hôm nay trời đẹp quá! ", 40),
+    ("telex-sentence", 0, "Xin chaof, tooi laf nguwowif Vieetj Nam. Hoom nay trowif ddepj quas! ", "Xin chào, tôi là người Việt Nam. Hôm nay trời đẹp quá! ", 40),
+    ("vni-english", 1, "the request header and response body ", "the request header and response body ", 30),
+    ("telex-english", 0, "the request header and response body ", "the request header and response body ", 30),
+]
