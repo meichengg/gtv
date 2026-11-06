@@ -4,6 +4,31 @@ Mỗi phiên bản là một mục `## <phiên bản> — <ngày>`. Nội dung c
 note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớp `MARKETING_VERSION` trong
 `project.yml`.
 
+## 1.13 — 2026-11-06
+
+### Thay đổi
+- Java (Burp Suite, IntelliJ không chạy JBR, Ghidra…), Qt 5, GTK, winit, LibreOffice: gõ không gạch chân, con trỏ luôn ở
+  sau chữ. GTV gõ thẳng như ở ô thường rồi sửa dấu bằng phím ⌫ + chữ mới gửi vào ô. Cần quyền Trợ năng: menu bộ gõ →
+  *Gõ không gạch chân trong Java, Qt 5, GTK…: cấp quyền Trợ năng…* (cấp một lần — bản phát hành giờ ký bằng chứng chỉ cố
+  định nên quyền giữ qua các lần cập nhật). Chưa cấp thì gõ bằng gạch chân như trước.
+  - Ứng dụng chậm (phím thật tới trước phím sửa), gõ nhanh, ⌫ ngay sau phím dấu: GTV dựng lại chữ thật trong ô theo đúng
+    thứ tự ứng dụng xử lý rồi sửa đúng phần lệch.
+  - Người dùng đã bấm ⌫ / mũi tên / ⏎ / click / ⌘… mà phím đó chưa tới ứng dụng: GTV hoãn phím sửa (không bao giờ xoá lố
+    vào chữ có sẵn hay xoá ở chỗ con trỏ mới); không chắc thì để chữ nguyên văn.
+- Ô tự vẽ không cho biết con trỏ (GPUI, terminal nhúng…): nhận ra ở phím sửa đầu tiên rồi gõ bằng phím ⌫ giả (không gạch
+  chân); chưa có quyền Trợ năng thì từ sau gạch chân thay vì ra nguyên văn. Đổi ô / click thì nhận lại từ đầu.
+- Bỏ mọi chỗ làm một ứng dụng lúc gạch chân lúc không (một lần đọc con trỏ {0,0} không còn bật gạch chân cho cả cửa sổ về
+  sau). Danh sách gạch chân mặc định cũ (Alacritty, Warp, các terminal) đã bị lưu vào cài đặt được gỡ một lần.
+
+### Sửa lỗi
+- Chrome / Electron (VS Code, Slack, Discord, Claude, Zalo…): gõ nhanh hay trang chậm ra "đa38ng", "đả8ng", mất dấu lúc
+  được lúc không. Chromium chỉ cho bộ gõ thấy bản sao văn bản cập nhật sau khi trang xử lý xong; GTV giờ tự giữ vị trí của
+  cả chuỗi gõ liền (kể cả mọi ⌫) và chỉ dùng bản sao để nhận ra trang chậm / chữ bị đổi / con trỏ đã dời.
+- Chrome / Electron: trang xoá ô sau khi gửi tin, trang tự đổi chữ (Notion "->" → "→", dấu đầu dòng), click lùi vào giữa
+  văn bản, gõ chèn trước chữ có sẵn (VS Code tự đóng ngoặc / nháy), ⌫ lùi về từ trước rồi gõ dấu, gõ ngay sau ⏎ / mũi tên:
+  không sửa nhầm chỗ, chữ đã xoá không sống lại. Lúc không chắc vị trí (trang rất chậm ngay sau click / ⏎), phím dấu đi
+  nguyên văn thay vì đoán.
+
 ## 1.12 — 2026-11-06
 
 ### Thay đổi
