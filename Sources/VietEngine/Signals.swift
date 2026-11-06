@@ -502,6 +502,10 @@ public struct PressLog {
 
     /// Phím bộ gõ đã nhận mà chưa thấy lần nhấn (phím tới bộ gõ trước lần đọc kế tiếp).
     private var received: [(key: UInt16, at: Double)] = []
+    /// Lúc nhả phím đặc biệt đã giữ đủ lâu để lặp phím.
+    private var repeatRelease: Double?
+    /// Lúc bắt đầu thấy giữ từng phím đặc biệt.
+    private var heldSince: [UInt16: Double] = [:]
     private var held: Set<UInt16> = []
     private var button = false
     private var flags: UInt64?
@@ -541,6 +545,7 @@ public struct PressLog {
             // tính là lần nhấn mới; ai cần biết khoảng hở thì hỏi `covered(since:)`.
             coveredSince = t
             lastSample = t
+            heldSince = Dictionary(uniqueKeysWithValues: keys.map { ($0, heldSince[$0] ?? t) })
             held = keys
             button = pressed
             flags = f
@@ -549,7 +554,11 @@ public struct PressLog {
         }
         guard t >= last else { return }         // lần đọc cũ hơn lần đọc cuối: không có gì mới
         lastSample = t
+        for k in held.subtracting(keys) {
+            if let from = heldSince.removeValue(forKey: k), t - from > 0.2 { repeatRelease = t }
+        }
         for k in keys.subtracting(held).sorted() {
+            heldSince[k] = t
             let press = Press(key: k, at: t, after: last, count: keyDownCount)
             history.append(press)
             if let i = received.firstIndex(where: { $0.key == k }) {
@@ -573,7 +582,6 @@ public struct PressLog {
         prune(before: t - keep)
     }
 
-    /// Bộ gõ nhận keyDown `key` (lúc `at`, thời điểm sự kiện).
     /// Phím giả của bộ gõ (⌫ gửi bằng CGEventPost lúc `since`) vừa tới: không phải phím người dùng. Bỏ mọi lần nhấn phím đó đọc
     /// thấy từ lúc gửi (máy chậm thì trạng thái phím của phím giả cũng đọc được — để lại thì sổ phím coi là phím đi vòng bộ gõ).
     /// ⌫ thật bấm trước lúc gửi đã tới bộ gõ trước phím giả (cùng hàng đợi) nên không bị bỏ nhầm. Không ghi vào danh sách phím đã
@@ -586,11 +594,17 @@ public struct PressLog {
     /// phím đặc biệt / click đang chờ (trong `maxAge` giây — phím không bao giờ tới bộ gõ, như phím tắt toàn hệ thống, thì thôi),
     /// phím đặc biệt đang giữ (lặp phím tạo thêm phím), phím bổ trợ nhấn sau phím vừa nhận lúc `since` (⌘V, ⌘A…).
     public func userKeysPending(now: Double, since: Double, maxAge: Double = 1) -> Bool {
-        if pending.contains(where: { $0.at > now - maxAge }) { return true }
-        if !held.isEmpty { return true }
+        // Click không bao giờ tới bộ gõ: chỉ phím sau (sổ phím báo ngắt) hay lần lấy mốc bỏ nó — không hết hạn (hết hạn thì lần
+        // sửa đang hoãn gửi tới chỗ click).
+        if pending.contains(where: { $0.key == nil || $0.at > now - maxAge }) { return true }
+        if !held.isEmpty || button { return true }
+        // Vừa nhả phím đặc biệt giữ lâu (lặp phím): các lần lặp tạo trước lúc nhả có thể còn trong hàng đợi của ứng dụng — tới khi
+        // có phím bấm sau lúc nhả tới bộ gõ (tối đa 0,5 s).
+        if let r = repeatRelease, r > since, r > now - 0.5 { return true }
         return flagPresses.contains { $0 > since }
     }
 
+    /// Bộ gõ nhận keyDown `key` (lúc `at`, thời điểm sự kiện).
     public mutating func keyReceived(_ key: UInt16, at: Double, isRepeat: Bool) {
         if let i = pending.firstIndex(where: { $0.key == key }) {
             pending.remove(at: i)

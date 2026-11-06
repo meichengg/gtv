@@ -165,7 +165,7 @@ private final class Qt5Field: TextClient {
 /// xử lý theo thứ tự đó. Phím giả bộ gõ gửi lúc xử lý một phím được xếp sau những phím thật đã nằm sẵn trong hàng đợi (ứng dụng
 /// chậm: `backlog` phím). ⌫ giả đi qua bộ gõ (báo cho Session), chữ giả thì không. `blind`: con trỏ luôn báo {0,0}.
 private final class SyntheticField: TextClient {
-    enum Event { case key(Character), fakeBackspace, fakeText(String), click(Int), paste(String) }
+    enum Event { case key(Character), fakeBackspace, fakeText(String), click(Int), paste(String), unseenClick(Int) }
     var units: [UInt16] = []
     var caret = 0
     var blind: Bool
@@ -208,7 +208,7 @@ private final class SyntheticField: TextClient {
         interruptPending || queue.contains {
             switch $0 {
             case let .key(k): return k == "⌫" || k == "\n"
-            case .click, .paste: return true                  // click / ⌘V: GTVInput thấy nút chuột, phím bổ trợ
+            case .click, .paste, .unseenClick: return true    // click / ⌘V: GTVInput thấy nút chuột, phím bổ trợ
             default: return false
             }
         }
@@ -250,6 +250,9 @@ private final class SyntheticField: TextClient {
             interruptPending = true
         case let .paste(t):                                   // ⌘V đi thẳng vào menu, không qua bộ gõ
             insertText(t)
+            interruptPending = true
+        case let .unseenClick(loc):                           // Java / Qt: bộ gõ không thấy click
+            caret = loc
             interruptPending = true
         }
     }
@@ -1339,6 +1342,39 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(g.text, "x asPASTE")
     }
 
+    /// Review e4867fb: click bộ gõ không thấy ngay sau phím dấu rồi ngừng tay — lần sửa đang hoãn không bao giờ gửi tới chỗ click;
+    /// giữ ⌫ (lặp phím) rồi nhả: còn lần lặp chưa tới thì vẫn hoãn.
+    func testSyntheticUnseenClickAndAutoRepeat() {
+        let f = SyntheticField()
+        f.options.method = .telex
+        f.prefill("hello world ")
+        f.type("a")
+        f.queue.append(.key("s"))
+        f.queue.append(.unseenClick(5))
+        f.drain()
+        for _ in 0..<100 { f.runTimers() }
+        XCTAssertEqual(f.text, "hello world as")
+        var log = PressLog()
+        var t = 20.0
+        log.sample(at: t, held: [], button: false, flags: 0)
+        for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
+        let pressAt = t + 0.008
+        for _ in 0..<60 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }   // giữ ⌫ 0,48 s
+        log.keyReceived(51, at: pressAt, isRepeat: false)
+        t += 0.008
+        log.sample(at: t, held: [], button: false, flags: 0)                                        // nhả
+        XCTAssertTrue(log.userKeysPending(now: t + 0.05, since: t - 0.03), "lần lặp tạo trước lúc nhả có thể chưa tới")
+        XCTAssertFalse(log.userKeysPending(now: t + 0.05, since: t + 0.04), "đã có phím bấm sau lúc nhả tới")
+        var click = PressLog()
+        var u = 30.0
+        click.sample(at: u, held: [], button: false, flags: 0)
+        u += 0.008
+        click.sample(at: u, held: [], button: true, flags: 0)
+        u += 0.008
+        click.sample(at: u, held: [], button: false, flags: 0)
+        XCTAssertTrue(click.userKeysPending(now: u + 5, since: u), "click chưa được phím sau xử lý không hết hạn")
+    }
+
     /// Sổ nhấn phím: lần nhấn phím không bao giờ tới bộ gõ (phím tắt toàn hệ thống) thôi được coi là đang chờ sau 1 s; phím đang
     /// giữ sau khoảng không đọc không làm lần nhấn thật kế tiếp bị coi là đã nhận.
     func testPressLogUserKeysPending() {
@@ -1673,6 +1709,58 @@ final class SessionTests: XCTestCase {
         }
     }
 
+    /// Review e4867fb (ô web): trang chậm 6 phím với nhiều trạng thái mỗi phím; click trên trang bận (trang báo click sau khi xử
+    /// lý xong phím trước); cửa sổ đọc lại bắt đầu giữa một emoji.
+    func testChromiumReviewE4867fb() {
+        for lag in 0...6 {
+            for step in [10.0, 45.0, 120.0] {
+                for (method, keys, expect) in [(InputMethod.telex, "toi ddirw⌫⌫ nhes ", "toi đi nhé "),
+                                               (.telex, "toi Virw⌫⌫eetj nhes ", "toi Việt nhé "),
+                                               (.vni, "toi d9i1o⌫⌫ nhe1 ", "toi đi nhé ")] {
+                    let f = ChromiumField()
+                    f.options.method = method
+                    f.lag = lag
+                    f.stepMS = step
+                    f.type(keys)
+                    f.finish()
+                    XCTAssertEqual(f.text, expect, "\(keys) lag \(lag) step \(step)")
+                }
+                // Click được báo theo thứ tự (sau khi trang xử lý xong phím trước), phím đầu sau click có gap.
+                let g = ChromiumField()
+                g.options.method = .telex
+                g.lag = lag
+                g.stepMS = step
+                g.type("toi di hoc")
+                g.tick(300)
+                g.caret = 3
+                g.snapshot()
+                g.tick(200)
+                g.tick(g.stepMS)
+                if !g.session.handle(.char("s"), g, options: g.options, forceMarked: false, gap: .interrupted, web: true) {
+                    g.insertText("s")
+                }
+                g.type(" ")
+                g.finish()
+                XCTAssertTrue(["tois  di hoc", "tó  di hoc"].contains(g.text), "click lag \(lag) step \(step): \(g.text)")
+            }
+        }
+        for lag in 0...2 {
+            for step in [30.0, 80.0] {
+                let f = ChromiumField()
+                f.options.method = .telex
+                f.graphemeBackspace = true
+                f.pageSet("ban 😀" + String(repeating: "x", count: 47))
+                f.finish()
+                f.idle()
+                f.lag = lag
+                f.stepMS = step
+                f.type(String(repeating: "⌫", count: 50) + "s ")
+                f.finish()
+                XCTAssertTrue(["bá ", "bas "].contains(f.text), "emoji lag \(lag) step \(step): \(f.text)")
+            }
+        }
+    }
+
     /// Phím ⌫ giả tới bộ gõ không được coi là lần nhấn ⌫ của người dùng (sổ nhấn phím): ⌫ thật bấm sau đó vẫn là phím chưa tới;
     /// ⌫ thật đang chờ không bị ⌫ giả tới lấy mất.
     func testSyntheticBackspaceDoesNotConsumeUserPress() {
@@ -1703,6 +1791,8 @@ final class SessionTests: XCTestCase {
 
     /// Click / phím tắt bộ gõ không thấy được báo muộn (macOS 27: bộ đếm click công bố mỗi 0,5 s) ở đầu một từ khi trang chậm:
     /// không bắt đầu lại chuỗi ở con trỏ cũ của bộ đệm (sửa sai chỗ).
+    /// Giới hạn: trang chậm từ 2 phím và chưa báo gì sau lúc có gap thì không phân biệt được với click thật trên trang bận — từ đó
+    /// đi nguyên văn (không đoán vị trí).
     func testChromiumLateGapKeepsChain() {
         for lag in 0...6 {
             for step in [10.0, 45.0, 120.0] {
@@ -1719,7 +1809,12 @@ final class SessionTests: XCTestCase {
                     }
                 }
                 f.finish()
-                XCTAssertEqual(f.text, "tôi đi học ", "lag \(lag) step \(step)")
+                if lag <= 1 {
+                    XCTAssertEqual(f.text, "tôi đi học ", "lag \(lag) step \(step)")
+                } else {
+                    XCTAssertTrue(["tôi đi học ", "tôi d9i học ", "tôi đi ho5c ", "tôi d9i ho5c "].contains(f.text),
+                                  "lag \(lag) step \(step): \(f.text)")
+                }
             }
         }
     }

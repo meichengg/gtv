@@ -161,8 +161,10 @@ final class KeyWatch {
         readings += 1
         checkTimer?.cancel()
         checkTimer = nil
+        let synthetic = syntheticSince != nil
         let previousStamp = lastKeyAt
-        lastKeyAt = event.timestamp
+        // Phím giả của bộ gõ được tạo ngay sau phím trước: không phải loạt phím dồn ra sau lúc ứng dụng treo — không đổi mốc.
+        if !synthetic { lastKeyAt = event.timestamp }
         let live = LiveInput.shared
         live.endHID()                       // phím tới: InputController đã bỏ lần nhấn phím tắt đổi chế độ (nếu có)
         let previousRead = lastTerminalRead
@@ -176,7 +178,7 @@ final class KeyWatch {
         // trễ giao phím lớn nhất thì chắc là trước nó — trừ khi phím này nằm trong loạt phím dồn ra sau lúc ứng dụng treo
         // (cách phím trước dưới 5 ms: có thể đã được bấm từ trước đó). Lần nhấn đọc thấy chưa giữ ở một lần đọc sau phím này
         // thì chắc là sau nó. Còn lại thì chưa chắc: vẫn báo, giữ lại cho phím sau.
-        let burst = coarse && event.timestamp - previousStamp < 0.005
+        let burst = coarse && !synthetic && event.timestamp - previousStamp < 0.005
         var covered = true
         var read: Double?
         var order: (taken: [PressLog.Press], uncertain: Bool) = ([], false)
@@ -229,7 +231,7 @@ final class KeyWatch {
             } else {
                 gap = .none
             }
-            burstCarry = gap == .bypassed
+            if !synthetic { burstCarry = gap == .bypassed }
             #if DEBUG
             if terminal {
                 let pending = live.log.pending.map { $0.key.map(String.init) ?? "click" }

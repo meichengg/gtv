@@ -1626,7 +1626,14 @@ public final class Session {
         /// Số thứ tự (tăng dần suốt phiên).
         let serial: Int
         let text: String
+        /// Phím tạo ra trạng thái này (`webKeyCount` lúc đó): một phím có thể tạo nhiều trạng thái (sửa + phím kết thúc từ…).
+        var key = 0
     }
+    /// Số phím ô web đã xử lý.
+    private var webKeyCount = 0
+    /// Trạng thái mới nhất của chuỗi lúc sổ phím báo click / phím tắt bộ gõ không thấy: bộ đệm cho thấy trạng thái đó hay cũ hơn
+    /// thì trang chưa báo gì sau click (trang chậm) — không dùng làm bằng chứng vị trí.
+    private var webGapSerial: Int?
     /// Chữ của chuỗi (từ `web.start` tới con trỏ) sau mỗi phím / lần sửa, cũ trước mới sau.
     private var webHistory: [WebState] = []
     private var webStateCount = 0
@@ -1652,6 +1659,7 @@ public final class Session {
 
     private func resetWeb() {
         web = nil
+        webGapSerial = nil
         webBefore = ""
         webHistory = []
         webInserts = []
@@ -1668,12 +1676,13 @@ public final class Session {
 
     private func webPush(_ text: String) {
         webStateCount += 1
-        webHistory.append(WebState(serial: webStateCount, text: text))
+        webHistory.append(WebState(serial: webStateCount, text: text, key: webKeyCount))
         if webHistory.count > 64 { webHistory.removeFirst(webHistory.count - 64) }
     }
 
     /// Lịch sử mới chỉ có `text` — trạng thái bộ đệm vừa cho thấy.
     private func webSetHistory(_ text: String) {
+        webGapSerial = nil
         webHistory = []
         webPush(text)
         webSeen = webStateCount
@@ -1688,6 +1697,7 @@ public final class Session {
 
     private func handleWeb(_ key: Key, _ client: TextClient, options: EngineOptions, gap: KeyGap) -> Bool {
         if webPending != nil { flushWebPending(client, final: true) }   // lần sửa còn chờ: tới trang trước phím này
+        webKeyCount += 1
         defer { webLastKeyAt = client.currentTime() }
         let dropped = gap == .interrupted || gap == .bypassed
         if engine.isEmpty, !untracked, dropped {
@@ -1697,6 +1707,7 @@ public final class Session {
             web?.proven = false
             webResumeArmed = false
         }
+        if dropped, web != nil { webGapSerial = webStateCount }
         if !engine.isEmpty, !untracked, let chain = web {
             // Giữa từ mà có click / phím tắt bộ gõ không thấy, hay ngừng gõ lâu rồi bộ đệm (lúc này đã mới) báo con trỏ ở chỗ khác:
             // lần sửa sau của từ phải được bộ đệm xác nhận lại đúng chỗ — không thì phím đi nguyên văn.
@@ -1751,13 +1762,7 @@ public final class Session {
             web = nil
             // Vừa ⌫ lùi về một từ rồi ngừng gõ: bộ đệm đã có mọi phím — dựng lại chuỗi từ bộ đệm để gõ tiếp từ đó.
             if resume, let sel = client.selectedRange(), sel.length == 0 {
-                let len = min(sel.location, Self.webWindow)
-                if let before = len == 0 ? "" : client.text(location: sel.location - len, length: len), before.utf16.count == len {
-                    web = WebChain(caret: sel.location, start: sel.location - len, proven: false)
-                    anchor = sel.location
-                    webBefore = before
-                    webSetHistory(before)
-                }
+                _ = webRebuild(client, at: sel.location)
             }
         }
         guard let chain = web else {
@@ -1804,12 +1809,13 @@ public final class Session {
         web = chain
         webBefore.removeFirst(chars)
         webHistory = webHistory.filter { $0.text.hasPrefix(prefix) }
-            .map { WebState(serial: $0.serial, text: String($0.text.dropFirst(chars))) }
+            .map { WebState(serial: $0.serial, text: String($0.text.dropFirst(chars)), key: $0.key) }
     }
 
     /// So bộ đệm của Chromium với chữ của chuỗi (`webBefore` + từ đang gõ `word`).
     private func webRead(_ client: TextClient, word: String) -> WebRead {
         guard let chain = web, let sel = client.selectedRange() else { return .lag }
+
         let model = webBefore + word
         let base = chain.start
         if sel.length > 0 {
@@ -1825,7 +1831,9 @@ public final class Session {
             return m == model.utf16.count ? .current : .lag
         }
         if t == model {
+            if let gs = webGapSerial, (webHistory.last?.serial ?? 0) <= gs { return .lag }   // chưa có gì sau click
             webAccept(t)
+            webGapSerial = nil
             return .current
         }
         if webAcceptOlder(client, t, location: sel.location, m: m, model: model) { return .lag }
@@ -1848,8 +1856,13 @@ public final class Session {
         return Array(after.utf16) == Array(mu[m...])
     }
 
-    /// Các trạng thái của chuỗi trong `webLagLimit` phím gần nhất.
-    private var webRecent: ArraySlice<WebState> { webHistory.suffix(Self.webLagLimit + 1) }
+    /// Các trạng thái của chuỗi trong `webLagLimit` phím gần nhất (tính theo phím, không theo số trạng thái).
+    private var webRecent: ArraySlice<WebState> {
+        let from = webKeyCount - Self.webLagLimit
+        let i = webHistory.lastIndex { $0.key < from }.map { $0 + 1 } ?? webHistory.startIndex
+        // Giữ ít nhất trạng thái mới nhất trước phím cũ nhất trong cửa sổ (trang chậm đúng `webLagLimit` phím).
+        return webHistory[max(webHistory.startIndex, i - 1)...]
+    }
 
     /// Chữ bộ đệm cho thấy (từ đầu chuỗi tới con trỏ) là một trạng thái gần đây của chuỗi, không cũ hơn `webSeen`: đúng một
     /// trạng thái (trang báo chậm — mỗi phím là một trạng thái, kể cả trước các ⌫), hay trạng thái + chữ của lần chèn gần nhất
@@ -1877,6 +1890,7 @@ public final class Session {
     /// trạng thái trang đã báo.
     private func webAcceptOlder(_ client: TextClient, _ t: String, location: Int, m: Int, model: String) -> Bool {
         guard let found = webMatch(t) else { return false }
+        if let gs = webGapSerial, found.serial > gs { webGapSerial = nil }   // trang đã báo phím gõ sau click
         if webShowsRest(client, location, m: m, model: model), !webStackedGuesses(client, location, m: m, model: model) {
             return false
         }
@@ -1988,7 +2002,8 @@ public final class Session {
             if !trusted, !provable { webGiveUp(c, p.typed); return }
         case .lag:
             if check < 2 { return }
-            if !trusted { webGiveUp(c, p.typed); return }    // bộ đệm vẫn chưa cho thấy chữ đang gõ: không đoán vị trí
+            // Bộ đệm vẫn chưa cho thấy chữ đang gõ mà đầu chuỗi chưa xác minh, hay trang chưa báo gì từ lúc có click: không đoán vị trí.
+            if !trusted || webGapSerial != nil { webGiveUp(c, p.typed); return }
         case let .moved(at):
             webMove(to: at, word: p.old)
         case .foreign:
@@ -2152,13 +2167,7 @@ public final class Session {
         if web == nil {
             engine.reset()
             guard current, let sel = client.selectedRange(), sel.length == 0 else { return false }
-            let len = min(sel.location, Self.webWindow)
-            guard let before = len == 0 ? "" : client.text(location: sel.location - len, length: len),
-                  before.utf16.count == len else { return false }
-            web = WebChain(caret: sel.location, start: sel.location - len, proven: false)
-            anchor = sel.location
-            webBefore = before
-            webSetHistory(before)
+            guard webRebuild(client, at: sel.location) else { return false }
         }
         guard engine.isEmpty else { return webBackspaceInWord(client) }
         if webBefore.isEmpty, !webExtendBack(client) {
@@ -2178,10 +2187,26 @@ public final class Session {
         return false
     }
 
+    /// Dựng chuỗi từ bộ đệm (đã chắc là mới) với chữ trước con trỏ `location`. Cửa sổ không bắt đầu ở đầu ô thì bỏ ký tự đầu (có
+    /// thể bị cắt giữa một cặp UTF-16 / một cụm).
+    private func webRebuild(_ client: TextClient, at location: Int) -> Bool {
+        let len = min(location, Self.webWindow)
+        guard let text = len == 0 ? "" : client.text(location: location - len, length: len), text.utf16.count == len else {
+            return false
+        }
+        var before = text
+        if len < location, let first = before.first { before.removeFirst(); _ = first }
+        web = WebChain(caret: location, start: location - before.utf16.count, proven: false)
+        anchor = location
+        webBefore = before
+        webSetHistory(before)
+        return true
+    }
+
     /// Ký tự ⌫ của Blink xoá đúng một lần như Swift: một mã Unicode trong BMP, không phải dấu tổ hợp / ký tự nối / chọn biến thể.
     private static func webSimpleChar(_ ch: Character) -> Bool {
         let scalars = Array(ch.unicodeScalars)
-        guard scalars.count == 1, let u = scalars.first, u.value < 0x10000 else { return false }
+        guard scalars.count == 1, let u = scalars.first, u.value < 0x10000, u.value != 0xFFFD else { return false }
         let cat = u.properties.generalCategory
         return cat != .nonspacingMark && cat != .spacingMark && cat != .enclosingMark && cat != .format
             && cat != .surrogate && !(0xFE00...0xFE0F).contains(u.value)
@@ -2210,7 +2235,7 @@ public final class Session {
         chain.start -= c.utf16.count
         web = chain
         webBefore = c + webBefore
-        webHistory = webHistory.map { WebState(serial: $0.serial, text: c + $0.text) }
+        webHistory = webHistory.map { WebState(serial: $0.serial, text: c + $0.text, key: $0.key) }
         return true
     }
 
