@@ -161,21 +161,22 @@ private final class Qt5Field: TextClient {
     }
 }
 
-/// Ô chỉ sửa được bằng phím ⌫ giả (Java AWT, Qt 5, GTK…): bỏ qua vùng thay; phím giả (CGEventPost) tới ứng dụng SAU phím đang
-/// xử lý, theo đúng thứ tự gửi. `swallowable`: như Java — bộ gõ giữ được phím (setMarkedText("")); không thì phím vẫn tới ứng
-/// dụng dù bộ gõ trả lời "đã xử lý". `blind`: con trỏ luôn báo {0,0} (ô tự vẽ chưa được nhận ra) — bộ gõ phải tự phát hiện.
+/// Ô chỉ sửa được bằng phím ⌫ giả (Java AWT, Qt 5, GTK…): bỏ qua vùng thay; mọi phím (thật và giả) vào một hàng đợi và ứng dụng
+/// xử lý theo thứ tự đó. Phím giả bộ gõ gửi lúc xử lý một phím được xếp sau những phím thật đã nằm sẵn trong hàng đợi (ứng dụng
+/// chậm: `backlog` phím). ⌫ giả đi qua bộ gõ (báo cho Session), chữ giả thì không. `blind`: con trỏ luôn báo {0,0}.
 private final class SyntheticField: TextClient {
+    enum Event { case key(Character), fakeBackspace, fakeText(String) }
     var units: [UInt16] = []
     var caret = 0
-    var swallowable: Bool
     var blind: Bool
     var allowPost = true
-    var swallowed = false
-    var queue: [(deletes: Int, text: String)] = []
+    var queue: [Event] = []
+    var backlog = 0
+    var commitAfterEveryKey = false
+    var synthetic = true
     let session = Session()
     var options = EngineOptions()
-    var synthetic = true
-    init(swallowable: Bool, blind: Bool = false) { self.swallowable = swallowable; self.blind = blind }
+    init(blind: Bool = false) { self.blind = blind }
 
     var text: String { String(decoding: units, as: UTF16.self) }
 
@@ -187,11 +188,10 @@ private final class SyntheticField: TextClient {
     func insertText(_ t: String) { units.insert(contentsOf: Array(t.utf16), at: caret); caret += t.utf16.count }
     func postKeys(deleting: Int, inserting: String) -> Bool {
         guard allowPost else { return false }
-        queue.append((deleting, inserting))
+        for _ in 0..<deleting { queue.append(.fakeBackspace) }
+        if !inserting.isEmpty { queue.append(.fakeText(inserting)) }
         return true
     }
-    var keySwallowable: Bool { swallowable }
-    func swallowKey() { swallowed = true }
     var canPostKeys: Bool { allowPost }
 
     func deleteBack() {
@@ -201,29 +201,27 @@ private final class SyntheticField: TextClient {
         units.removeSubrange((caret - n)..<caret)
         caret -= n
     }
-    /// Phím giả tới ứng dụng (sau phím vừa xử lý).
-    func flush() {
-        let q = queue
-        queue = []
-        for e in q {
-            for _ in 0..<e.deletes { deleteBack() }
-            insertText(e.text)
+    private func processOne() {
+        switch queue.removeFirst() {
+        case let .key(k):
+            let handled = session.handle(k == "⌫" ? .backspace : .char(k), self, options: options, forceMarked: false,
+                                         synthetic: synthetic)
+            if commitAfterEveryKey { session.commitRequested(self) }
+            if !handled { if k == "⌫" { deleteBack() } else { insertText(String(k)) } }
+        case .fakeBackspace:
+            deleteBack()
+            session.syntheticBackspaceArrived()
+        case let .fakeText(t):
+            insertText(t)
         }
     }
-    /// Như Java: AWT gọi commitComposition sau mọi phím (abandonInput).
-    var commitAfterEveryKey = false
-
-    func press(_ k: Character) {
-        swallowed = false
-        let handled = session.handle(k == "⌫" ? .backspace : .char(k), self, options: options, forceMarked: false,
-                                     synthetic: synthetic)
-        if commitAfterEveryKey { session.commitRequested(self) }
-        // Ứng dụng nhận phím trừ khi bộ gõ trả lời "đã xử lý" VÀ đã giữ được phím (Java: setMarkedText("")).
-        let appGetsKey = !handled || !swallowable || !swallowed
-        if appGetsKey { if k == "⌫" { deleteBack() } else { insertText(String(k)) } }
-        flush()
+    func type(_ keys: String) {
+        for k in keys {
+            queue.append(.key(k))
+            while queue.count > backlog { processOne() }
+        }
+        while !queue.isEmpty { processOne() }
     }
-    func type(_ keys: String) { for k in keys { press(k) } }
 }
 
 /// Ô web của Chromium (render_widget_host_view_cocoa.mm), theo đúng cách bộ đệm phía trình duyệt cập nhật:
@@ -1150,7 +1148,8 @@ final class SessionTests: XCTestCase {
 
     /// Ô kiểu Qt 5 (con trỏ luôn báo 0, bỏ qua vùng cần thay): không bao giờ chèn ư / ơ vào giữa từ ("awesome" → "aưesome");
     /// thấy rồi thì các từ sau gõ bằng marked text (GTVInput còn nhận ra Qt 5 trước cả từ đầu tiên, xem `AppToolkit`).
-    /// Java (Burp…), Qt 5, GTK: gõ bằng phím ⌫ giả — đúng chữ, không marked text, cả khi ô giữ được phím (Java) lẫn không.
+    /// Java (Burp…), Qt 5, GTK: gõ bằng phím ⌫ giả — đúng chữ, không marked text, kể cả khi ứng dụng chậm hơn tốc độ gõ (phím
+    /// thật kế tiếp tới trước phím giả: IME Lab "Vieệ") và khi ứng dụng chốt từ sau mọi phím (Java).
     func testSyntheticKeysTypeWithoutUnderline() {
         let cases: [(InputMethod, String, String)] = [
             (.vni, "d9a38ng ", "đẳng "),
@@ -1162,18 +1161,19 @@ final class SessionTests: XCTestCase {
             (.vni, "ho6i ⌫3 ", "hổi "),
         ]
         for (method, keys, expect) in cases {
-            for swallowable in [true, false] {
+            for backlog in 0...3 {
                 for commitEveryKey in [false, true] {
-                    let f = SyntheticField(swallowable: swallowable)
+                    let f = SyntheticField()
+                    f.backlog = backlog
                     f.commitAfterEveryKey = commitEveryKey
                     f.options.method = method
                     f.type(keys)
-                    XCTAssertEqual(f.text, expect, "\(method) \(keys) swallowable \(swallowable) commit \(commitEveryKey)")
+                    XCTAssertEqual(f.text, expect, "\(method) \(keys) backlog \(backlog) commit \(commitEveryKey)")
                 }
             }
         }
         // Không có quyền gửi phím: không chèn chữ rác — phím đi nguyên văn.
-        let g = SyntheticField(swallowable: true)
+        let g = SyntheticField()
         g.allowPost = false
         g.options.method = .vni
         g.type("d9a38ng ")
@@ -1184,7 +1184,7 @@ final class SessionTests: XCTestCase {
     /// giả — không từ nào mất dấu, không gạch chân.
     func testBlindViewSwitchesToSyntheticKeys() {
         for method in [InputMethod.vni, .telex] {
-            let f = SyntheticField(swallowable: false, blind: true)
+            let f = SyntheticField(blind: true)
             f.synthetic = false
             f.options.method = method
             f.type(method == .vni ? "d9a82ng tie61ng vie65t " : "ddawngf tieengs vieejt ")

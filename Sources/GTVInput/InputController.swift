@@ -320,8 +320,9 @@ final class GTVInputController: IMKInputController {
             switch SyntheticKeys.shared.match(event) {
             case let m? where m.kind == .edit:
                 // Phím giả của chính bộ gõ: để ứng dụng xử lý (ghi vào sổ phím cho khớp bộ đếm của hệ thống, trừ phím chữ giả đã
-                // báo trước).
+                // báo trước). ⌫ giả tới ứng dụng đúng lúc này: Session cập nhật chữ thật trong ô.
                 if !m.unseenAlready { _ = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID)) }
+                if event.keyCode == 51 { session.syntheticBackspaceArrived() }
                 return false
             case .some:
                 break                         // phím thật gửi lại sau phím giả: xử lý như thường
