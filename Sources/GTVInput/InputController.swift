@@ -69,6 +69,20 @@ private final class ClientAdapter: TextClient {
     func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
 
     func lateEditSafe() -> Bool { KeyWatch.shared.lateEditSafe() }
+
+    /// Ô Java (AWT): trả lời "đã xử lý" không làm Java bỏ phím; marked text rỗng thì có (AWTView: fKeyEventsNeeded = NO).
+    var swallowsWithEmptyMark = false
+
+    func postKeys(deleting: Int, inserting: String) -> Bool {
+        SyntheticKeys.shared.post(deleting: deleting, inserting: inserting)
+    }
+    var keySwallowable: Bool { swallowsWithEmptyMark }
+    func swallowKey() {
+        if swallowsWithEmptyMark {
+            client?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: notFound)
+        }
+    }
+    var canPostKeys: Bool { SyntheticKeys.shared.available }
 }
 
 /// Một controller cho mỗi ô nhập liệu.
@@ -301,6 +315,25 @@ final class GTVInputController: IMKInputController {
             return false
         case .keyDown:
             hotkeyArmedAt = nil
+            switch SyntheticKeys.shared.match(event) {
+            case .edit?:
+                // Phím giả của chính bộ gõ: để ứng dụng xử lý (vẫn ghi vào sổ phím cho khớp bộ đếm của hệ thống).
+                _ = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID))
+                return false
+            case .user?:
+                break                         // phím thật gửi lại sau phím giả: xử lý như thường
+            case nil:
+                if SyntheticKeys.shared.inFlight, javaView == true {
+                    // Phím thật tới trước phím giả của lần sửa trước: giữ lại, gửi lại sau chúng (đúng thứ tự gõ).
+                    _ = KeyWatch.shared.observe(event, terminal: false)
+                    adapter.client = client
+                    adapter.swallowsWithEmptyMark = true
+                    adapter.swallowKey()
+                    adapter.client = nil
+                    SyntheticKeys.shared.repost(event)
+                    return true
+                }
+            }
         default:                             // click chuột: con trỏ có thể đã đổi chỗ
             commit(client)
             KeyWatch.shared.rebase()
@@ -373,9 +406,21 @@ final class GTVInputController: IMKInputController {
                 earlyCommit = false
             }
         } else if !forceMarked {
-            // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, LibreOffice, Emacs, MacVim — gõ bằng marked text.
-            forceMarked = toolkit.markedOnly || (toolkit.swiftTerm && clientKind == .terminalView) || isJavaView(client)
+            // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, terminal
+            // SwiftTerm / xterm.dart — gõ bằng phím ⌫ giả (không gạch chân) nếu có quyền Trợ năng, không thì marked text.
+            forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
+                || isJavaView(client)
         }
+        var synthetic = false
+        if forceMarked, !settings.alwaysMarked, !settings.useMarked(for: bundleID), terminal == nil {
+            if SyntheticKeys.shared.available {
+                synthetic = true
+                forceMarked = false
+            } else {
+                SyntheticKeys.shared.requestPermissionOnce()
+            }
+        }
+        adapter.swallowsWithEmptyMark = javaView == true
         if clientKind == nil { classify(client) }
         // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
         let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in
@@ -387,8 +432,9 @@ final class GTVInputController: IMKInputController {
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),
                                      combinedCommit: toolkit.combinedCommit,
                                      clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
-                                     keyText: keyText, web: chromiumWeb && !forceMarked && terminal == nil)
-        if javaView == true { scheduleJavaCommit(client) }
+                                     keyText: keyText, web: chromiumWeb && !forceMarked && terminal == nil,
+                                     synthetic: synthetic)
+        if javaView == true, !synthetic { scheduleJavaCommit(client) }
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled
     }

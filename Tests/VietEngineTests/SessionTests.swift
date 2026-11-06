@@ -161,6 +161,67 @@ private final class Qt5Field: TextClient {
     }
 }
 
+/// Ô chỉ sửa được bằng phím ⌫ giả (Java AWT, Qt 5, GTK…): bỏ qua vùng thay; phím giả (CGEventPost) tới ứng dụng SAU phím đang
+/// xử lý, theo đúng thứ tự gửi. `swallowable`: như Java — bộ gõ giữ được phím (setMarkedText("")); không thì phím vẫn tới ứng
+/// dụng dù bộ gõ trả lời "đã xử lý". `blind`: con trỏ luôn báo {0,0} (ô tự vẽ chưa được nhận ra) — bộ gõ phải tự phát hiện.
+private final class SyntheticField: TextClient {
+    var units: [UInt16] = []
+    var caret = 0
+    var swallowable: Bool
+    var blind: Bool
+    var allowPost = true
+    var swallowed = false
+    var queue: [(deletes: Int, text: String)] = []
+    let session = Session()
+    var options = EngineOptions()
+    var synthetic = true
+    init(swallowable: Bool, blind: Bool = false) { self.swallowable = swallowable; self.blind = blind }
+
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { blind ? (0, 0) : (caret, 0) }
+    func text(location: Int, length: Int) -> String? { nil }
+    func replaceText(location: Int, length: Int, with t: String) { insertText(t) }      // bỏ qua vùng thay
+    func setMarkedText(_ t: String) { XCTFail("phím ⌫ giả không dùng marked text") }
+    func replaceViaMarkedText(location: Int, length: Int, with t: String) { insertText(t) }
+    func insertText(_ t: String) { units.insert(contentsOf: Array(t.utf16), at: caret); caret += t.utf16.count }
+    func postKeys(deleting: Int, inserting: String) -> Bool {
+        guard allowPost else { return false }
+        queue.append((deleting, inserting))
+        return true
+    }
+    var keySwallowable: Bool { swallowable }
+    func swallowKey() { swallowed = true }
+    var canPostKeys: Bool { allowPost }
+
+    func deleteBack() {
+        guard caret > 0 else { return }
+        let s = String(decoding: units[..<caret], as: UTF16.self)
+        let n = s.last.map { String($0).utf16.count } ?? 1
+        units.removeSubrange((caret - n)..<caret)
+        caret -= n
+    }
+    /// Phím giả tới ứng dụng (sau phím vừa xử lý).
+    func flush() {
+        let q = queue
+        queue = []
+        for e in q {
+            for _ in 0..<e.deletes { deleteBack() }
+            insertText(e.text)
+        }
+    }
+    func press(_ k: Character) {
+        swallowed = false
+        let handled = session.handle(k == "⌫" ? .backspace : .char(k), self, options: options, forceMarked: false,
+                                     synthetic: synthetic)
+        // Ứng dụng nhận phím trừ khi bộ gõ trả lời "đã xử lý" VÀ đã giữ được phím (Java: setMarkedText("")).
+        let appGetsKey = !handled || !swallowable || !swallowed
+        if appGetsKey { if k == "⌫" { deleteBack() } else { insertText(String(k)) } }
+        flush()
+    }
+    func type(_ keys: String) { for k in keys { press(k) } }
+}
+
 /// Ô web của Chromium (render_widget_host_view_cocoa.mm), theo đúng cách bộ đệm phía trình duyệt cập nhật:
 /// - văn bản thật nằm ở trang; trang báo lại (con trỏ + chữ) cho bộ đệm sau `lag` phím;
 /// - lần sửa của bộ gõ có vùng thay (ImeCommitText) chỉ tới trang, không vào bộ đệm;
@@ -1080,6 +1141,46 @@ final class SessionTests: XCTestCase {
 
     /// Ô kiểu Qt 5 (con trỏ luôn báo 0, bỏ qua vùng cần thay): không bao giờ chèn ư / ơ vào giữa từ ("awesome" → "aưesome");
     /// thấy rồi thì các từ sau gõ bằng marked text (GTVInput còn nhận ra Qt 5 trước cả từ đầu tiên, xem `AppToolkit`).
+    /// Java (Burp…), Qt 5, GTK: gõ bằng phím ⌫ giả — đúng chữ, không marked text, cả khi ô giữ được phím (Java) lẫn không.
+    func testSyntheticKeysTypeWithoutUnderline() {
+        let cases: [(InputMethod, String, String)] = [
+            (.vni, "d9a38ng ", "đẳng "),
+            (.vni, "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c. ", "Việt Nam, tôi yêu tiếng Việt đại học. "),
+            (.telex, "Vieetj Nam ddaij hocj tieengs Vieetj nguwowif ", "Việt Nam đại học tiếng Việt người "),
+            (.telex, "hoafn⌫ ", "hòa "),
+            (.vni, "tie61ng⌫⌫⌫e65t ", "tiệt "),
+            (.telex, "text password coffee ", "text password coffee "),
+            (.vni, "ho6i ⌫3 ", "hổi "),
+        ]
+        for (method, keys, expect) in cases {
+            for swallowable in [true, false] {
+                let f = SyntheticField(swallowable: swallowable)
+                f.options.method = method
+                f.type(keys)
+                XCTAssertEqual(f.text, expect, "\(method) \(keys) swallowable \(swallowable)")
+            }
+        }
+        // Không có quyền gửi phím: không chèn chữ rác — phím đi nguyên văn.
+        let g = SyntheticField(swallowable: true)
+        g.allowPost = false
+        g.options.method = .vni
+        g.type("d9a38ng ")
+        XCTAssertEqual(g.text, "d9a38ng ")
+    }
+
+    /// Ô tự vẽ không cho biết con trỏ (chưa được nhận ra trước): bộ gõ phát hiện ở phím sửa đầu tiên và chuyển sang phím ⌫
+    /// giả — không từ nào mất dấu, không gạch chân.
+    func testBlindViewSwitchesToSyntheticKeys() {
+        for method in [InputMethod.vni, .telex] {
+            let f = SyntheticField(swallowable: false, blind: true)
+            f.synthetic = false
+            f.options.method = method
+            f.type(method == .vni ? "d9a82ng tie61ng vie65t " : "ddawngf tieengs vieejt ")
+            XCTAssertEqual(f.text, "đằng tiếng việt ", "\(method)")
+            XCTAssertTrue(f.session.blindLatched)
+        }
+    }
+
     /// Electron / Chrome khi trang chậm (bộ đệm chậm 0–3 phím, phím cách nhau 10–120 ms): không bao giờ bỏ dấu, không sửa sai
     /// chỗ (người dùng: "d9a38ng" ra "đa38ng" / "đả8ng").
     func testChromiumLagNeverDropsTones() {

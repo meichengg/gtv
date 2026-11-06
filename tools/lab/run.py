@@ -455,6 +455,28 @@ def ime_trace(mark):
     return keep[:40]
 
 
+def used_underline(app, out_file, name):
+    """Bộ gõ có dùng chữ gạch chân (marked text) trong bài không — người dùng muốn không bao giờ có. Swing: InputMethodEvent có
+    phần chữ chưa chốt (text dài hơn số ký tự đã chốt) sau dòng "=== <bài>". Ô --blind: file <file>.marked."""
+    if app == "blind":
+        return "marked text" if pathlib.Path(str(out_file) + ".marked").exists() else ""
+    if app != "swing":
+        return ""
+    ev = pathlib.Path(str(out_file) + ".events")
+    if not ev.exists():
+        return ""
+    lines = ev.read_text(encoding="utf-8", errors="replace").splitlines()
+    try:
+        start = max(i for i, l in enumerate(lines) if l == f"=== {name}")
+    except ValueError:
+        return ""
+    for l in lines[start + 1:]:
+        m = re.match(r"IM committed=(\d+) text=(.*)$", l)
+        if m and len(m.group(2)) > int(m.group(1)):
+            return l
+    return ""
+
+
 def append_events(out_file, line):
     with open(str(out_file) + ".events", "a", encoding="utf-8") as f:
         f.write(line + "\n")
@@ -597,10 +619,15 @@ def run_app_suite(app):
                 mark = log_mark()
                 if app == "swing":
                     append_events(out_file, f"=== {name}")
+                marked_flag = pathlib.Path(str(out_file) + ".marked")
+                marked_flag.unlink(missing_ok=True)
                 drv(bid, keys, ms)
                 time.sleep(0.8)
                 got = read_text(out_file)
-                r.update({"final": got, "pass": got == expect, "shot": shot(f"{app}-{name}")})
+                underline = used_underline(app, out_file, name)
+                r.update({"final": got, "pass": got == expect and not underline, "shot": shot(f"{app}-{name}")})
+                if underline:
+                    r["underline"] = underline
                 r.update(ime_seen(mark, None if app == "swing" else bid))
                 if got != expect:
                     r["trace"] = ime_trace(mark)

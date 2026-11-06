@@ -19,6 +19,15 @@ public protocol TextClient: AnyObject {
     /// Từ phím bộ gõ nhận gần nhất tới giờ không có phím tắt (⌘/⌃/⌥) hay click nào (GTVInput). Lần sửa gửi muộn (kiểu
     /// `.deferred`) chỉ gửi khi đúng như vậy; không thì để phím kế tiếp quyết định.
     func lateEditSafe() -> Bool
+    /// Ô không thay được chữ qua bộ gõ (Java, Qt 5, GTK…): gửi `deleting` phím ⌫ giả rồi `inserting` như phím gõ (CGEventPost),
+    /// tới ứng dụng ngay sau phím đang xử lý. false nếu không gửi được (chưa có quyền Trợ năng).
+    func postKeys(deleting: Int, inserting: String) -> Bool
+    /// Bộ gõ giữ được phím đang xử lý (trả lời "đã xử lý" là ứng dụng không nhận phím đó, sau `swallowKey`).
+    var keySwallowable: Bool { get }
+    /// Làm ứng dụng bỏ phím đang xử lý (Java: setMarkedText("") — trả lời "đã xử lý" không đủ).
+    func swallowKey()
+    /// Gửi được phím giả không (đã có quyền Trợ năng).
+    var canPostKeys: Bool { get }
 }
 
 public extension TextClient {
@@ -26,6 +35,10 @@ public extension TextClient {
     func hasMarkedText() -> Bool { false }
     func currentTime() -> Double { 0 }
     func lateEditSafe() -> Bool { true }
+    func postKeys(deleting: Int, inserting: String) -> Bool { false }
+    var keySwallowable: Bool { false }
+    func swallowKey() {}
+    var canPostKeys: Bool { false }
 }
 
 public enum Key: Equatable {
@@ -168,6 +181,14 @@ public final class Session {
     private var trustMarked = false
     /// Phím gần nhất được xử lý theo đường của ô web Chromium (`handleWeb`).
     private var inWeb = false
+    /// Phím gần nhất được xử lý bằng phím ⌫ giả (`handleSynthetic`).
+    private var inSynthetic = false
+    /// Ô đã cho thấy không cho biết con trỏ thật (gõ trực tiếp: con trỏ nil / ở đầu văn bản / không nhích sau phím đi thẳng):
+    /// từ đó gõ bằng phím ⌫ giả nếu được (`TextClient.canPostKeys`) — không đoán vị trí, không gạch chân.
+    public private(set) var blindLatched = false
+    /// Phím ⌫ giả: từ vừa xong (như trên màn hình) và số ký tự ngăn cách đã gõ sau nó — ⌫ lùi về cuối từ thì gõ tiếp từ đó.
+    private var synPrev: (word: String, sep: Int)?
+    private var synResume: String?
     private var web: WebChain?
     /// Các trạng thái của từ đang gõ (sau mỗi phím): bộ đệm chậm của Chromium cho thấy một trong số đó.
     private var webStates: [String] = []
@@ -233,7 +254,16 @@ public final class Session {
                        qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil,
                        earlyCommit: Bool = false, gap: KeyGap = .none, legacy: String? = nil,
                        combinedCommit: Bool = false, clearAfterCommit: Bool = false,
-                       trustMarked: Bool = false, keyText: String? = nil, web: Bool = false) -> Bool {
+                       trustMarked: Bool = false, keyText: String? = nil, web: Bool = false,
+                       synthetic: Bool = false) -> Bool {
+        if synthetic || (blindLatched && client.canPostKeys && terminal == nil && !web) {
+            inTerminal = false
+            inWeb = false
+            if marked || literalTail { reset() }
+            if !inSynthetic { inSynthetic = true; synPrev = nil; synResume = nil }
+            return handleSynthetic(key, client, options: options, gap: gap)
+        }
+        inSynthetic = false
         if web {
             inTerminal = false
             if marked || literalTail { reset() }
@@ -317,6 +347,14 @@ public final class Session {
                     anchor = 0
                 } else {
                     sel = client.selectedRange()
+                    if sel == nil, client.canPostKeys {
+                        // Ô không cho biết con trỏ: gõ bằng phím ⌫ giả (không gạch chân).
+                        blindLatched = true
+                        inSynthetic = true
+                        synPrev = nil
+                        synResume = nil
+                        return handleSyntheticChar(ch, client)
+                    }
                     marked = sel == nil
                     anchor = sel?.location ?? 0
                 }
@@ -333,6 +371,16 @@ public final class Session {
             } else if !marked {
                 sel = client.selectedRange()
                 if let reason = lostTrack(sel) {
+                    if blindReason(sel), client.canPostKeys {
+                        // Ô không cho biết con trỏ thật: các chữ của từ đều đã đi thẳng (đúng trên màn hình) — từ phím này gõ bằng
+                        // phím ⌫ giả, không cần vị trí.
+                        log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chuyển sang phím ⌫ giả")
+                        blindLatched = true
+                        inSynthetic = true
+                        synPrev = nil
+                        synResume = nil
+                        return handleSyntheticChar(ch, client)
+                    }
                     log?("gõ trực tiếp: \(reason) — các chữ còn lại của từ \(engine.displayed.debugDescription) đi nguyên văn")
                     engine.reset()
                     untracked = true
@@ -1231,6 +1279,151 @@ public final class Session {
         // Chỉ nạp khi thấy trọn từ (đứng sau ký tự không phải chữ, hoặc ở đầu văn bản).
         guard !word.isEmpty, word.utf16.count < len || len == sel.location else { return }
         if engine.seed(word) { anchor = sel.location - word.utf16.count }
+    }
+
+    // MARK: - Phím ⌫ giả (Java, Qt 5, GTK, winit…)
+
+    /// Ô không thay được chữ qua bộ gõ — Java (AWT bỏ qua vùng thay, chỉ có marked text: luôn gạch chân), Qt 5, GTK, winit,
+    /// LibreOffice, Emacs, MacVim, ô tự vẽ không cho biết con trỏ: phím đi thẳng như thường; khi cần sửa, bộ gõ gửi phím ⌫ giả
+    /// rồi chữ mới như phím gõ (CGEventPost) — ứng dụng xử lý như người dùng tự gõ, không gạch chân, không cần vị trí con trỏ.
+    /// Phím giả tới ứng dụng sau phím đang xử lý: ô giữ được phím (`keySwallowable`) thì bộ gõ giữ phím đó và chỉ gửi phần
+    /// sửa; không thì để phím tới ứng dụng và xoá luôn ký tự của nó.
+    private func handleSynthetic(_ key: Key, _ client: TextClient, options: EngineOptions, gap: KeyGap) -> Bool {
+        if gap == .interrupted || gap == .bypassed {
+            // Có phím tắt / click bộ gõ không thấy (Java: ⌘ đi thẳng vào menu): con trỏ có thể đã đổi chỗ — bỏ từ.
+            engine.reset()
+            untracked = false
+            synPrev = nil
+            synResume = nil
+        }
+        switch key {
+        case .other:
+            // Mũi tên, phím tắt…: phím tác dụng trước mọi phím giả gửi lúc này — không sửa gì nữa, bỏ từ.
+            engine.reset()
+            untracked = false
+            synPrev = nil
+            synResume = nil
+            return false
+        case .backspace:
+            return synBackspace(client)
+        case let .char(ch):
+            if engine.isEmpty {
+                engine.options = options
+                if let word = synResume { _ = engine.seed(word) }
+                synResume = nil
+            }
+            return handleSyntheticChar(ch, client)
+        }
+    }
+
+    private func handleSyntheticChar(_ ch: Character, _ client: TextClient) -> Bool {
+        if untracked {
+            if Self.continuesWord(ch) { return false }
+            untracked = false
+            engine.reset()
+        }
+        guard let action = engine.process(ch) else { return synEndWord(client, terminator: ch) }
+        switch action {
+        case .passThrough:
+            return false
+        case let .replace(old, new):
+            return synEdit(old: old, new: new, typed: ch, client)
+        }
+    }
+
+    /// Phần khác nhau giữa `old` và `new` (đếm theo ký tự — ⌫ xoá một ký tự dựng sẵn).
+    private static func synDiff(_ old: String, _ new: String) -> (deletes: Int, insert: String) {
+        var oi = old.startIndex, ni = new.startIndex
+        while oi < old.endIndex, ni < new.endIndex, old[oi] == new[ni] {
+            oi = old.index(after: oi)
+            ni = new.index(after: ni)
+        }
+        return (old[oi...].count, String(new[ni...]))
+    }
+
+    /// `old` đang trên màn hình ngay trước con trỏ; phím `typed` biến nó thành `new`.
+    private func synEdit(old: String, new: String, typed: Character, _ client: TextClient) -> Bool {
+        let (deletes, insert) = Self.synDiff(old, new)
+        if client.keySwallowable {
+            if client.postKeys(deleting: deletes, inserting: insert) {
+                client.swallowKey()
+                return true
+            }
+        } else if client.postKeys(deleting: deletes + 1, inserting: insert) {
+            return false                              // ký tự của phím tới trước, bị xoá cùng các ký tự cũ
+        }
+        log?("phím ⌫ giả: không gửi được — các chữ còn lại của từ đi nguyên văn")
+        engine.reset()
+        untracked = true
+        return false
+    }
+
+    private func synEndWord(_ client: TextClient, terminator ch: Character) -> Bool {
+        let printable = Self.producesText(ch) && !"\r\n\t".contains(ch)
+        guard !engine.isEmpty else {
+            if printable, synPrev != nil { synPrev!.sep += 1 } else if !printable { synPrev = nil }
+            return false
+        }
+        let shown = engine.displayed
+        let (final, action) = engine.finishWord()
+        guard printable else {
+            // ⏎ ⇥ ⎋: phím tác dụng trước phím giả — không khôi phục từ.
+            synPrev = nil
+            return false
+        }
+        synPrev = (final, 1)
+        guard case let .replace(old, new) = action else {
+            synPrev = (shown, 1)
+            return false
+        }
+        // Khôi phục từ tiếng Anh / sửa "ươ" khi hết từ: sửa cùng ký tự kết thúc từ.
+        let (deletes, insert) = Self.synDiff(old, new)
+        if client.keySwallowable {
+            if client.postKeys(deleting: deletes, inserting: insert + String(ch)) {
+                client.swallowKey()
+                return true
+            }
+        } else if client.postKeys(deleting: deletes + 1, inserting: insert + String(ch)) {
+            return false
+        }
+        synPrev = (shown, 1)
+        return false
+    }
+
+    private func synBackspace(_ client: TextClient) -> Bool {
+        synResume = nil
+        if untracked {
+            untracked = false
+            engine.reset()
+            return false
+        }
+        if engine.isEmpty {
+            if var p = synPrev {
+                p.sep -= 1
+                if p.sep <= 0 {
+                    synPrev = nil
+                    synResume = p.word
+                } else {
+                    synPrev = p
+                }
+            }
+            return false
+        }
+        let old = engine.displayed
+        guard case let .replace(_, new) = engine.backspace() else { return false }   // ứng dụng tự xoá ký tự cuối
+        // Xoá lùi làm đổi chữ còn lại ("hoàn" ⌫ → "hòa"): ⌫ của ứng dụng xoá ký tự cuối trước, rồi phím giả sửa phần còn lại.
+        let (deletes, insert) = Self.synDiff(String(old.dropLast()), new)
+        if deletes > 0 || !insert.isEmpty, !client.postKeys(deleting: deletes, inserting: insert) { engine.reset() }
+        return false
+    }
+
+    /// Lý do mất dấu của `lostTrack` là do ô không cho biết con trỏ thật (không phải ô đã đổi chữ / dời con trỏ).
+    private func blindReason(_ sel: (location: Int, length: Int)?) -> Bool {
+        guard let sel else { return true }
+        let expected = anchor + engine.displayed.utf16.count
+        if sel.location == 0, sel.length == 0, expected > 0 { return true }
+        if let at = passedAt, sel.location == at { return true }
+        return false
     }
 
     // MARK: - Ô web Chromium (Chrome, Electron)

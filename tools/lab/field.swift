@@ -60,6 +60,7 @@ final class BlindView: NSView, NSTextInputClient {
     }
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         marked = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        if !marked.isEmpty { try? "1".write(toFile: out.path + ".marked", atomically: true, encoding: .utf8) }   // lab: có gạch chân
         needsDisplay = true
     }
     func unmarkText() { marked = "" }

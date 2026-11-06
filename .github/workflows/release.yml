@@ -69,6 +69,28 @@ jobs:
           xcodebuild -project GTV.xcodeproj -scheme GTV -derivedDataPath build/dd test \
             | grep -E "Executed|error:|TEST (SUCCEEDED|FAILED)|BUILD (SUCCEEDED|FAILED)"
 
+      # Chứng chỉ ký mã riêng của fork: chữ ký cố định giữa các bản (quyền Trợ năng của bộ gõ không mất khi cập nhật).
+      - name: Import code signing certificate
+        env:
+          P12: ${{ secrets.GTV_SIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.GTV_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then echo "::warning::GTV_SIGN_P12 secret is not set: ad-hoc signature"; exit 0; fi
+          kc="$RUNNER_TEMP/sign.keychain-db"
+          kpw="$(openssl rand -hex 16)"
+          security create-keychain -p "$kpw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kpw" "$kc"
+          (umask 077; printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/sign.p12")
+          security import "$RUNNER_TEMP/sign.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          rm -f "$RUNNER_TEMP/sign.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kpw" "$kc" >/dev/null 2>&1
+          id="$(security find-identity -p codesigning "$kc" | awk '/GTV Code Signing/ {print $2; exit}')"
+          [ -n "$id" ] || { echo "::error::code signing identity not found in the imported certificate"; exit 1; }
+          echo "SELF_SIGN_IDENTITY=$id" >> "$GITHUB_ENV"
+          echo "SELF_SIGN_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          echo "Signing: GTV Code Signing (meichengg)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build DMG
         run: ./dmg.sh
 
