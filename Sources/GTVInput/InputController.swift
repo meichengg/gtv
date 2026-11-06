@@ -330,7 +330,7 @@ final class GTVInputController: IMKInputController {
                 // báo trước). ⌫ giả tới ứng dụng đúng lúc này: Session cập nhật chữ thật trong ô.
                 if !m.unseenAlready {
                     let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID),
-                                                      throughIME: true, synthetic: true)
+                                                      throughIME: true, syntheticSince: m.stamp)
                     // Click / phím tắt bộ gõ không thấy, lộ ra lúc phím giả tới (sổ phím đã dùng nó): phím thật kế tiếp không
                     // còn thấy — báo luôn cho Session.
                     if gap == .interrupted || gap == .bypassed { session.inputInterrupted() }

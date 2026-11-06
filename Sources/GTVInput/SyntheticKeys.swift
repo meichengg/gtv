@@ -147,7 +147,7 @@ final class SyntheticKeys {
 
     /// Phím vừa tới bộ gõ có phải phím giả kế tiếp trong hàng đợi không (lấy nó ra khỏi hàng đợi nếu đúng). `unseenAlready`:
     /// phím chữ giả đã được báo trước cho sổ phím (không ghi vào sổ lần nữa).
-    func match(_ event: NSEvent) -> (kind: Kind, unseenAlready: Bool)? {
+    func match(_ event: NSEvent) -> (kind: Kind, unseenAlready: Bool, stamp: TimeInterval)? {
         expireIfStale()
         if stampsUsable, let head = expected.first(where: { !$0.optional }),
            event.keyCode != head.keyCode || (head.characters != nil && event.characters != head.characters),
@@ -183,7 +183,7 @@ final class SyntheticKeys {
                 if !e.optional { lastPostMatch = (e.stamp, event.timestamp) }
                 postedAt = ProcessInfo.processInfo.systemUptime
                 DebugLog.write("phím giả: khớp phím \(event.keyCode)\(e.kind == .user ? " (phím thật gửi lại)" : "") Δ \(String(format: "%+.1f", dt * 1000)) ms")
-                return (e.kind, e.optional)
+                return (e.kind, e.optional, e.stamp)
             }
             guard e.optional else { return nil }
             i += 1

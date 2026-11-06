@@ -1680,12 +1680,19 @@ final class SessionTests: XCTestCase {
         var t = 100.0
         log.sample(at: t, held: [], button: false, flags: 0)
         for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
-        log.syntheticKeyArrived(51, at: t)
+        log.syntheticKeyArrived(51, since: t - 0.01)
         for _ in 0..<10 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
         for _ in 0..<3 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }
         XCTAssertTrue(log.pending.contains { $0.key == 51 }, "⌫ thật bị nuốt")
-        log.syntheticKeyArrived(51, at: t - 0.2)                     // ⌫ giả gửi từ trước tới bây giờ
+        let realAt = t
+        t += 0.05
+        log.syntheticKeyArrived(51, since: realAt + 0.01)             // ⌫ giả gửi sau lần nhấn thật
         XCTAssertTrue(log.pending.contains { $0.key == 51 }, "⌫ giả lấy mất lần nhấn ⌫ thật")
+        for _ in 0..<3 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
+        t += 0.008
+        log.sample(at: t, held: [51], button: false, flags: 0)        // trạng thái phím của ⌫ giả đọc được (máy chậm)
+        log.syntheticKeyArrived(51, since: t - 0.004)
+        XCTAssertEqual(log.pending.filter { $0.key == 51 }.count, 1, "lần nhấn của ⌫ giả còn lại")
         log.keyReceived(51, at: t + 0.01, isRepeat: false)            // ⌫ thật tới
         XCTAssertFalse(log.pending.contains { $0.key == 51 })
         var w = PointerWatch()

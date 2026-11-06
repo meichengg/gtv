@@ -151,8 +151,8 @@ final class KeyWatch {
     /// Gọi với mọi keyDown bộ gõ nhận (cả ở chế độ E, ứng dụng loại trừ), trước khi xử lý phím: giữa phím trước
     /// mà bộ gõ thấy và phím này có phím / click nào bộ gõ không thấy không.
     /// `terminal`: ô nhập liệu của app terminal (chỉ ở đó các tín hiệu này được dùng: đọc trạng thái liên tục, hẹn kiểm tra).
-    /// `synthetic`: phím giả của chính bộ gõ (vẫn vào sổ đếm, không được coi là lần nhấn của người dùng).
-    func observe(_ event: NSEvent, terminal: Bool, throughIME: Bool = false, synthetic: Bool = false) -> KeyGap {
+    /// `syntheticSince`: phím giả của chính bộ gõ, gửi lúc đó (vẫn vào sổ đếm, không được coi là lần nhấn của người dùng).
+    func observe(_ event: NSEvent, terminal: Bool, throughIME: Bool = false, syntheticSince: Double? = nil) -> KeyGap {
         if !counterModeKnown {
             let before = counterMode
             detectCounterMode()
@@ -185,8 +185,8 @@ final class KeyWatch {
             // không gõ thì lần đọc vừa rồi bắt đầu lại từ đầu).
             covered = previousRead.map { log.covered(since: $0) } ?? true
             read = log.lastSample
-            if synthetic {
-                log.syntheticKeyArrived(event.keyCode, at: event.timestamp)
+            if let since = syntheticSince {
+                log.syntheticKeyArrived(event.keyCode, since: since)
             } else {
                 log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat)
             }
