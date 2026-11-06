@@ -186,6 +186,21 @@ public final class Session {
     /// Ô đã cho thấy không cho biết con trỏ thật (gõ trực tiếp: con trỏ nil / ở đầu văn bản / không nhích sau phím đi thẳng):
     /// từ đó gõ bằng phím ⌫ giả nếu được (`TextClient.canPostKeys`) — không đoán vị trí, không gạch chân.
     public private(set) var blindLatched = false
+    /// Con trỏ ô báo lúc bật `blindLatched`. Ô mù báo mãi một giá trị (nil, {0,0}, vùng chọn cũ của SDL); đầu từ sau mà ô báo con
+    /// trỏ khác là ô thật (ô chậm vừa báo kịp, hay khung khác trong cùng view — terminal và editor của Zed): gỡ cờ.
+    private var blindSel: (location: Int, length: Int)?
+
+    /// Bật cờ ô mù, nhớ con trỏ lúc đó.
+    private func latchBlind(_ sel: (location: Int, length: Int)?) {
+        blindLatched = true
+        blindSel = sel
+    }
+
+    /// Bộ gõ được gắn vào ô khác / người dùng click: cờ ô mù không còn đúng.
+    public func fieldChanged() {
+        blindLatched = false
+        blindSel = nil
+    }
     /// Phím ⌫ giả: chữ người dùng định gõ (từ mốc đồng bộ) trước từ đang gõ.
     private var synBefore = ""
     /// Phím ⌫ giả: chữ thật trong ô (từ mốc đồng bộ), theo đúng thứ tự ứng dụng xử lý các phím (phím thật và ⌫ giả đều đi qua
@@ -264,13 +279,34 @@ public final class Session {
                        combinedCommit: Bool = false, clearAfterCommit: Bool = false,
                        trustMarked: Bool = false, keyText: String? = nil, web: Bool = false,
                        synthetic: Bool = false) -> Bool {
+        if blindLatched, terminal == nil, !web, !synthetic, engine.isEmpty, !marked, case .char = key {
+            let sel = client.selectedRange()
+            if sel?.location != blindSel?.location || sel?.length != blindSel?.length {
+                log?("ô báo con trỏ \(String(describing: sel)) khác lúc nhận là ô mù (\(String(describing: blindSel))) — gõ lại như ô thường")
+                fieldChanged()
+            }
+        }
         // Ô mù (không cho biết con trỏ) mà chưa có quyền gửi phím: gạch chân còn hơn chữ đi nguyên văn.
         let forceMarked = forceMarked || (blindLatched && !client.canPostKeys && terminal == nil && !web && !synthetic)
         if synthetic || (blindLatched && client.canPostKeys && terminal == nil && !web && !forceMarked) {
             inTerminal = false
             inWeb = false
             if marked || literalTail { reset() }
-            if !inSynthetic { inSynthetic = true; synReset() }
+            if !inSynthetic {
+                // Vừa đổi sang phím ⌫ giả giữa từ (ứng dụng vừa được nhận ra): chữ của từ đã đi thẳng thì ô đang có đúng chúng;
+                // từ đã được sửa theo cách khác thì không chắc — bỏ từ, không xoá gì.
+                let carry = !engine.isEmpty && !untracked
+                let exact = carry && lastEdit == nil && !inWeb
+                inSynthetic = true
+                synReset()
+                if exact {
+                    synScreen = engine.displayed
+                } else if carry {
+                    engine.reset()
+                    untracked = true
+                }
+            }
+            inWeb = false
             return handleSynthetic(key, client, options: options, gap: gap)
         }
         inSynthetic = false
@@ -359,7 +395,7 @@ public final class Session {
                     sel = client.selectedRange()
                     if sel == nil, client.canPostKeys {
                         // Ô không cho biết con trỏ: gõ bằng phím ⌫ giả (không gạch chân).
-                        blindLatched = true
+                        latchBlind(nil)
                         inSynthetic = true
                         synReset()
                         return handleSyntheticChar(ch, client)
@@ -380,20 +416,21 @@ public final class Session {
             } else if !marked {
                 sel = client.selectedRange()
                 if let reason = lostTrack(sel) {
-                    if blindReason(sel), client.canPostKeys {
+                    if blindReason(sel, frozen: true), client.canPostKeys {
                         // Ô không cho biết con trỏ thật: các chữ của từ đều đã đi thẳng (đúng trên màn hình) — từ phím này gõ bằng
                         // phím ⌫ giả, không cần vị trí.
                         log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chuyển sang phím ⌫ giả")
-                        blindLatched = true
+                        latchBlind(sel)
                         inSynthetic = true
                         synReset()
                         synScreen = engine.displayed          // các chữ của từ đều đã đi thẳng
                         return handleSyntheticChar(ch, client)
                     }
-                    if blindReason(sel) {
-                        // Chưa có quyền gửi phím (Trợ năng): từ sau gõ bằng gạch chân.
+                    if blindReason(sel, frozen: false) {
+                        // Chưa có quyền gửi phím (Trợ năng): từ sau gõ bằng gạch chân. (Con trỏ đứng yên kiểu SDL thì không: ở
+                        // đó marked text đổi con trỏ báo, cờ sẽ bật / gỡ xen kẽ — từ gạch chân từ không.)
                         log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chưa có quyền gửi phím: từ sau gạch chân")
-                        blindLatched = true
+                        latchBlind(sel)
                     }
                     log?("gõ trực tiếp: \(reason) — các chữ còn lại của từ \(engine.displayed.debugDescription) đi nguyên văn")
                     engine.reset()
@@ -1473,12 +1510,15 @@ public final class Session {
     }
 
     /// Lý do mất dấu của `lostTrack` là do ô không cho biết con trỏ thật (không phải ô đã đổi chữ / dời con trỏ).
-    private func blindReason(_ sel: (location: Int, length: Int)?) -> Bool {
-        // Chỉ khi ô thật sự không cho biết con trỏ (nil, luôn {0,0}); con trỏ chưa nhích sau phím đi thẳng có thể chỉ là ô chậm
-        // (WebKit trả lời từ bộ đệm) — không chuyển hẳn sang phím ⌫ giả vì thế.
+    private func blindReason(_ sel: (location: Int, length: Int)?, frozen: Bool) -> Bool {
+        // Ô không cho biết con trỏ (nil, {0,0}) hay con trỏ không nhích sau phím đi thẳng (SDL: vùng chọn cũ). Ô chậm (WebKit
+        // trả lời từ bộ đệm) cũng trông như vậy — cờ chỉ giữ tới khi ô báo con trỏ khác (xem `blindSel`), từ này gõ bằng phím ⌫
+        // giả vẫn đúng (không cần vị trí).
         guard let sel else { return true }
         let expected = anchor + engine.displayed.utf16.count
-        return sel.location == 0 && sel.length == 0 && expected > 0
+        if sel.location == 0 && sel.length == 0 && expected > 0 { return true }
+        if frozen, let at = passedAt, sel.length == 0, sel.location == at { return true }
+        return false
     }
 
     // MARK: - Ô web Chromium (Chrome, Electron)
@@ -1573,12 +1613,12 @@ public final class Session {
         if webPending != nil { flushWebPending(client, final: true) }   // lần sửa còn chờ: tới trang trước phím này
         defer { webLastKeyAt = client.currentTime() }
         if engine.isEmpty, !untracked, gap == .interrupted || gap == .bypassed {
-            // Có click / phím tắt bộ gõ không thấy (Chromium không đưa chuột cho bộ gõ): con trỏ có thể đã ở chỗ khác — từ sau
-            // đọc lại bộ đệm, không gõ liền chuỗi cũ. Giữa từ thì không: lần sửa đã so bộ đệm.
-            web = nil
+            // Có click / phím tắt bộ gõ không thấy (Chromium không đưa chuột cho bộ gõ; macOS 27 báo click muộn tới 0,5 s): con
+            // trỏ có thể đã ở chỗ khác. Không bỏ chuỗi (trang chậm thì bộ đệm còn cũ — bắt đầu lại ở đó là sửa sai chỗ) mà coi
+            // như chưa có bằng chứng vị trí: lần sửa đầu chờ bộ đệm xác nhận; không gõ tiếp từ trước sau ⌫.
+            web?.proven = false
             webPrev = nil
             webResume = nil
-            continueWordOnNextChar = false
         }
         switch key {
         case .other:
@@ -1728,7 +1768,7 @@ public final class Session {
             webAccept(t)
             return .current
         }
-        if !webShowsRest(client, sel.location, m: m, model: model), webAccept(t) { return .lag }
+        if webAcceptOlder(client, t, location: sel.location, m: m, model: model) { return .lag }
         return webMoved(client, sel, word)
     }
 
@@ -1736,9 +1776,8 @@ public final class Session {
     private func webCacheIsOlder(_ client: TextClient, _ location: Int, chain: WebChain, model: String) -> Bool {
         let m = location - chain.start
         guard m >= 0 else { return false }
-        if webShowsRest(client, location, m: m, model: model) { return false }
         guard let t = m == 0 ? "" : client.text(location: chain.start, length: m) else { return true }
-        return webAccept(t)
+        return webAcceptOlder(client, t, location: location, m: m, model: model)
     }
 
     /// Bộ đệm có cả phần chuỗi SAU con trỏ (`model` từ vị trí `m`): trang đã xử lý những chữ đó nên không chậm — con trỏ lùi vì
@@ -1756,24 +1795,39 @@ public final class Session {
     /// trạng thái (trang báo chậm — mỗi phím là một trạng thái, kể cả trước các ⌫), hay trạng thái + chữ của lần chèn gần nhất
     /// (Chromium tự đoán từ vị trí báo lần cuối). Trả về số thứ tự nhỏ nhất của trạng thái trang có thể đang ở. Không nhận "phần
     /// đầu của một trạng thái" (click lùi vào giữa văn bản cũng trông như vậy) hay trạng thái + chữ khác (trang tự đổi chữ).
-    private func webMatch(_ t: String) -> Int? {
+    /// `guess`: khớp được theo dạng Chromium tự đoán (trạng thái + chữ chèn gần nhất) — khi đó chữ SAU con trỏ trong bộ đệm có
+    /// thể là các lần đoán trước đó chồng lên nhau (mỗi lần đoán chèn vào cùng một chỗ), không phải phần chuỗi trang đã có.
+    private func webMatch(_ t: String) -> (serial: Int, guess: Bool)? {
         let tu = Array(t.utf16)
-        let guess = webLastInsert.map { Array($0.utf16) }
+        let g = webLastInsert.map { Array($0.utf16) }
+        var found: Int?
+        var guess = false
         for s in webRecent where s.serial >= webSeen {
             let su = Array(s.text.utf16)
-            if tu == su { return s.serial }
-            if let g = guess, tu.count == su.count + g.count, tu.starts(with: su), Array(tu[su.count...]) == g {
-                return s.serial
+            let exact = tu == su
+            let guessed = g.map { tu.count == su.count + $0.count && tu.starts(with: su) && Array(tu[su.count...]) == $0 } ?? false
+            if exact || guessed {
+                if found == nil { found = s.serial }
+                if guessed { guess = true }
             }
         }
-        return nil
+        return found.map { ($0, guess) }
+    }
+
+    /// Bộ đệm cho thấy trạng thái cũ của chuỗi (trang chậm) — không phải người dùng click lùi (xem `webShowsRest`); ghi nhận
+    /// trạng thái trang đã báo.
+    private func webAcceptOlder(_ client: TextClient, _ t: String, location: Int, m: Int, model: String) -> Bool {
+        guard let found = webMatch(t) else { return false }
+        if !found.guess, webShowsRest(client, location, m: m, model: model) { return false }
+        webSeen = max(webSeen, found.serial)
+        return true
     }
 
     /// `webMatch`, và ghi nhận trạng thái trang đã báo.
     @discardableResult
     private func webAccept(_ t: String) -> Bool {
-        guard let serial = webMatch(t) else { return false }
-        webSeen = max(webSeen, serial)
+        guard let found = webMatch(t) else { return false }
+        webSeen = max(webSeen, found.serial)
         return true
     }
 
@@ -1981,7 +2035,8 @@ public final class Session {
             if var d = webDeletes {
                 d.count += 1
                 webDeletes = d
-            } else if let sel = client.selectedRange(), sel.length == 0 {
+            } else if client.currentTime() - webLastKeyAt > Self.webIdleBreak, let sel = client.selectedRange(), sel.length == 0 {
+                // Chỉ khi trang đã có thời gian báo (lâu không gõ): ngay sau ⏎ / ⇥ / mũi tên thì bộ đệm có thể chưa có phím đó.
                 let len = min(sel.location, 32)
                 webDeletes = (sel.location, client.text(location: sel.location - len, length: len) ?? "", 1)
             }

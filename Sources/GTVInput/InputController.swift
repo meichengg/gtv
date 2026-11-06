@@ -137,6 +137,7 @@ final class GTVInputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         session.reset()
+        session.fieldChanged()
         hotkeyArmedAt = nil
         clientKind = nil
         kindRefined = false
@@ -340,6 +341,7 @@ final class GTVInputController: IMKInputController {
             }
         default:                             // click chuột: con trỏ có thể đã đổi chỗ
             commit(client)
+            session.fieldChanged()
             KeyWatch.shared.rebase()
             return false
         }
@@ -447,6 +449,9 @@ final class GTVInputController: IMKInputController {
                                      keyText: keyText, web: chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil,
                                      synthetic: synthetic)
         if javaView == true, !synthetic { scheduleJavaCommit(client) }
+        if !synthetic, session.blindLatched, SyntheticKeys.shared.available, terminal == nil {
+            LiveInput.shared.keepTerminal(for: 5)       // ô mù gõ bằng phím ⌫ giả: như trên
+        }
         #if DEBUG
         let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
             : forceMarked ? "gạch chân" : "trực tiếp"

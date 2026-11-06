@@ -180,7 +180,12 @@ private final class SyntheticField: TextClient {
 
     var text: String { String(decoding: units, as: UTF16.self) }
 
-    func selectedRange() -> (location: Int, length: Int)? { blind ? (0, 0) : (caret, 0) }
+    /// SDL: con trỏ báo đứng yên ở giá trị này (vùng chọn của lần setMarkedText cũ).
+    var frozenCaret: Int?
+    func selectedRange() -> (location: Int, length: Int)? {
+        if let f = frozenCaret { return (f, 0) }
+        return blind ? (0, 0) : (caret, 0)
+    }
     func text(location: Int, length: Int) -> String? { nil }
     func replaceText(location: Int, length: Int, with t: String) { insertText(t) }      // bỏ qua vùng thay
     func setMarkedText(_ t: String) { XCTFail("phím ⌫ giả không dùng marked text") }
@@ -837,6 +842,33 @@ private final class ScreenTerminal: TextClient {
     func bypassBackspace() { cells.remove(at: cursor - 1); cursor -= 1; tick(120) }
 }
 
+/// Một NSView của GPUI (cửa sổ Zed) = một client / bộ điều khiển / Session; tiêu điểm đổi giữa khung terminal (mù: con trỏ {0,0},
+/// bỏ qua vùng thay) và editor (con trỏ thật) trong cùng view.
+private final class SharedGPUIView: TextClient {
+    let terminal = CustomView(blind: true)
+    let editor = CustomView(blind: false)
+    var inEditor = false
+    var target: CustomView { inEditor ? editor : terminal }
+    let session = Session()
+    var options = EngineOptions()
+    var editorMarkedCalls = 0
+    func selectedRange() -> (location: Int, length: Int)? { target.selectedRange() }
+    func text(location: Int, length: Int) -> String? { target.text(location: location, length: length) }
+    func replaceText(location: Int, length: Int, with t: String) { target.replaceText(location: location, length: length, with: t) }
+    func replaceViaMarkedText(location: Int, length: Int, with t: String) {
+        target.replaceViaMarkedText(location: location, length: length, with: t)
+    }
+    func setMarkedText(_ t: String) {
+        if inEditor, !t.isEmpty { editorMarkedCalls += 1 }
+        target.setMarkedText(t)
+    }
+    func insertText(_ t: String) { target.insertText(t) }
+    func hasMarkedText() -> Bool { target.hasMarkedText() }
+    func type(_ keys: String) {
+        for k in keys where !session.handle(.char(k), self, options: options, forceMarked: false) { target.insertText(String(k)) }
+    }
+}
+
 final class SessionTests: XCTestCase {
     func testTypingThroughSession() {
         let f = Field()
@@ -1294,6 +1326,73 @@ final class SessionTests: XCTestCase {
         }
     }
 
+    /// Trang chậm sau một lúc ngừng gõ: các phím đi thẳng chưa báo chồng lên nhau trong bộ đệm (mỗi lần đoán chèn vào cùng một
+    /// chỗ) — chữ sau con trỏ là các lần đoán, không phải dấu hiệu click lùi.
+    func testChromiumStackedGuessesAreNotClicks() {
+        let cases: [(InputMethod, String, String, String)] = [
+            (.vni, "abc", "  ho5c ", "abc  học "), (.vni, "Xin chao.", "  To6i d9i ", "Xin chao.  Tôi đi "),
+            (.telex, "abc", "  Tooi ddi ", "abc  Tôi đi "), (.vni, "abc", "..d9i ", "abc..đi "),
+            (.telex, "Hello world. ", "te⌫ext ", "Hello world. text "), (.telex, "", "vep⌫ef ", "về "),
+            (.vni, "", "cuuo⌫71 ", "cứu "),
+        ]
+        for (method, prefix, keys, expect) in cases {
+            for lag in 0...6 {
+                for step in [10.0, 45.0, 120.0] {
+                    let f = ChromiumField()
+                    f.options.method = method
+                    f.lag = lag
+                    f.stepMS = step
+                    f.type(prefix)
+                    f.finish()
+                    f.tick(1500)
+                    f.type(keys)
+                    f.finish()
+                    XCTAssertEqual(f.text, expect, "\(keys) lag \(lag) step \(step)")
+                }
+            }
+        }
+    }
+
+    /// Click / phím tắt bộ gõ không thấy được báo muộn (macOS 27: bộ đếm click công bố mỗi 0,5 s) ở đầu một từ khi trang chậm:
+    /// không bắt đầu lại chuỗi ở con trỏ cũ của bộ đệm (sửa sai chỗ).
+    func testChromiumLateGapKeepsChain() {
+        for lag in 0...6 {
+            for step in [10.0, 45.0, 120.0] {
+                let f = ChromiumField()
+                f.options.method = .vni
+                f.lag = lag
+                f.stepMS = step
+                let keys = Array("to6i d9i ho5c ")
+                for (i, k) in keys.enumerated() {
+                    f.tick(f.stepMS)
+                    let gap: KeyGap = i == 5 || i == 9 ? .bypassed : .none
+                    if !f.session.handle(.char(k), f, options: f.options, forceMarked: false, gap: gap, web: true) {
+                        f.insertText(String(k))
+                    }
+                }
+                f.finish()
+                XCTAssertEqual(f.text, "tôi đi học ", "lag \(lag) step \(step)")
+            }
+        }
+    }
+
+    /// ⌫ ngay sau ⏎ (bộ đệm chưa có ⏎): không dựng từ theo bộ đệm cũ rồi sửa vào chữ người dùng không đụng tới.
+    func testChromiumBackspaceRightAfterEnter() {
+        for lag in 0...2 {
+            for step in [10.0, 45.0, 120.0] {
+                for (keys, expect) in [("ba\r⌫⌫a2 ", ["bà ", "ba2 "]), ("xin chao\r⌫⌫⌫a2o ", ["xin chào ", "xin cha2o "])] {
+                    let f = ChromiumField()
+                    f.options.method = .vni
+                    f.lag = lag
+                    f.stepMS = step
+                    f.type(keys)
+                    f.finish()
+                    XCTAssertTrue(expect.contains(f.text), "\(keys.debugDescription) lag \(lag) step \(step): \(f.text)")
+                }
+            }
+        }
+    }
+
     /// Trang tự đổi chữ khi xử lý phím (Notion, Slack, Discord): bộ đệm cho thấy chữ khác chuỗi của bộ gõ — không coi là trang
     /// chậm, không sửa vào vị trí cũ.
     /// Giới hạn: trang vừa tự đổi chữ vừa chậm từ 2 phím trở lên thì lúc sửa, bộ đệm chưa cho thấy lần đổi chữ (chỉ có trạng
@@ -1387,6 +1486,73 @@ final class SessionTests: XCTestCase {
         g.type("x")
         XCTAssertEqual(g.text, "abx")
         XCTAssertNil(g.marked, "ô thật bị coi là ô mù sau dấu cách + ⌫")
+    }
+
+    /// Cờ ô mù không dính cả cửa sổ: khung terminal mù rồi sang editor thật của cùng view (Zed) — editor gõ thẳng như thường
+    /// (click: InputController báo `fieldChanged`; không có click thì từ đầu tiên ô báo con trỏ khác là đủ).
+    func testBlindLatchDoesNotLeakToRealField() {
+        let ref = SharedGPUIView()
+        ref.inEditor = true
+        ref.type("xin vieejt nam ")
+        for click in [true, false] {
+            let v = SharedGPUIView()
+            v.type("ls ")
+            XCTAssertTrue(v.session.blindLatched)
+            v.editor.type("xin ")                         // chữ có sẵn trong editor
+            v.editor.units = Array("xin ".utf16); v.editor.caret = 4
+            v.session.commit(v)
+            if click { v.session.fieldChanged() }
+            v.inEditor = true
+            v.type("vieejt nam ")
+            XCTAssertEqual(v.editor.text, "xin việt nam ", "click \(click)")
+            XCTAssertEqual(v.editorMarkedCalls, 0, "click \(click)")
+            XCTAssertFalse(v.session.blindLatched, "click \(click)")
+        }
+        XCTAssertEqual(ref.editorMarkedCalls, 0)
+    }
+
+    /// Ô chậm (bộ đệm) báo {0,0} ở phím thứ hai của ô trống: không bị coi là ô mù mãi — từ sau gõ thẳng, không gạch chân.
+    func testSlowFieldAtStartIsNotBlindForever() {
+        let f = LaggyField()
+        f.options.method = .telex
+        f.autoFlush = false
+        f.type("d")
+        f.type("d")
+        f.flush()
+        f.type("a")
+        f.flush()
+        f.type(" ")
+        f.flush()
+        f.autoFlush = true
+        f.type("vieejt nam ")
+        XCTAssertTrue(f.text.hasSuffix("việt nam "), f.text)
+        XCTAssertFalse(f.session.blindLatched)
+    }
+
+    /// Ô SDL (con trỏ báo đứng yên ở vùng chọn cũ, khác 0) có quyền gửi phím: nhận ra ô mù, gõ bằng phím ⌫ giả, giữ cho các từ sau.
+    func testFrozenCaretViewUsesSyntheticKeys() {
+        let f = SyntheticField(blind: true)
+        f.frozenCaret = 3
+        f.synthetic = false
+        f.options.method = .vni
+        f.type("d9a38ng tie61ng vie65t ")
+        XCTAssertEqual(f.text, "đẳng tiếng việt ")
+        XCTAssertTrue(f.session.blindLatched)
+    }
+
+    /// Ứng dụng được nhận ra (Java, Qt…) giữa từ đầu tiên: đổi sang phím ⌫ giả không nhân đôi các chữ đã đi thẳng.
+    func testSwitchToSyntheticMidWordKeepsLetters() {
+        for split in 1...3 {
+            let f = SyntheticField()
+            f.options.method = .telex
+            f.synthetic = false
+            let keys = Array("vieejt nam ")
+            f.type(String(keys[..<split]))
+            f.synthetic = true
+            f.type(String(keys[split...]))
+            XCTAssertFalse(f.text.contains("vv") || f.text.hasPrefix("vivi") || f.text.hasPrefix("vievi"), "\(split): \(f.text)")
+            XCTAssertTrue(f.text.hasSuffix(" nam "), "\(split): \(f.text)")
+        }
     }
 
     /// Ô mù khi chưa có quyền gửi phím (Trợ năng): từ đầu tiên lộ ra là ô mù đi nguyên văn phần còn lại, các từ sau gạch chân
