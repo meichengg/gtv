@@ -192,13 +192,6 @@ public struct KeyLedger {
 
     /// GTVInput thấy `n` phím đặc biệt được nhấn trước phím vừa đọc mà bộ gõ không nhận (`PressLog`): tính chúng là phím
     /// lỡ ngay (không cần chờ lúc yên tay), phần chưa được tính.
-    /// Bộ gõ vừa gửi `n` phím giả sẽ không tới bộ gõ (chữ gõ giả của `SyntheticKeys`): bộ đếm hệ thống sẽ tính chúng — coi
-    /// như đã thấy, không phải phím đi vòng.
-    public mutating func expectUnseen(_ n: Int) {
-        guard n > 0 else { return }
-        seen += Int64(n)
-    }
-
     public mutating func noteBypassed(_ n: Int) {
         guard let base, n > 0 else { return }
         let excess = unwrapped - seen - base - missedExact

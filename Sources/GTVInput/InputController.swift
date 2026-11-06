@@ -69,22 +69,6 @@ private final class ClientAdapter: TextClient {
     func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
 
     func lateEditSafe() -> Bool { KeyWatch.shared.lateEditSafe() }
-
-    /// Ô Java (AWT): trả lời "đã xử lý" không làm Java bỏ phím; marked text rỗng thì có (AWTView: fKeyEventsNeeded = NO) —
-    /// nhưng sau đó Java coi như đang có phần gõ dở rỗng và đưa các phím ⌫ giả vào đó thay vì xoá chữ (IME Lab 42187016328:
-    /// "Vieêệt"). Nên không giữ phím: phím đi thẳng, phím giả xoá luôn ký tự của nó.
-    var swallowsWithEmptyMark = false
-
-    func postKeys(deleting: Int, inserting: String) -> Bool {
-        SyntheticKeys.shared.post(deleting: deleting, inserting: inserting)
-    }
-    var keySwallowable: Bool { false }
-    func swallowKey() {
-        if swallowsWithEmptyMark {
-            client?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: notFound)
-        }
-    }
-    var canPostKeys: Bool { SyntheticKeys.shared.available }
 }
 
 /// Một controller cho mỗi ô nhập liệu.
@@ -111,17 +95,7 @@ final class GTVInputController: IMKInputController {
     private var bundleID = ""
     private var hotkeyArmedAt: TimeInterval?
     /// Ô đang gắn là ô văn bản hay view terminal (hỏi một lần lúc gắn); nil: chưa biết (ô tạm), hỏi lại ở phím kế tiếp.
-    private var clientKind: ClientKind? {
-        didSet { if clientKind == nil { chromiumWeb = false } }
-    }
-    /// Ô web của Chromium (Chrome, Electron): gõ theo `Session.handleWeb` (bộ gõ tự giữ vị trí từ đang gõ, không bỏ dấu khi
-    /// trang chậm).
-    private var chromiumWeb = false
-    /// RenderWidgetHostViewCocoa (render_widget_host_view_cocoa.mm) khai báo đúng 4 thuộc tính này (AppKit có thể thêm
-    /// NSDictationHiliteMarkedText).
-    private static let chromiumWebAttributes: Set<String> = [
-        "NSUnderline", "NSUnderlineColor", "NSMarkedClauseSegment", "NSTextInputReplacementRangeAttributeName",
-    ]
+    private var clientKind: ClientKind?
     /// Ô của ứng dụng Java (AWT…): chỉ gõ được bằng marked text, xem `JavaDetector`. nil: chưa biết.
     private var javaView: Bool?
     /// Đã xét lại loại ô theo bộ công cụ của ứng dụng chưa (SwiftTerm bản mới, xem `refineKind`) — một lần cho mỗi lần gắn.
@@ -137,7 +111,6 @@ final class GTVInputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         session.reset()
-        session.fieldChanged()
         hotkeyArmedAt = nil
         clientKind = nil
         kindRefined = false
@@ -146,14 +119,14 @@ final class GTVInputController: IMKInputController {
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
         KeyWatch.shared.rebase()
-        classify(client)                             // một lần cho mỗi lần gắn
+        clientKind = Self.kind(of: client)           // một lần cho mỗi lần gắn
         if clientKind == .textView { javaView = false }
         if clientKind == .terminalView, !Settings.knownTerminals.contains(bundleID) {
             JavaDetector.prefetch(bundleID)          // có kết quả trước phím đầu tiên
         }
         #if DEBUG
         // IME Lab: thuộc tính marked text ô nhập liệu nhận — phân biệt view terminal với ô văn bản thường (NSTextView).
-        DebugLog.write("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-")\(chromiumWeb ? " web" : "") attrs=[\(Self.markedTextAttributes(client).joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
+        DebugLog.write("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-") attrs=[\(Self.markedTextAttributes(client).joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
         #else
         DebugLog.write("activateServer \(bundleID)")
         #endif
@@ -188,15 +161,6 @@ final class GTVInputController: IMKInputController {
         }
     }
 
-    /// Loại ô (và ô web Chromium), từ một lần đọc thuộc tính marked text.
-    private func classify(_ client: Client) {
-        let attrs = Self.markedTextAttributes(client)
-        let kind = ClientKind.classify(attrs)
-        clientKind = kind == .placeholder ? nil : kind
-        chromiumWeb = clientKind != nil
-            && Set(attrs).subtracting(["NSDictationHiliteMarkedText"]) == Self.chromiumWebAttributes
-    }
-
     /// Loại ô; nil khi InputMethodKit chưa gắn ô thật (ô tạm).
     private static func kind(of client: Client) -> ClientKind? {
         let kind = ClientKind.classify(markedTextAttributes(client))
@@ -219,7 +183,7 @@ final class GTVInputController: IMKInputController {
     /// máy ảo Java. Hỏi một lần cho mỗi ô (ô tạm của InputMethodKit: hỏi lại ở phím sau).
     private func isJavaView(_ client: Client) -> Bool {
         if let javaView { return javaView }
-        if clientKind == nil { classify(client) }
+        if clientKind == nil { clientKind = Self.kind(of: client) }
         switch clientKind {
         case .terminalView?:
             guard let java = JavaDetector.usesJVM(bundleID, wait: 0.05) else { return false }   // chưa biết: hỏi lại sau
@@ -318,30 +282,8 @@ final class GTVInputController: IMKInputController {
             return false
         case .keyDown:
             hotkeyArmedAt = nil
-            switch SyntheticKeys.shared.match(event) {
-            case let m? where m.kind == .edit:
-                // Phím giả của chính bộ gõ: để ứng dụng xử lý (ghi vào sổ phím cho khớp bộ đếm của hệ thống, trừ phím chữ giả đã
-                // báo trước). ⌫ giả tới ứng dụng đúng lúc này: Session cập nhật chữ thật trong ô.
-                if !m.unseenAlready { _ = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID)) }
-                if event.keyCode == 51 { session.syntheticBackspaceArrived() }
-                return false
-            case .some:
-                break                         // phím thật gửi lại sau phím giả: xử lý như thường
-            case nil:
-                if SyntheticKeys.shared.inFlight, javaView == true, adapter.keySwallowable {
-                    // Phím thật tới trước phím giả của lần sửa trước: giữ lại, gửi lại sau chúng (đúng thứ tự gõ).
-                    _ = KeyWatch.shared.observe(event, terminal: false)
-                    adapter.client = client
-                    adapter.swallowsWithEmptyMark = true
-                    adapter.swallowKey()
-                    adapter.client = nil
-                    SyntheticKeys.shared.repost(event)
-                    return true
-                }
-            }
         default:                             // click chuột: con trỏ có thể đã đổi chỗ
             commit(client)
-            session.fieldChanged()
             KeyWatch.shared.rebase()
             return false
         }
@@ -396,14 +338,14 @@ final class GTVInputController: IMKInputController {
         adapter.client = client
         defer { adapter.client = nil }
         let toolkit = AppToolkit.profile(bundleID)
-        if clientKind == nil { classify(client) }
+        if clientKind == nil { clientKind = Self.kind(of: client) }
         refineKind(client, toolkit)
         var terminal = settings.terminalStyle(for: bundleID)
         var forceMarked = terminal == nil && (settings.useMarked(for: bundleID)
             || (Settings.knownTerminals.contains(bundleID) && settings.terminalMode == "marked"))
         var earlyCommit = forceMarked && Settings.terminalApps.contains(bundleID)
         if Settings.knownTerminals.contains(bundleID) {
-            if clientKind == nil { classify(client) }
+            if clientKind == nil { clientKind = Self.kind(of: client) }
             if clientKind == .textView || (terminal != nil && Self.inTextField(client, bundleID)) {
                 // Ô văn bản trong app terminal (thanh Find, command palette, đổi tên tab…): gõ như ứng dụng thường —
                 // DEL của kiểu gõ terminal sẽ thành chữ rác ở đây.
@@ -412,30 +354,16 @@ final class GTVInputController: IMKInputController {
                 earlyCommit = false
             }
         } else if !forceMarked {
-            // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, terminal
-            // SwiftTerm / xterm.dart — gõ bằng phím ⌫ giả (không gạch chân) nếu có quyền Trợ năng, không thì marked text.
-            forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
-                || isJavaView(client)
+            // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, LibreOffice, Emacs, MacVim — gõ bằng marked text.
+            forceMarked = toolkit.markedOnly || (toolkit.swiftTerm && clientKind == .terminalView) || isJavaView(client)
         }
-        // Phím ⌫ giả chỉ ở nơi đã biết mọi phím (thật và ⌫ giả) đi qua bộ gõ: Java (AWT, IME Lab), Qt 5, GTK, winit, LibreOffice.
-        // Emacs, MacVim, terminal Flutter / SwiftTerm vẫn gõ bằng gạch chân (⌫ có thể không qua bộ gõ). Lựa chọn gạch chân của
-        // người dùng (từng ứng dụng, mọi ứng dụng, terminal) thì giữ nguyên. Chưa có quyền Trợ năng: gạch chân như trước (xin quyền
-        // trong menu — không bật hộp thoại của hệ thống giữa lúc đang gõ).
-        let syntheticToolkit = javaView == true
-            || (toolkit.markedOnly && !AppToolkit.isMarkedEditor(bundleID) && !toolkit.flutterTerminal)
-        var synthetic = false
-        if forceMarked, syntheticToolkit, !settings.alwaysMarked, !settings.useMarked(for: bundleID), terminal == nil,
-           !Settings.knownTerminals.contains(bundleID), SyntheticKeys.shared.available {
-            synthetic = true
-            forceMarked = false
-        }
-        if synthetic {
-            // Đọc liên tục nút chuột / phím đặc biệt trong lúc gõ (như terminal): click giữa từ mà bộ gõ không thấy thì phím ⌫
-            // giả của lần sửa sau sẽ xoá ở chỗ mới — macOS 27 chỉ công bố bộ đếm click mỗi 0,5 s.
-            LiveInput.shared.keepTerminal(for: 5)
-        }
-        adapter.swallowsWithEmptyMark = javaView == true
-        if clientKind == nil { classify(client) }
+        // Ô tự vẽ (ít thuộc tính marked text) của ứng dụng chưa kiểm chứng: từ bắt đầu ở con trỏ {0, 0} gõ bằng marked text
+        // (xem `Session.handle(markedAtCaretZero:)`) — không từ nào đi nguyên văn ở ô không cho biết con trỏ.
+        if clientKind == nil { clientKind = Self.kind(of: client) }
+        // Flutter: ô văn bản không khai báo thuộc tính nào nhưng thay đúng vùng, con trỏ thật — không cần (marked text vào ô
+        // trống còn vướng flutter#194199); terminal xterm.dart thì cần.
+        let markedAtCaretZero = !Settings.knownTerminals.contains(bundleID) && clientKind == .terminalView
+            && (!toolkit.flutter || toolkit.flutterTerminal)
         // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
         let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in
             s.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f && !(0xF700...0xF8FF).contains($0.value) } ? s : nil
@@ -444,19 +372,11 @@ final class GTVInputController: IMKInputController {
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: toolkit.qt, terminal: terminal, repeatDelay: repeatDelay,
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),
-                                     combinedCommit: toolkit.combinedCommit,
+                                     markedAtCaretZero: markedAtCaretZero, combinedCommit: toolkit.combinedCommit,
                                      clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
-                                     keyText: keyText, web: chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil,
-                                     synthetic: synthetic)
-        if javaView == true, !synthetic { scheduleJavaCommit(client) }
-        if !synthetic, session.blindLatched, SyntheticKeys.shared.available, terminal == nil {
-            LiveInput.shared.keepTerminal(for: 5)       // ô mù gõ bằng phím ⌫ giả: như trên
-        }
-        #if DEBUG
-        let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
-            : forceMarked ? "gạch chân" : "trực tiếp"
-        DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
-        #endif
+                                     keyText: keyText)
+        if javaView == true { scheduleJavaCommit(client) }
+        DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled
     }
 

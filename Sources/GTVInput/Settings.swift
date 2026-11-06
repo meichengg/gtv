@@ -128,7 +128,7 @@ final class Settings {
             "autoRestore": true,
             "alwaysMarked": false,
             "hotkey": ToggleHotkey.commandShift.rawValue,
-            "markedApps": [String](),
+            "markedApps": Settings.defaultMarkedApps,
             "excludedApps": [String](),
             "showStatusIcon": false,
             "playSwitchSound": true,
@@ -137,13 +137,6 @@ final class Settings {
         alwaysMarked = defaults.bool(forKey: "alwaysMarked")
         hotkey = ToggleHotkey(rawValue: defaults.integer(forKey: "hotkey")) ?? .commandShift
         markedApps = Set(defaults.stringArray(forKey: "markedApps") ?? [])
-        if !defaults.bool(forKey: "markedAppsDefaultsDropped") {
-            // Bản cũ lưu cả danh sách gạch chân mặc định (Alacritty, Warp, các terminal) vào cài đặt của người dùng ngay lần đầu
-            // bật / tắt gạch chân cho một ứng dụng. Ứng dụng nay được nhận ra theo bộ công cụ (Alacritty: winit) — bỏ các mục đó.
-            markedApps.subtract(Settings.defaultMarkedApps)
-            defaults.set(markedApps.sorted(), forKey: "markedApps")
-            defaults.set(true, forKey: "markedAppsDefaultsDropped")
-        }
         underlineTerminals = Set(defaults.stringArray(forKey: "underlineTerminals") ?? [])
         showStatusIcon = defaults.bool(forKey: "showStatusIcon")
         playSwitchSound = defaults.bool(forKey: "playSwitchSound")

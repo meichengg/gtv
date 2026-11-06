@@ -6,9 +6,6 @@ let connectionName = Bundle.main.infoDictionary?["InputMethodConnectionName"] as
     ?? "com.gtv.inputmethod.GTV_Connection"
 let server = IMKServer(name: connectionName, bundleIdentifier: Bundle.main.bundleIdentifier)
 
-// IME Lab: bộ gõ có được gửi phím (CGEventPost, cần quyền Trợ năng) không.
-DebugLog.write("khởi động: quyền gửi phím=\(CGPreflightPostEventAccess()) trợ năng=\(AXIsProcessTrusted())")
-
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)   // không hiện trên Dock
 StatusController.shared.start()

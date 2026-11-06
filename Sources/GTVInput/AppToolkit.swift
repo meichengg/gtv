@@ -36,9 +36,6 @@ enum AppToolkit {
         var swiftTerm = false
         var gtk = false
         var winit = false
-        /// Firefox, Zen, LibreWolf, Thunderbird (Gecko, XUL): ô web khai báo đúng 4 thuộc tính như Chromium nhưng không phải
-        /// Chromium — không đi đường `Session.handleWeb`.
-        var gecko = false
 
         var description: String {
             "qt=\(qt) gtk=\(gtk) winit=\(winit) markedOnly=\(markedOnly) combined=\(combinedCommit) flutter=\(flutter)/\(flutterTerminal) swiftTerm=\(swiftTerm)"
@@ -54,9 +51,6 @@ enum AppToolkit {
 
     static func isQt(_ bundleID: String) -> Bool { profile(bundleID).qt }
 
-    /// Emacs, MacVim: gạch chân theo bundle ID (phím ⌫ giả chưa kiểm chứng ở đó — ⌫ có thể không qua bộ gõ).
-    static func isMarkedEditor(_ bundleID: String) -> Bool { markedBundleIDs.contains(bundleID) }
-
     /// Hồ sơ của ứng dụng; lần đầu thì bắt đầu kiểm tra ở luồng nền và tạm coi như ứng dụng thường.
     static func profile(_ bundleID: String) -> Profile {
         if let known = cache[bundleID] { return known }
@@ -70,9 +64,6 @@ enum AppToolkit {
             return p
         }
         pending.insert(bundleID)
-        // Kiểm tra bằng file (nhanh) ngay: phím đầu tiên đã đi đúng đường; quét chuỗi trong file chạy (chậm) ở luồng nền.
-        let quick = detectFiles(app, bundleID: bundleID)
-        cache[bundleID] = quick
         queue.async {
             let result = detect(app, bundleID: bundleID)
             DispatchQueue.main.async {
@@ -81,35 +72,7 @@ enum AppToolkit {
                 if result != Profile() { DebugLog.write("\(bundleID): \(result)") }
             }
         }
-        return quick
-    }
-
-    /// Phần nhận biết chỉ cần xem file có trong gói không.
-    private static func detectFiles(_ app: URL, bundleID: String) -> Profile {
-        var p = Profile(markedOnly: markedBundleIDs.contains(bundleID))
-        let fm = FileManager.default
-        let contents = app.path + "/Contents/"
-        let frameworks = contents + "Frameworks/"
-        if fm.fileExists(atPath: contents + "MacOS/XUL") { p.gecko = true }
-        if fm.fileExists(atPath: frameworks + "libvcllo.dylib") { p.markedOnly = true }
-        for name in ["QtCore.framework", "QtGui.framework"] where fm.fileExists(atPath: frameworks + name) {
-            p.qt = true
-            if fm.fileExists(atPath: frameworks + name + "/Versions/5") { p.markedOnly = true }
-        }
-        if fm.fileExists(atPath: frameworks + "FlutterMacOS.framework") { p.flutter = true }
-        if fm.fileExists(atPath: frameworks + "SwiftTerm.framework") { p.swiftTerm = true }
-        for dir in [frameworks, contents + "Resources/lib/"] {
-            let names = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
-            if names.contains(where: { $0.hasPrefix("libgtk-3") || $0.hasPrefix("libgdk-3") || $0.hasPrefix("libgtk-4") }) {
-                p.gtk = true
-            }
-        }
-        if p.gtk {
-            p.markedOnly = true
-            p.combinedCommit = true
-            p.trustMarked = true
-        }
-        return p
+        return Profile()
     }
 
     private static func detect(_ app: URL, bundleID: String) -> Profile {
@@ -118,7 +81,6 @@ enum AppToolkit {
         let fm = FileManager.default
         let contents = bundle.bundlePath + "/Contents/"
         let frameworks = contents + "Frameworks/"
-        if fm.fileExists(atPath: contents + "MacOS/XUL") { p.gecko = true }
         if fm.fileExists(atPath: frameworks + "libvcllo.dylib") { p.markedOnly = true }      // LibreOffice
         for name in ["QtCore.framework", "QtGui.framework"] where fm.fileExists(atPath: frameworks + name) {
             p.qt = true
