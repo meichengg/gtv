@@ -165,7 +165,7 @@ private final class Qt5Field: TextClient {
 /// xử lý theo thứ tự đó. Phím giả bộ gõ gửi lúc xử lý một phím được xếp sau những phím thật đã nằm sẵn trong hàng đợi (ứng dụng
 /// chậm: `backlog` phím). ⌫ giả đi qua bộ gõ (báo cho Session), chữ giả thì không. `blind`: con trỏ luôn báo {0,0}.
 private final class SyntheticField: TextClient {
-    enum Event { case key(Character), fakeBackspace, fakeText(String) }
+    enum Event { case key(Character), fakeBackspace, fakeText(String), click(Int), paste(String) }
     var units: [UInt16] = []
     var caret = 0
     var blind: Bool
@@ -201,8 +201,17 @@ private final class SyntheticField: TextClient {
     }
     var canPostKeys: Bool { allowPost }
     /// Phím đặc biệt của người dùng (⌫, ⏎) còn trong hàng đợi, chưa tới bộ gõ (GTVInput thấy qua trạng thái phím của hệ thống).
+    /// Vừa có click / ⌘V (bộ gõ không thấy): GTVInput còn thấy phím bổ trợ / nút chuột tới khi phím kế tiếp tới (sổ phím báo
+    /// `.interrupted` ở phím đó).
+    var interruptPending = false
     var keysQueued: Bool {
-        queue.contains { if case let .key(k) = $0 { return k == "⌫" || k == "\n" } else { return false } }
+        interruptPending || queue.contains {
+            switch $0 {
+            case let .key(k): return k == "⌫" || k == "\n"
+            case .click, .paste: return true                  // click / ⌘V: GTVInput thấy nút chuột, phím bổ trợ
+            default: return false
+            }
+        }
     }
     var timers: [() -> Void] = []
     func schedule(after delay: Double, _ work: @escaping () -> Void) { timers.append(work) }
@@ -223,8 +232,10 @@ private final class SyntheticField: TextClient {
     private func processOne() {
         switch queue.removeFirst() {
         case let .key(k):
+            let gap: KeyGap = interruptPending ? .interrupted : .none
+            interruptPending = false
             let handled = session.handle(k == "⌫" ? .backspace : .char(k), self, options: options, forceMarked: false,
-                                         synthetic: synthetic)
+                                         gap: gap, synthetic: synthetic)
             if commitAfterEveryKey { session.commitRequested(self) }
             if !handled { if k == "⌫" { deleteBack() } else { insertText(String(k)) } }
         case .fakeBackspace:
@@ -232,6 +243,14 @@ private final class SyntheticField: TextClient {
             session.syntheticBackspaceArrived()
         case let .fakeText(t):
             insertText(t)
+        case let .click(loc):                                 // InputController: click → commit + fieldChanged
+            caret = loc
+            session.commit(self)
+            session.fieldChanged()
+            interruptPending = true
+        case let .paste(t):                                   // ⌘V đi thẳng vào menu, không qua bộ gõ
+            insertText(t)
+            interruptPending = true
         }
     }
     func type(_ keys: String) {
@@ -239,6 +258,11 @@ private final class SyntheticField: TextClient {
             queue.append(.key(k))
             while queue.count > backlog { processOne(); runTimers() }
         }
+        while !queue.isEmpty { processOne(); runTimers() }
+        for _ in 0..<5 { runTimers() }
+    }
+    /// Các sự kiện xếp hàng rồi ứng dụng xử lý hết.
+    func drain() {
         while !queue.isEmpty { processOne(); runTimers() }
         for _ in 0..<5 { runTimers() }
     }
@@ -1277,6 +1301,69 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(g.text, "d9a38ng ")
     }
 
+    /// Review cc5ec9b (phím ⌫ giả): ⌫ hai lần sau từ + dấu cách chỉ xoá dấu cách và ký tự cuối; click / ⌘V bấm trước khi ứng dụng
+    /// xử lý phím dấu: phím sửa không gửi (không xoá chỗ click / chữ dán).
+    func testSyntheticBackspaceIntoWordAndClickBeforeEdit() {
+        let cases: [(InputMethod, String, String, String)] = [
+            (.telex, "", "tieengs ⌫⌫ ", "tiến "), (.telex, "", "xin chaof ⌫⌫ ", "xin chà "), (.vni, "", "Vie65t ⌫⌫x", "Việx"),
+            (.telex, "abc ", "ddaay ⌫⌫", "abc đâ"), (.telex, "", "tieengs ⌫⌫⌫ ", "tiế "),
+        ]
+        for (method, pre, keys, expect) in cases {
+            for backlog in 0...3 {
+                for commit in [false, true] {
+                    let f = SyntheticField()
+                    f.options.method = method
+                    f.backlog = backlog
+                    f.commitAfterEveryKey = commit
+                    f.prefill(pre)
+                    f.type(keys)
+                    XCTAssertEqual(f.text, expect, "\(keys.debugDescription) backlog \(backlog) commit \(commit)")
+                }
+            }
+        }
+        let f = SyntheticField()
+        f.options.method = .telex
+        f.prefill("hello world ")
+        f.type("a")
+        f.queue.append(.key("s"))
+        f.queue.append(.click(5))
+        f.drain()
+        XCTAssertEqual(f.text, "hello world as")
+        let g = SyntheticField()
+        g.options.method = .telex
+        g.prefill("x ")
+        g.type("a")
+        g.queue.append(.key("s"))
+        g.queue.append(.paste("PASTE"))
+        g.drain()
+        XCTAssertEqual(g.text, "x asPASTE")
+    }
+
+    /// Sổ nhấn phím: lần nhấn phím không bao giờ tới bộ gõ (phím tắt toàn hệ thống) thôi được coi là đang chờ sau 1 s; phím đang
+    /// giữ sau khoảng không đọc không làm lần nhấn thật kế tiếp bị coi là đã nhận.
+    func testPressLogUserKeysPending() {
+        var log = PressLog()
+        var t = 50.0
+        log.sample(at: t, held: [], button: false, flags: 0)
+        t += 0.008
+        log.sample(at: t, held: [123], button: false, flags: 0)
+        XCTAssertTrue(log.userKeysPending(now: t, since: t - 1))
+        t += 0.008
+        log.sample(at: t, held: [], button: false, flags: 0)
+        XCTAssertTrue(log.userKeysPending(now: t + 0.5, since: t))
+        XCTAssertFalse(log.userKeysPending(now: t + 1.5, since: t))
+        var g = PressLog()
+        var u = 10.0
+        g.sample(at: u, held: [51], button: false, flags: 0)        // lần đọc đầu sau khoảng hở: đang giữ ⌫, không ghi lần nhấn
+        g.keyReceived(51, at: u, isRepeat: false)
+        u += 0.008
+        g.sample(at: u, held: [], button: false, flags: 0)
+        for _ in 0..<20 { u += 0.008; g.sample(at: u, held: [], button: false, flags: 0) }
+        u += 0.008
+        g.sample(at: u, held: [51], button: false, flags: 0)        // lần nhấn thật kế tiếp
+        XCTAssertTrue(g.pending.contains { $0.key == 51 })
+    }
+
     /// Có quyền gửi phím: ô đã nhận là ô mù giữ cách gõ bằng phím ⌫ giả kể cả khi về sau ô báo con trỏ thật (ô chậm vừa báo
     /// kịp) — đổi cách gõ giữa chừng làm hỏng chữ, phím giả còn đang tới xoá vào từ sau (review).
     func testBlindLatchWithPermissionStays() {
@@ -1536,6 +1623,40 @@ final class SessionTests: XCTestCase {
                        f.type("xy⌫⌫⌫⌫aa ") }, ["hahaâ ", "hahaaa "]),
             (.vni, { f in f.graphemeBackspace = true; f.type("ban "); f.idle(); f.pageSet("ban 🏳️‍🌈"); f.finish(); f.idle()
                        f.type("xy⌫⌫⌫⌫a1 ") }, ["bána ", "bana1 ", "bán "]),
+        ]
+        for (i, (method, run, ok)) in cases.enumerated() {
+            for lag in 0...6 {
+                for step in [10.0, 45.0, 120.0] {
+                    let f = ChromiumField()
+                    f.options.method = method
+                    f.lag = lag
+                    f.stepMS = step
+                    run(f)
+                    f.finish()
+                    XCTAssertTrue(ok.contains(f.text), "case \(i) lag \(lag) step \(step): \(f.text.debugDescription)")
+                }
+            }
+        }
+    }
+
+    /// Review cc5ec9b (ô web): click chỗ khác giữa từ rồi gõ tiếp; click về trước đầu chuỗi rồi ⌫; ⌫ trên chữ Unicode tổ hợp; ⌫ lùi
+    /// về từ trước có ngừng tay. Ra đúng hoặc đi nguyên văn — không sửa vào chữ khác.
+    func testChromiumReviewCc5ec9b() {
+        typealias Case = (InputMethod, (ChromiumField) -> Void, [String])
+        let cases: [Case] = [
+            (.vni, { f in f.type("toi di"); f.finish(); f.idle(); f.click(at: 2); f.tick(300); f.type("a1 ") }, ["toá i di", "toa1 i di"]),
+            (.telex, { f in f.type("toi di"); f.finish(); f.idle(); f.click(at: 2); f.tick(300); f.type("as ") }, ["toá i di", "toas i di"]),
+            (.telex, { f in f.type("toi di"); f.finish(); f.idle(); f.click(at: 4); f.tick(300); f.type("vaf ") }, ["toi và di", "toi vaf di"]),
+            (.vni, { f in f.type("toi di"); f.finish(); f.idle(); f.click(at: 4); f.tick(300); f.type("d9a4 ") }, ["toi dã di", "toi d9a4 di"]),
+            (.vni, { f in f.pageSet("Hello world "); f.finish(); f.idle(); f.type("abc "); f.finish(); f.click(at: 5); f.type("⌫a1 ") },
+             ["Hellá  world abc ", "Hella1  world abc "]),
+            (.telex, { f in f.pageSet("Hello world "); f.finish(); f.idle(); f.type("abc "); f.finish(); f.click(at: 5); f.type("⌫as ") },
+             ["Hellá  world abc ", "Hellas  world abc "]),
+            (.vni, { f in f.pageSet("xin cha\u{300}o"); f.finish(); f.idle(); f.type("⌫⌫⌫a1o ") }, ["xin cháo ", "xin cha1o "]),
+            (.telex, { f in f.type("toi di hoc ⌫"); f.finish(); f.idle(); f.type("j ") }, ["toi di học "]),
+            (.vni, { f in f.type("Viet Nam ⌫⌫⌫⌫⌫⌫"); f.finish(); f.idle(); f.type("65t ") }, ["Việt "]),
+            (.telex, { f in f.type("Xin chao "); f.finish(); f.idle(); f.type("ba⌫⌫⌫f ") }, ["Xin chào "]),
+            (.vni, { f in f.type("Viet "); f.finish(); f.idle(); f.type("Nam⌫⌫⌫⌫⌫65t ") }, ["Việt "]),
         ]
         for (i, (method, run, ok)) in cases.enumerated() {
             for lag in 0...6 {

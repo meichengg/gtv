@@ -577,15 +577,26 @@ public struct PressLog {
     /// Phím giả của bộ gõ (⌫ gửi bằng CGEventPost) vừa tới: không phải phím người dùng — chỉ bỏ lần nhấn đang chờ nếu đúng là nó
     /// (đọc thấy đang giữ quanh thời điểm của nó), không ghi vào danh sách phím đã nhận (sẽ nuốt lần nhấn thật sau đó).
     public mutating func syntheticKeyArrived(_ key: UInt16, at stamp: Double) {
-        if let i = pending.firstIndex(where: { $0.key == key && $0.after <= stamp + 0.002 && stamp <= $0.at + 0.002 }) {
+        if let i = pending.firstIndex(where: { $0.key == key && $0.after < stamp && stamp <= $0.at }) {
             pending.remove(at: i)
         }
+    }
+
+    /// Có phím người dùng bấm mà chưa tới bộ gõ — đang nằm trong hàng đợi của ứng dụng, trước mọi phím gửi bây giờ: lần nhấn
+    /// phím đặc biệt / click đang chờ (trong `maxAge` giây — phím không bao giờ tới bộ gõ, như phím tắt toàn hệ thống, thì thôi),
+    /// phím đặc biệt đang giữ (lặp phím tạo thêm phím), phím bổ trợ nhấn sau phím vừa nhận lúc `since` (⌘V, ⌘A…).
+    public func userKeysPending(now: Double, since: Double, maxAge: Double = 1) -> Bool {
+        if pending.contains(where: { $0.at > now - maxAge }) { return true }
+        if !held.isEmpty { return true }
+        return flagPresses.contains { $0 > since }
     }
 
     public mutating func keyReceived(_ key: UInt16, at: Double, isRepeat: Bool) {
         if let i = pending.firstIndex(where: { $0.key == key }) {
             pending.remove(at: i)
-        } else if !isRepeat {
+        } else if !isRepeat, !held.contains(key) {
+            // Đang giữ mà không có lần nhấn nào chờ (lần đọc sau khoảng hở không ghi lần nhấn): không ghi nhận — ghi thì lần nhấn
+            // thật kế tiếp của phím này bị coi là đã nhận.
             received.append((key, at))
         }
         received.removeAll { $0.at < at - 1 }

@@ -1420,6 +1420,7 @@ public final class Session {
     }
 
     private func synBackspace(_ client: TextClient) -> Bool {
+        let resume = synResume
         synResume = nil
         if untracked {
             untracked = false
@@ -1427,7 +1428,15 @@ public final class Session {
             synReset()
             return false
         }
-        if engine.isEmpty {
+        if engine.isEmpty, let word = resume {
+            // ⌫ tiếp vào từ vừa lùi về (dấu cách đã xoá): xoá ký tự cuối của chính từ đó — từ vẫn là chữ định gõ.
+            if engine.seed(word) {
+                _ = engine.backspace()
+            } else {
+                let rest = String(word.dropLast())
+                synResume = rest.isEmpty ? nil : rest
+            }
+        } else if engine.isEmpty {
             if synBefore.isEmpty {
                 // ⌫ xoá vào chữ trước phần theo dõi. Ô còn chữ bộ gõ chưa kịp sửa (ứng dụng chậm) thì ⌫ này xoá vào chữ đó — không
                 // xoá bù ký tự người dùng định xoá (phím người dùng gõ tiếp có thể tới trước, ⌫ bù sẽ xoá lố): thiếu một lần xoá
@@ -1520,7 +1529,7 @@ public final class Session {
         synPending.append((prefix, false, deletes, insert))
     }
 
-    /// Hoãn lần sửa: thử lại sau mỗi 30 ms (phím kế tiếp tới thì cũng sửa luôn); hơn 1 s mà phím đó vẫn chưa tới bộ gõ thì thôi
+    /// Hoãn lần sửa: thử lại sau mỗi 30 ms (phím kế tiếp tới thì cũng sửa luôn); hơn 1,5 s mà phím đó vẫn chưa tới bộ gõ thì thôi
     /// theo dõi từ (không gửi gì — chỉ mất dấu).
     private func deferSynSync(_ client: TextClient) {
         if !synDeferred { log?("phím ⌫ giả: còn phím của người dùng chưa tới ứng dụng — hoãn lần sửa") }
@@ -1532,7 +1541,7 @@ public final class Session {
             client.schedule(after: 0.03) { [weak self, weak client] in
                 guard let self, let client, self.inSynthetic, self.synDeferred, self.synDeferSerial == serial else { return }
                 if !client.keysQueued { self.synSync(client); return }
-                if client.currentTime() - started > 1 {
+                if client.currentTime() - started > 1.5 {
                     self.log?("phím ⌫ giả: phím của người dùng không tới — thôi theo dõi từ")
                     self.engine.reset()
                     self.untracked = true
@@ -1688,6 +1697,18 @@ public final class Session {
             web?.proven = false
             webResumeArmed = false
         }
+        if !engine.isEmpty, !untracked, let chain = web {
+            // Giữa từ mà có click / phím tắt bộ gõ không thấy, hay ngừng gõ lâu rồi bộ đệm (lúc này đã mới) báo con trỏ ở chỗ khác:
+            // lần sửa sau của từ phải được bộ đệm xác nhận lại đúng chỗ — không thì phím đi nguyên văn.
+            var moved = dropped
+            if !moved, client.currentTime() - webLastKeyAt > Self.webIdleBreak, let sel = client.selectedRange() {
+                moved = sel.length != 0 || sel.location != chain.caret
+            }
+            if moved {
+                web?.proven = false
+                web?.trusted = false
+            }
+        }
         if case .backspace = key { return webBackspace(client, dropped: dropped) }
         let resume = webResumeArmed
         webResumeArmed = false
@@ -1726,7 +1747,19 @@ public final class Session {
         committed = ""
         preedit = ""
         continueWordOnNextChar = false
-        if web != nil, client.currentTime() - webLastKeyAt > Self.webIdleBreak { web = nil }
+        if web != nil, client.currentTime() - webLastKeyAt > Self.webIdleBreak {
+            web = nil
+            // Vừa ⌫ lùi về một từ rồi ngừng gõ: bộ đệm đã có mọi phím — dựng lại chuỗi từ bộ đệm để gõ tiếp từ đó.
+            if resume, let sel = client.selectedRange(), sel.length == 0 {
+                let len = min(sel.location, Self.webWindow)
+                if let before = len == 0 ? "" : client.text(location: sel.location - len, length: len), before.utf16.count == len {
+                    web = WebChain(caret: sel.location, start: sel.location - len, proven: false)
+                    anchor = sel.location
+                    webBefore = before
+                    webSetHistory(before)
+                }
+            }
+        }
         guard let chain = web else {
             startWebChain(at: client.selectedRange()?.location ?? 0,
                           trusted: client.currentTime() - webLastKeyAt > Self.webIdleBreak)
@@ -1846,6 +1879,14 @@ public final class Session {
         guard let found = webMatch(t) else { return false }
         if webShowsRest(client, location, m: m, model: model), !webStackedGuesses(client, location, m: m, model: model) {
             return false
+        }
+        if found.guess, let g = webLastInsert, model.hasSuffix(g), m >= g.utf16.count {
+            // Khớp theo dạng đoán (chữ chèn gần nhất nằm ngay trước con trỏ): người dùng có thể đã click chỗ khác rồi gõ chữ đó —
+            // bộ đệm khi ấy có cả phần chuỗi (không tính chữ đó) sau con trỏ.
+            let base = String(model.dropLast(g.count)), mb = m - g.utf16.count
+            if webShowsRest(client, location, m: mb, model: base), !webStackedGuesses(client, location, m: mb, model: base) {
+                return false
+            }
         }
         webSeen = max(webSeen, found.serial)
         return true
@@ -2093,7 +2134,13 @@ public final class Session {
             } else if let sel = client.selectedRange(), sel.length == 0, sel.location != chain.caret {
                 let text = webHistory.last?.text ?? webBefore
                 let m = sel.location - chain.start
-                if m >= 0, webShowsRest(client, sel.location, m: m, model: text),
+                if m < 0 {
+                    // Bộ đệm báo con trỏ trước cả đầu chuỗi: người dùng đã click về trước (trang chậm không báo vậy). Không dựng lại
+                    // từ bộ đệm (có thể chưa có mọi phím): ⌫ đi thẳng.
+                    log?("ô web: ⌫ — bộ đệm báo con trỏ \(sel.location) trước đầu chuỗi \(chain.start)")
+                    engine.reset()
+                    web = nil
+                } else if webShowsRest(client, sel.location, m: m, model: text),
                    !webStackedGuesses(client, sel.location, m: m, model: text) {
                     log?("ô web: ⌫ — bộ đệm cho thấy con trỏ đã được click về \(sel.location)")
                     engine.reset()
@@ -2119,6 +2166,11 @@ public final class Session {
             return false
         }
         guard let last = webBefore.last else { return false }   // đầu ô: ⌫ không xoá gì
+        guard Self.webSimpleChar(last) else {
+            // ⌫ của Blink xoá từng dấu tổ hợp / cả cụm emoji — khác ký tự của Swift: thôi theo dõi.
+            web = nil
+            return false
+        }
         webBefore.removeLast()
         webPush(webBefore)
         web!.caret -= String(last).utf16.count
@@ -2126,25 +2178,35 @@ public final class Session {
         return false
     }
 
-    /// Lùi đầu chuỗi thêm một ký tự (đọc từ bộ đệm): ⌫ sắp xoá vào phần trước chuỗi. Mọi trạng thái trong lịch sử thêm ký tự đó ở
-    /// đầu — bộ đệm cũ vẫn khớp. false nếu không đọc được. Ở đầu ô thì không cần gì.
+    /// Ký tự ⌫ của Blink xoá đúng một lần như Swift: một mã Unicode trong BMP, không phải dấu tổ hợp / ký tự nối / chọn biến thể.
+    private static func webSimpleChar(_ ch: Character) -> Bool {
+        let scalars = Array(ch.unicodeScalars)
+        guard scalars.count == 1, let u = scalars.first, u.value < 0x10000 else { return false }
+        let cat = u.properties.generalCategory
+        return cat != .nonspacingMark && cat != .spacingMark && cat != .enclosingMark && cat != .format
+            && cat != .surrogate && !(0xFE00...0xFE0F).contains(u.value)
+    }
+
+    /// Lùi đầu chuỗi (đọc từ bộ đệm) cho ⌫ sắp xoá vào phần trước chuỗi: thêm ký tự ngay trước đầu chuỗi, cùng cả từ đứng trước nó
+    /// và một ký tự ngăn cách trước từ đó (gõ tiếp từ đó sau ⌫ thấy trọn từ). Phím của chuỗi không đụng phần này — bộ đệm cũ vẫn
+    /// đúng. Mọi trạng thái trong lịch sử thêm phần đó ở đầu. false nếu không đọc được / gặp ký tự ⌫ của Blink xoá khác Swift.
+    /// Ở đầu ô thì không cần gì.
     private func webExtendBack(_ client: TextClient) -> Bool {
         guard var chain = web else { return false }
         guard chain.start > 0 else { return true }
         let len = min(chain.start, 32)
-        guard let t = client.text(location: chain.start - len, length: len), t.utf16.count == len, let ch = t.last else {
-            return false
+        guard let t = client.text(location: chain.start - len, length: len), t.utf16.count == len else { return false }
+        var chars = Array(t)
+        if len < chain.start, !chars.isEmpty { chars.removeFirst() }    // ký tự đầu cửa sổ có thể bị cắt
+        guard let ch = chars.popLast(), Self.webSimpleChar(ch) else { return false }
+        var add = [ch]
+        let word = chars.reversed().prefix(while: { $0.isLetter && Self.webSimpleChar($0) })
+        if !word.isEmpty, word.count < chars.count, let sep = chars.dropLast(word.count).last, !sep.isLetter, Self.webSimpleChar(sep) {
+            add = [sep] + word.reversed() + add
+        } else if !word.isEmpty, word.count == chars.count, len == chain.start {
+            add = word.reversed() + add                       // từ bắt đầu ở đầu ô
         }
-        // ⌫ của Blink xoá cả cụm (emoji ghép bằng ZWJ, cờ…) hay từng dấu tổ hợp — khác ký tự của Swift: chỉ theo dõi tiếp khi ký tự
-        // đó là một mã Unicode đơn trong BMP, không phải dấu tổ hợp / ký tự nối, và đọc được trọn (không bị cắt ở đầu cửa sổ).
-        let scalars = Array(ch.unicodeScalars)
-        guard scalars.count == 1, let u = scalars.first, u.value < 0x10000, !(0xD800...0xDFFF).contains(u.value),
-              u.properties.generalCategory != .nonspacingMark, u.properties.generalCategory != .spacingMark,
-              u.properties.generalCategory != .enclosingMark, u.properties.generalCategory != .format,
-              !(0xFE00...0xFE0F).contains(u.value), len < t.utf16.count + 1, t.count > 1 || len == chain.start else {
-            return false
-        }
-        let c = String(ch)
+        let c = String(add)
         chain.start -= c.utf16.count
         web = chain
         webBefore = c + webBefore

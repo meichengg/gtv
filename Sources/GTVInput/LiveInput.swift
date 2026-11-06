@@ -56,12 +56,13 @@ final class LiveInput {
         }
     }
 
-    /// Có phím đặc biệt (⌫, mũi tên, ⏎…) đã thấy nhấn mà chưa tới bộ gõ.
-    var keyPressPending: Bool {
+    /// Người dùng đã bấm phím đặc biệt / click / phím bổ trợ mà chưa tới bộ gõ (xem `PressLog.userKeysPending`); `since`: thời điểm
+    /// phím bộ gõ nhận gần nhất.
+    func userKeysPending(since: Double) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard timer != nil else { return false }
-        return _log.pending.contains { $0.key != nil }
+        return _log.userKeysPending(now: ProcessInfo.processInfo.systemUptime, since: since)
     }
 
     /// Bản sao sổ lúc này.

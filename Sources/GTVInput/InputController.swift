@@ -81,7 +81,7 @@ private final class ClientAdapter: TextClient {
     func postKeys(prefix: String, deleting: Int, inserting: String) -> Bool {
         SyntheticKeys.shared.post(prefix: prefix, deleting: deleting, inserting: inserting)
     }
-    var keysQueued: Bool { LiveInput.shared.keyPressPending }
+    var keysQueued: Bool { LiveInput.shared.userKeysPending(since: KeyWatch.shared.lastKeyAt) }
     var keySwallowable: Bool { false }
     func swallowKey() {
         if swallowsWithEmptyMark {
