@@ -11,7 +11,7 @@ enum AppMenu {
         case markedApp = 40, markedAlways
         case hotkey = 50   // 50 + ToggleHotkey.rawValue
         case excludeCurrent = 60, addExcluded
-        case showStatusIcon = 70, playSwitchSound, selectAtLogin, checkForUpdates, autoCheckUpdates, grantAccessibility
+        case showStatusIcon = 70, playSwitchSound, selectAtLogin, checkForUpdates, autoCheckUpdates
         case quit = 99
         case removeExcluded = 1000   // 1000 + vị trí trong `shownExcluded`
     }
@@ -81,12 +81,6 @@ enum AppMenu {
             // Bản mới tìm thấy lúc người dùng đang gõ: Sparkle không giành focus, chỉ nhắc ở đây.
             add(Updater.shared.pendingVersion.map { "Có bản mới \($0): cài đặt…" } ?? "Kiểm tra cập nhật…",
                 .checkForUpdates, false)
-        }
-
-        if !SyntheticKeys.shared.available {
-            // Java (Burp…), Qt 5, GTK, LibreOffice… chỉ sửa được chữ bằng phím ⌫ giả, cần quyền Trợ năng; chưa có thì các ứng
-            // dụng đó gõ bằng gạch chân.
-            add("Gõ không gạch chân trong Java, Qt 5, GTK…: cấp quyền Trợ năng…", .grantAccessibility, false)
         }
 
         let hint = s.hotkey == .none ? "" : "   (\(s.hotkey.title.prefix(2)))"
@@ -196,11 +190,6 @@ enum AppMenu {
         case .tcvn3: s.update { $0.charset = .tcvn3 }
         case .modernTone: s.update { $0.modernToneStyle.toggle() }
         case .autoRestore: s.update { $0.autoRestore.toggle() }
-        case .grantAccessibility:
-            _ = CGRequestPostEventAccess()
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
-            }
         case .markedApp: s.toggleMarked(for: appBundleID)
         case .markedAlways: s.alwaysMarked.toggle()
         case .hotkey, .removeExcluded: break

@@ -192,13 +192,6 @@ public struct KeyLedger {
 
     /// GTVInput thấy `n` phím đặc biệt được nhấn trước phím vừa đọc mà bộ gõ không nhận (`PressLog`): tính chúng là phím
     /// lỡ ngay (không cần chờ lúc yên tay), phần chưa được tính.
-    /// Bộ gõ vừa gửi `n` phím giả sẽ không tới bộ gõ (chữ gõ giả của `SyntheticKeys`): bộ đếm hệ thống sẽ tính chúng — coi
-    /// như đã thấy, không phải phím đi vòng.
-    public mutating func expectUnseen(_ n: Int) {
-        guard n > 0 else { return }
-        seen += Int64(n)
-    }
-
     public mutating func noteBypassed(_ n: Int) {
         guard let base, n > 0 else { return }
         let excess = unwrapped - seen - base - missedExact
@@ -502,10 +495,6 @@ public struct PressLog {
 
     /// Phím bộ gõ đã nhận mà chưa thấy lần nhấn (phím tới bộ gõ trước lần đọc kế tiếp).
     private var received: [(key: UInt16, at: Double)] = []
-    /// Lúc nhả phím đặc biệt đã giữ đủ lâu để lặp phím.
-    private var repeatRelease: Double?
-    /// Lúc bắt đầu thấy giữ từng phím đặc biệt.
-    private var heldSince: [UInt16: Double] = [:]
     private var held: Set<UInt16> = []
     private var button = false
     private var flags: UInt64?
@@ -545,7 +534,6 @@ public struct PressLog {
             // tính là lần nhấn mới; ai cần biết khoảng hở thì hỏi `covered(since:)`.
             coveredSince = t
             lastSample = t
-            heldSince = Dictionary(uniqueKeysWithValues: keys.map { ($0, heldSince[$0] ?? t) })
             held = keys
             button = pressed
             flags = f
@@ -554,11 +542,7 @@ public struct PressLog {
         }
         guard t >= last else { return }         // lần đọc cũ hơn lần đọc cuối: không có gì mới
         lastSample = t
-        for k in held.subtracting(keys) {
-            if let from = heldSince.removeValue(forKey: k), t - from > 0.2 { repeatRelease = t }
-        }
         for k in keys.subtracting(held).sorted() {
-            heldSince[k] = t
             let press = Press(key: k, at: t, after: last, count: keyDownCount)
             history.append(press)
             if let i = received.firstIndex(where: { $0.key == k }) {
@@ -582,39 +566,11 @@ public struct PressLog {
         prune(before: t - keep)
     }
 
-    /// Phím giả của bộ gõ (⌫ gửi bằng CGEventPost lúc `since`) vừa tới: không phải phím người dùng. Bỏ mọi lần nhấn phím đó đọc
-    /// thấy từ lúc gửi (máy chậm thì trạng thái phím của phím giả cũng đọc được — để lại thì sổ phím coi là phím đi vòng bộ gõ).
-    /// ⌫ thật bấm trước lúc gửi đã tới bộ gõ trước phím giả (cùng hàng đợi) nên không bị bỏ nhầm. Không ghi vào danh sách phím đã
-    /// nhận (sẽ nuốt lần nhấn thật sau đó).
-    public mutating func syntheticKeyArrived(_ key: UInt16, since: Double, at stamp: Double) {
-        // Chỉ một lần nhấn, đọc thấy quanh lúc hệ thống xử lý chính phím giả này (từ lúc gửi tới ngay sau thời điểm của nó) —
-        // ⌫ thật bấm sau đó vẫn là phím chưa tới.
-        if let i = pending.firstIndex(where: { $0.key == key && $0.at >= since && $0.after < stamp + 0.002 }) {
-            pending.remove(at: i)
-        }
-    }
-
-    /// Có phím người dùng bấm mà chưa tới bộ gõ — đang nằm trong hàng đợi của ứng dụng, trước mọi phím gửi bây giờ: lần nhấn
-    /// phím đặc biệt / click đang chờ (trong `maxAge` giây — phím không bao giờ tới bộ gõ, như phím tắt toàn hệ thống, thì thôi),
-    /// phím đặc biệt đang giữ (lặp phím tạo thêm phím), phím bổ trợ nhấn sau phím vừa nhận lúc `since` (⌘V, ⌘A…).
-    public func userKeysPending(now: Double, since: Double, maxAge: Double = 1) -> Bool {
-        // Click không bao giờ tới bộ gõ: chỉ phím sau (sổ phím báo ngắt) hay lần lấy mốc bỏ nó — không hết hạn (hết hạn thì lần
-        // sửa đang hoãn gửi tới chỗ click).
-        if pending.contains(where: { $0.key == nil || $0.at > now - maxAge }) { return true }
-        if !held.isEmpty || button { return true }
-        // Vừa nhả phím đặc biệt giữ lâu (lặp phím): các lần lặp tạo trước lúc nhả có thể còn trong hàng đợi của ứng dụng — tới khi
-        // có phím bấm sau lúc nhả tới bộ gõ (tối đa 0,5 s).
-        if let r = repeatRelease, r > since, r > now - 0.5 { return true }
-        return flagPresses.contains { $0 > since }
-    }
-
     /// Bộ gõ nhận keyDown `key` (lúc `at`, thời điểm sự kiện).
     public mutating func keyReceived(_ key: UInt16, at: Double, isRepeat: Bool) {
         if let i = pending.firstIndex(where: { $0.key == key }) {
             pending.remove(at: i)
-        } else if !isRepeat, !held.contains(key) {
-            // Đang giữ mà không có lần nhấn nào chờ (lần đọc sau khoảng hở không ghi lần nhấn): không ghi nhận — ghi thì lần nhấn
-            // thật kế tiếp của phím này bị coi là đã nhận.
+        } else if !isRepeat {
             received.append((key, at))
         }
         received.removeAll { $0.at < at - 1 }
@@ -632,12 +588,9 @@ public struct PressLog {
     /// (độ trễ giao phím lớn nhất) — trừ khi phím nằm trong loạt phím dồn ra sau lúc ứng dụng treo (`burst`: có thể đã được
     /// bấm từ trước đó). `uncertain`: còn lần nhấn có thể trước phím. Lần nhấn mà một lần đọc từ `stamp` trở đi vẫn thấy chưa
     /// giữ thì chắc là sau phím (dù `stamp` là lúc bấm hay lúc ứng dụng nhận phím): để lại cho phím sau, không báo.
-    /// `clicksOnly`: mọi phím đặc biệt đều qua bộ gõ (đường phím ⌫ giả) — lần nhấn phím chưa tới chỉ là phím sắp tới, không phải
-    /// phím đi vòng; chỉ xét click.
-    public mutating func order(keyAt stamp: Double, maxDelivery: Double, burst: Bool,
-                               clicksOnly: Bool = false) -> (taken: [Press], uncertain: Bool) {
-        let taken = burst ? [] : take { (!clicksOnly || $0.key == nil) && $0.at <= stamp - maxDelivery }
-        return (taken, pending.contains { (!clicksOnly || $0.key == nil) && $0.after < stamp })
+    public mutating func order(keyAt stamp: Double, maxDelivery: Double, burst: Bool) -> (taken: [Press], uncertain: Bool) {
+        let taken = burst ? [] : take { $0.at <= stamp - maxDelivery }
+        return (taken, pending.contains { $0.after < stamp })
     }
 
     /// Bỏ mọi lần nhấn đang chờ và phím đã nhận chưa đối chiếu (đổi ô nhập liệu, click bộ gõ thấy…).
@@ -760,13 +713,6 @@ public struct PointerWatch {
     public mutating func changed(_ total: UInt32, lastClickAt: @autoclosure () -> Double? = nil) -> Bool {
         defer { last = total }
         return differs(total, lastClickAt: lastClickAt())
-    }
-
-    /// Số click mới kể từ lần trước (0 nếu là click được bỏ qua khi lấy mốc), và ghi nhận.
-    public mutating func newClicks(_ total: UInt32, lastClickAt: @autoclosure () -> Double? = nil) -> Int {
-        defer { last = total }
-        guard differs(total, lastClickAt: lastClickAt()), let last else { return 0 }
-        return Int(total &- last)
     }
 
     /// Như `changed` nhưng không ghi nhận.

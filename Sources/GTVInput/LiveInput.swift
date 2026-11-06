@@ -56,15 +56,6 @@ final class LiveInput {
         }
     }
 
-    /// Người dùng đã bấm phím đặc biệt / click / phím bổ trợ mà chưa tới bộ gõ (xem `PressLog.userKeysPending`); `since`: thời điểm
-    /// phím bộ gõ nhận gần nhất.
-    func userKeysPending(since: Double) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard timer != nil else { return false }
-        return _log.userKeysPending(now: ProcessInfo.processInfo.systemUptime, since: since)
-    }
-
     /// Bản sao sổ lúc này.
     var log: PressLog {
         lock.lock()

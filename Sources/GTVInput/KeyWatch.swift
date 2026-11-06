@@ -33,8 +33,6 @@ final class KeyWatch {
     private var readings = 0
     /// Bộ đếm click lúc đọc phím gần nhất (`lateEditSafe`).
     private var clicksAtLastKey: UInt32 = 0
-    /// macOS 27: số click lần đọc nút chuột đã thấy mà bộ đếm của hệ thống chưa công bố.
-    private var clickCredit = 0
     private var checkTimer: DispatchSourceTimer?
     /// Lần đọc trạng thái lúc xử lý phím terminal gần nhất: `LiveInput` phải đọc liên tục từ đó tới phím sau.
     private var lastTerminalRead: Double?
@@ -104,9 +102,6 @@ final class KeyWatch {
     }
     #endif
 
-    /// Phím giả bộ gõ vừa gửi mà sẽ không tới bộ gõ (xem `KeyLedger.expectUnseen`).
-    func expectUnseen(_ n: Int) { ledger.expectUnseen(n) }
-
     /// Bộ gõ vừa gắn vào một ô nhập liệu, hoặc vừa có click: những gì xảy ra trước đó không còn liên quan.
     func rebase() {
         detectCounterMode()
@@ -115,7 +110,6 @@ final class KeyWatch {
         ledger.rebase(keyDownCount: Self.keyDownCount())
         modifierPressed = false
         burstCarry = false
-        clickCredit = 0
         // macOS 27: click làm ô nhận focus có thể chỉ được công bố sau lúc này.
         pointer.rebase(Self.pointerCount(), at: ProcessInfo.processInfo.systemUptime,
                        quantum: counterMode == .coarse ? 0.5 : nil)
@@ -151,8 +145,7 @@ final class KeyWatch {
     /// Gọi với mọi keyDown bộ gõ nhận (cả ở chế độ E, ứng dụng loại trừ), trước khi xử lý phím: giữa phím trước
     /// mà bộ gõ thấy và phím này có phím / click nào bộ gõ không thấy không.
     /// `terminal`: ô nhập liệu của app terminal (chỉ ở đó các tín hiệu này được dùng: đọc trạng thái liên tục, hẹn kiểm tra).
-    /// `syntheticSince`: phím giả của chính bộ gõ, gửi lúc đó (vẫn vào sổ đếm, không được coi là lần nhấn của người dùng).
-    func observe(_ event: NSEvent, terminal: Bool, throughIME: Bool = false, syntheticSince: Double? = nil) -> KeyGap {
+    func observe(_ event: NSEvent, terminal: Bool) -> KeyGap {
         if !counterModeKnown {
             let before = counterMode
             detectCounterMode()
@@ -161,10 +154,8 @@ final class KeyWatch {
         readings += 1
         checkTimer?.cancel()
         checkTimer = nil
-        let synthetic = syntheticSince != nil
         let previousStamp = lastKeyAt
-        // Phím giả của bộ gõ được tạo ngay sau phím trước: không phải loạt phím dồn ra sau lúc ứng dụng treo — không đổi mốc.
-        if !synthetic { lastKeyAt = event.timestamp }
+        lastKeyAt = event.timestamp
         let live = LiveInput.shared
         live.endHID()                       // phím tới: InputController đã bỏ lần nhấn phím tắt đổi chế độ (nếu có)
         let previousRead = lastTerminalRead
@@ -178,7 +169,7 @@ final class KeyWatch {
         // trễ giao phím lớn nhất thì chắc là trước nó — trừ khi phím này nằm trong loạt phím dồn ra sau lúc ứng dụng treo
         // (cách phím trước dưới 5 ms: có thể đã được bấm từ trước đó). Lần nhấn đọc thấy chưa giữ ở một lần đọc sau phím này
         // thì chắc là sau nó. Còn lại thì chưa chắc: vẫn báo, giữ lại cho phím sau.
-        let burst = coarse && !synthetic && event.timestamp - previousStamp < 0.005
+        let burst = coarse && event.timestamp - previousStamp < 0.005
         var covered = true
         var read: Double?
         var order: (taken: [PressLog.Press], uncertain: Bool) = ([], false)
@@ -187,14 +178,8 @@ final class KeyWatch {
             // không gõ thì lần đọc vừa rồi bắt đầu lại từ đầu).
             covered = previousRead.map { log.covered(since: $0) } ?? true
             read = log.lastSample
-            if let since = syntheticSince {
-                log.syntheticKeyArrived(event.keyCode, since: since, at: event.timestamp)
-            } else {
-                log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat)
-            }
-            if coarse {
-                order = log.order(keyAt: event.timestamp, maxDelivery: Self.maxDelivery, burst: burst, clicksOnly: throughIME)
-            }
+            log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat)
+            if coarse { order = log.order(keyAt: event.timestamp, maxDelivery: Self.maxDelivery, burst: burst) }
         }
         if terminal { lastTerminalRead = read }
 
@@ -203,19 +188,7 @@ final class KeyWatch {
         case .coarse:
             // Click mà lần đọc nút chuột không thấy (chạm để click trên trackpad, click rất nhanh): bộ đếm hệ thống công bố
             // mỗi 0,5 s — biết muộn, nhưng vẫn hơn không.
-            // Click lần đọc nút chuột đã thấy (đã báo ở phím này hay phím trước) thì lúc bộ đếm công bố không báo lần nữa — báo
-            // hai lần là bỏ ngang một từ đang gõ sau click (dấu rời khỏi từ).
-            var published = pointer.newClicks(Self.pointerCount(), lastClickAt: Self.lastClickTime())
-            clickCredit += order.taken.filter { $0.key == nil }.count
-            let known = min(published, clickCredit)
-            published -= known
-            clickCredit -= known
-            if published > 0 {
-                // Bộ đếm báo trước: click còn chờ trong sổ là chính click đó — lấy ra luôn, không báo lại ở phím sau.
-                let waiting = live.withLog { log in log.take { $0.key == nil } }.count
-                clickCredit = max(0, waiting - published)
-            }
-            let clicked = published > 0
+            let clicked = pointer.changed(Self.pointerCount(), lastClickAt: Self.lastClickTime())
             let carried = burst && burstCarry
             if shortcut {
                 gap = .interrupted
@@ -231,7 +204,7 @@ final class KeyWatch {
             } else {
                 gap = .none
             }
-            if !synthetic { burstCarry = gap == .bypassed }
+            burstCarry = gap == .bypassed
             #if DEBUG
             if terminal {
                 let pending = live.log.pending.map { $0.key.map(String.init) ?? "click" }
@@ -239,7 +212,7 @@ final class KeyWatch {
             }
             #endif
         case .exact:
-            gap = exactGap(event, modifier: modifier, keyModifier: keyModifier, quietChecks: terminal, synthetic: synthetic)
+            gap = exactGap(event, modifier: modifier, keyModifier: keyModifier, quietChecks: terminal)
         }
         return gap
     }
@@ -247,7 +220,7 @@ final class KeyWatch {
     /// Độ trễ lớn nhất từ lúc bấm tới lúc ứng dụng nhận phím (IME Lab: 1–60 ms), cộng một chu kỳ đọc trạng thái.
     private static let maxDelivery = 0.06 + LiveInput.interval
 
-    private func exactGap(_ event: NSEvent, modifier: Bool, keyModifier: Bool, quietChecks: Bool, synthetic: Bool = false) -> KeyGap {
+    private func exactGap(_ event: NSEvent, modifier: Bool, keyModifier: Bool, quietChecks: Bool) -> KeyGap {
         let since = Self.secondsSinceKeyDown()           // trước bộ đếm
         let count = Self.keyDownCount()
         let verdict = ledger.observe(KeyReading(keyDownCount: count, timestamp: event.timestamp, keyCode: event.keyCode,
@@ -264,8 +237,7 @@ final class KeyWatch {
             if var acc = accounted {
                 let ordered = log.pending.sorted { self.ledger.unwrapped($0.count) < self.ledger.unwrapped($1.count) }
                 var take: [PressLog.Press] = []
-                // Phím giả tới: lần nhấn phím đặc biệt còn chờ có thể là trạng thái phím của phím giả kế tiếp — không coi là phím đi vòng.
-                for press in ordered where !synthetic && press.key != nil && self.ledger.unwrapped(press.count) <= acc {
+                for press in ordered where press.key != nil && self.ledger.unwrapped(press.count) <= acc {
                     take.append(press)
                     acc += 1
                 }
