@@ -595,9 +595,12 @@ public struct PressLog {
     /// (độ trễ giao phím lớn nhất) — trừ khi phím nằm trong loạt phím dồn ra sau lúc ứng dụng treo (`burst`: có thể đã được
     /// bấm từ trước đó). `uncertain`: còn lần nhấn có thể trước phím. Lần nhấn mà một lần đọc từ `stamp` trở đi vẫn thấy chưa
     /// giữ thì chắc là sau phím (dù `stamp` là lúc bấm hay lúc ứng dụng nhận phím): để lại cho phím sau, không báo.
-    public mutating func order(keyAt stamp: Double, maxDelivery: Double, burst: Bool) -> (taken: [Press], uncertain: Bool) {
-        let taken = burst ? [] : take { $0.at <= stamp - maxDelivery }
-        return (taken, pending.contains { $0.after < stamp })
+    /// `clicksOnly`: mọi phím đặc biệt đều qua bộ gõ (đường phím ⌫ giả) — lần nhấn phím chưa tới chỉ là phím sắp tới, không phải
+    /// phím đi vòng; chỉ xét click.
+    public mutating func order(keyAt stamp: Double, maxDelivery: Double, burst: Bool,
+                               clicksOnly: Bool = false) -> (taken: [Press], uncertain: Bool) {
+        let taken = burst ? [] : take { (!clicksOnly || $0.key == nil) && $0.at <= stamp - maxDelivery }
+        return (taken, pending.contains { (!clicksOnly || $0.key == nil) && $0.after < stamp })
     }
 
     /// Bỏ mọi lần nhấn đang chờ và phím đã nhận chưa đối chiếu (đổi ô nhập liệu, click bộ gõ thấy…).

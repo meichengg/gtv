@@ -78,6 +78,10 @@ private final class ClientAdapter: TextClient {
     func postKeys(deleting: Int, inserting: String) -> Bool {
         SyntheticKeys.shared.post(deleting: deleting, inserting: inserting)
     }
+    func postKeys(prefix: String, deleting: Int, inserting: String) -> Bool {
+        SyntheticKeys.shared.post(prefix: prefix, deleting: deleting, inserting: inserting)
+    }
+    var keysQueued: Bool { LiveInput.shared.keyPressPending }
     var keySwallowable: Bool { false }
     func swallowKey() {
         if swallowsWithEmptyMark {
@@ -128,6 +132,8 @@ final class GTVInputController: IMKInputController {
     private var kindRefined = false
     /// Ô Java: chốt từ đang gạch chân sau một lúc không gõ (xem `scheduleJavaCommit`).
     private var javaCommit: DispatchWorkItem?
+    /// Phím trước đi đường phím ⌫ giả: mọi phím đặc biệt đều qua bộ gõ (sổ phím không coi phím chưa tới là phím đi vòng).
+    private var syntheticRoute = false
 
     // MARK: - Vòng đời
 
@@ -322,7 +328,13 @@ final class GTVInputController: IMKInputController {
             case let m? where m.kind == .edit:
                 // Phím giả của chính bộ gõ: để ứng dụng xử lý (ghi vào sổ phím cho khớp bộ đếm của hệ thống, trừ phím chữ giả đã
                 // báo trước). ⌫ giả tới ứng dụng đúng lúc này: Session cập nhật chữ thật trong ô.
-                if !m.unseenAlready { _ = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID)) }
+                if !m.unseenAlready {
+                    let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID),
+                                                      throughIME: true)
+                    // Click / phím tắt bộ gõ không thấy, lộ ra lúc phím giả tới (sổ phím đã dùng nó): phím thật kế tiếp không
+                    // còn thấy — báo luôn cho Session.
+                    if gap == .interrupted || gap == .bypassed { session.inputInterrupted() }
+                }
                 if event.keyCode == 51 { session.syntheticBackspaceArrived() }
                 return false
             case .some:
@@ -371,7 +383,8 @@ final class GTVInputController: IMKInputController {
         let settings = Settings.shared
 
         // Sổ phím: mọi keyDown bộ gõ nhận đều phải vào sổ, kể cả khi phím đi thẳng ngay dưới đây.
-        let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID))
+        let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID),
+                                          throughIME: syntheticRoute)
 
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {
@@ -429,9 +442,10 @@ final class GTVInputController: IMKInputController {
             synthetic = true
             forceMarked = false
         }
-        if synthetic {
+        if synthetic || (session.blindLatched && SyntheticKeys.shared.available && terminal == nil) {
             // Đọc liên tục nút chuột / phím đặc biệt trong lúc gõ (như terminal): click giữa từ mà bộ gõ không thấy thì phím ⌫
-            // giả của lần sửa sau sẽ xoá ở chỗ mới — macOS 27 chỉ công bố bộ đếm click mỗi 0,5 s.
+            // giả của lần sửa sau sẽ xoá ở chỗ mới — macOS 27 chỉ công bố bộ đếm click mỗi 0,5 s; phím đặc biệt đã bấm mà chưa
+            // tới bộ gõ thì hoãn phím sửa (`keysQueued`).
             LiveInput.shared.keepTerminal(for: 5)
         }
         adapter.swallowsWithEmptyMark = javaView == true
@@ -449,9 +463,7 @@ final class GTVInputController: IMKInputController {
                                      keyText: keyText, web: chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil,
                                      synthetic: synthetic)
         if javaView == true, !synthetic { scheduleJavaCommit(client) }
-        if !synthetic, session.blindLatched, SyntheticKeys.shared.available, terminal == nil {
-            LiveInput.shared.keepTerminal(for: 5)       // ô mù gõ bằng phím ⌫ giả: như trên
-        }
+        syntheticRoute = synthetic || (session.blindLatched && SyntheticKeys.shared.available && terminal == nil)
         #if DEBUG
         let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
             : forceMarked ? "gạch chân" : "trực tiếp"

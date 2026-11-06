@@ -71,7 +71,10 @@ final class SyntheticKeys {
     }
 
     private func expireIfStale() {
-        if !expected.isEmpty, ProcessInfo.processInfo.systemUptime - postedAt > Self.timeout {
+        // Thời điểm phím dùng được: phím mất được nhận ra trong `match` (phím bấm sau lúc gửi tới trước nó); chỉ giữ hạn rất
+        // dài phòng hờ — ứng dụng treo vài giây thì phím giả vẫn tới đúng thứ tự, không được coi là phím của người dùng.
+        let limit = stampsUsable ? 30 : Self.timeout
+        if !expected.isEmpty, ProcessInfo.processInfo.systemUptime - postedAt > limit {
             DebugLog.write("phím giả: \(expected.count) phím không tới — bỏ")
             expected.removeAll()
         }
@@ -79,10 +82,16 @@ final class SyntheticKeys {
 
     /// Gửi `deleting` phím ⌫ rồi `inserting` như phím gõ. false nếu không gửi được.
     @discardableResult
-    func post(deleting: Int, inserting text: String) -> Bool {
-        guard available, deleting > 0 || !text.isEmpty else { return deleting == 0 && text.isEmpty }
+    func post(deleting: Int, inserting text: String) -> Bool { post(prefix: "", deleting: deleting, inserting: text) }
+
+    /// Gửi chữ `prefix`, rồi `deleting` phím ⌫, rồi `inserting`.
+    @discardableResult
+    func post(prefix: String, deleting: Int, inserting text: String) -> Bool {
+        let nothing = deleting == 0 && text.isEmpty && prefix.isEmpty
+        guard available, !nothing else { return nothing }
         let stamp = ProcessInfo.processInfo.systemUptime       // trước khi tạo phím: thời điểm của chúng không sớm hơn
         var events: [CGEvent] = []
+        guard textEvents(prefix, stamp: stamp, into: &events) else { return false }
         for _ in 0..<deleting {
             guard let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Delete), keyDown: true),
                   let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Delete), keyDown: false) else { return false }
@@ -91,6 +100,16 @@ final class SyntheticKeys {
             events += [down, up]
             expected.append(Expected(keyCode: UInt16(kVK_Delete), characters: nil, kind: .edit, optional: false, stamp: stamp))
         }
+        guard textEvents(text, stamp: stamp, into: &events) else { return false }
+        postedAt = ProcessInfo.processInfo.systemUptime
+        KeyWatch.shared.expectUnseen(Self.pieces(prefix).count + Self.pieces(text).count)
+        DebugLog.write("phím giả: gửi \(prefix.isEmpty ? "" : "\(prefix.debugDescription) + ")⌫×\(deleting) + \(text.debugDescription)")
+        for e in events { e.post(tap: .cghidEventTap) }
+        return true
+    }
+
+    /// Phím mang chữ Unicode (không qua bộ gõ — chỉ chờ phòng hờ).
+    private func textEvents(_ text: String, stamp: TimeInterval, into events: inout [CGEvent]) -> Bool {
         for piece in Self.pieces(text) {
             let units = Array(piece.utf16)
             guard let down = CGEvent(keyboardEventSource: source, virtualKey: Self.textKey, keyDown: true),
@@ -103,10 +122,6 @@ final class SyntheticKeys {
             expected.append(Expected(keyCode: UInt16(Self.textKey), characters: piece, kind: .edit, optional: true,
                                      stamp: stamp))
         }
-        postedAt = ProcessInfo.processInfo.systemUptime
-        KeyWatch.shared.expectUnseen(Self.pieces(text).count)
-        DebugLog.write("phím giả: gửi ⌫×\(deleting) + \(text.debugDescription)")
-        for e in events { e.post(tap: .cghidEventTap) }
         return true
     }
 
@@ -132,6 +147,13 @@ final class SyntheticKeys {
     /// phím chữ giả đã được báo trước cho sổ phím (không ghi vào sổ lần nữa).
     func match(_ event: NSEvent) -> (kind: Kind, unseenAlready: Bool)? {
         expireIfStale()
+        if stampsUsable, let head = expected.first(where: { !$0.optional }),
+           event.keyCode != head.keyCode || (head.characters != nil && event.characters != head.characters),
+           event.timestamp > head.stamp + 1 {
+            // Phím bấm sau lúc gửi hơn 1 s mà tới trước phím giả: phím giả đã mất (ứng dụng đổi ô, bỏ phím…).
+            DebugLog.write("phím giả: \(expected.count) phím không tới (phím bấm sau đó đã tới) — bỏ")
+            expected.removeAll { $0.stamp < event.timestamp - 1 }
+        }
         var i = 0
         while i < expected.count {
             let e = expected[i]

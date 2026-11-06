@@ -56,6 +56,14 @@ final class LiveInput {
         }
     }
 
+    /// Có phím đặc biệt (⌫, mũi tên, ⏎…) đã thấy nhấn mà chưa tới bộ gõ.
+    var keyPressPending: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard timer != nil else { return false }
+        return _log.pending.contains { $0.key != nil }
+    }
+
     /// Bản sao sổ lúc này.
     var log: PressLog {
         lock.lock()

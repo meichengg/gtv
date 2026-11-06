@@ -191,13 +191,27 @@ private final class SyntheticField: TextClient {
     func setMarkedText(_ t: String) { XCTFail("phím ⌫ giả không dùng marked text") }
     func replaceViaMarkedText(location: Int, length: Int, with t: String) { insertText(t) }
     func insertText(_ t: String) { units.insert(contentsOf: Array(t.utf16), at: caret); caret += t.utf16.count }
-    func postKeys(deleting: Int, inserting: String) -> Bool {
+    func postKeys(deleting: Int, inserting: String) -> Bool { postKeys(prefix: "", deleting: deleting, inserting: inserting) }
+    func postKeys(prefix: String, deleting: Int, inserting: String) -> Bool {
         guard allowPost else { return false }
+        if !prefix.isEmpty { queue.append(.fakeText(prefix)) }
         for _ in 0..<deleting { queue.append(.fakeBackspace) }
         if !inserting.isEmpty { queue.append(.fakeText(inserting)) }
         return true
     }
     var canPostKeys: Bool { allowPost }
+    /// Phím đặc biệt của người dùng (⌫, ⏎) còn trong hàng đợi, chưa tới bộ gõ (GTVInput thấy qua trạng thái phím của hệ thống).
+    var keysQueued: Bool {
+        queue.contains { if case let .key(k) = $0 { return k == "⌫" || k == "\n" } else { return false } }
+    }
+    var timers: [() -> Void] = []
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { timers.append(work) }
+    /// Thời gian trôi: chạy các timer đã hẹn.
+    func runTimers() {
+        let due = timers
+        timers = []
+        due.forEach { $0() }
+    }
 
     func deleteBack() {
         guard caret > 0 else { return }
@@ -223,9 +237,15 @@ private final class SyntheticField: TextClient {
     func type(_ keys: String) {
         for k in keys {
             queue.append(.key(k))
-            while queue.count > backlog { processOne() }
+            while queue.count > backlog { processOne(); runTimers() }
         }
-        while !queue.isEmpty { processOne() }
+        while !queue.isEmpty { processOne(); runTimers() }
+        for _ in 0..<5 { runTimers() }
+    }
+    /// Ô đã có sẵn chữ bộ gõ không theo dõi.
+    func prefill(_ t: String) {
+        units = Array(t.utf16)
+        caret = units.count
     }
 }
 
@@ -320,9 +340,20 @@ private final class ChromiumField: TextClient {
         }
     }
     func type(_ keys: String) {
-        for k in keys { if k == "⌫" { backspace() } else { press(k) } }
+        for k in keys {
+            if k == "⌫" { backspace() } else if k == "←" { arrowLeft() } else { press(k) }
+        }
+    }
+    /// ← (phím không ra chữ: bộ gõ cho đi, trang dời con trỏ).
+    func arrowLeft() {
+        tick(stepMS)
+        if !session.handle(.other, self, options: options, forceMarked: false, web: true), caret > 0 {
+            caret -= 1
+            snapshot()
+        }
     }
     func finish() { for _ in 0..<5 { tick(100) } }
+    func idle() { for _ in 0..<10 { tick(200) } }
     /// Trang tự đổi chữ bằng JavaScript (xoá ô sau khi gửi, đổi nháp…): không qua phím nên trang không báo bộ đệm.
     func jsSet(_ t: String) {
         units = Array(t.utf16)
@@ -1235,6 +1266,47 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(g.text, "d9a38ng ")
     }
 
+    /// Có quyền gửi phím: ô đã nhận là ô mù giữ cách gõ bằng phím ⌫ giả kể cả khi về sau ô báo con trỏ thật (ô chậm vừa báo
+    /// kịp) — đổi cách gõ giữa chừng làm hỏng chữ, phím giả còn đang tới xoá vào từ sau (review).
+    func testBlindLatchWithPermissionStays() {
+        for backlog in 0...2 {
+            let f = SyntheticField(blind: true)
+            f.synthetic = false
+            f.backlog = backlog
+            f.options.method = .telex
+            f.type("tieengs ")
+            XCTAssertTrue(f.session.blindLatched)
+            f.blind = false                                   // ô bắt đầu báo con trỏ thật
+            f.type("nam vieejt ")
+            XCTAssertEqual(f.text, "tiếng nam việt ", "backlog \(backlog)")
+            XCTAssertTrue(f.session.blindLatched)
+        }
+    }
+
+    /// ⌫ / ⏎ của người dùng bấm ngay sau phím sửa, tới ứng dụng trước phím giả (ứng dụng chậm), trong ô có sẵn chữ: phím giả
+    /// không xoá lố vào chữ có sẵn (review: "abc " + "is⌫x " ra "abcx "). Lần sửa chỉ chèn khi phần theo dõi trống cũng có ⌫ đi
+    /// qua bộ gõ để biết lúc chữ giả tới.
+    func testSyntheticNeverDeletesPriorText() {
+        let cases: [(InputMethod, String, String, String)] = [
+            (.telex, "abc ", "is⌫x ", "abc x "), (.vni, "abc\n", "d9⌫a ", "abc\na "), (.telex, "", "xyz\naa⌫b ", "xyz\nb "),
+            (.telex, "abc\n", "ddi⌫⌫a ", "abc\na "), (.telex, "", "efi⌫⌫gegart ", "egegart "),
+            (.telex, "x\n", "ask⌫⌫nd ", "x\nand "), (.telex, "x\n", "ask⌫⌫⌫ok ", "x\nok "),
+        ]
+        for (method, pre, keys, expect) in cases {
+            for backlog in 0...3 {
+                for commit in [false, true] {
+                    let f = SyntheticField()
+                    f.options.method = method
+                    f.backlog = backlog
+                    f.commitAfterEveryKey = commit
+                    f.prefill(pre)
+                    f.type(keys)
+                    XCTAssertEqual(f.text, expect, "\(keys.debugDescription) backlog \(backlog) commit \(commit)")
+                }
+            }
+        }
+    }
+
     /// Ô tự vẽ không cho biết con trỏ (chưa được nhận ra trước): bộ gõ phát hiện ở phím sửa đầu tiên và chuyển sang phím ⌫
     /// giả — không từ nào mất dấu, không gạch chân.
     func testBlindViewSwitchesToSyntheticKeys() {
@@ -1348,6 +1420,58 @@ final class SessionTests: XCTestCase {
                     f.type(keys)
                     f.finish()
                     XCTAssertEqual(f.text, expect, "\(keys) lag \(lag) step \(step)")
+                }
+            }
+        }
+    }
+
+    /// ⌫ ở ô web (review): click về ranh giới từ rồi gõ; click rồi ⌫ qua dấu cách; ⌫ lùi qua đầu chuỗi; ⌫ nhiều hơn chữ đã đọc;
+    /// ⌫ ngay sau mũi tên / ⏎; ⌫ lùi vào từ trước khi gõ liền. Không bao giờ sửa sai chỗ, chữ đã xoá không sống lại.
+    func testChromiumBackspaceCases() {
+        func run(_ method: InputMethod, _ steps: [(String, Bool)], lag: Int, step: Double) -> String {
+            let f = ChromiumField()
+            f.options.method = method
+            f.lag = lag
+            f.stepMS = step
+            for (keys, pause) in steps {
+                if keys.hasPrefix("@") {
+                    f.click(at: Int(keys.dropFirst())!)
+                    f.tick(300)
+                    continue
+                }
+                f.type(keys)
+                if pause { f.finish(); f.idle() }
+            }
+            f.finish()
+            return f.text
+        }
+        let exact: [(InputMethod, [(String, Bool)], String)] = [
+            (.vni, [("toi di ", false), ("", true), ("@4", false), ("d9 ", false)], "toi đ di "),
+            (.telex, [("toi di ", false), ("", true), ("@4", false), ("dd ", false)], "toi đ di "),
+            (.vni, [("hoc ban ", true), ("@4", false), ("⌫5 ", false)], "học ban "),
+            (.telex, [("hoc ban ", true), ("@4", false), ("⌫j ", false)], "học ban "),
+            (.vni, [("abc dep ", true), ("g⌫⌫⌫⌫a1 ", false)], "abc dá "),
+            (.telex, [("Toi la ", true), ("x⌫⌫⌫af ", false)], "Toi là "),
+            (.telex, [("ban ", true), ("⌫⌫⌫⌫⌫⌫s ", false)], "s "),
+            (.vni, [("Xin chao,", true), (String(repeating: "⌫", count: 12) + "to6i d9i ho5c ", false)], "tôi đi học "),
+            (.vni, [("Xin chao ban, mot hai ba bon nam sau bay tam chin ", true),
+                    (String(repeating: "⌫", count: 38) + "5 ", false)], "Xin chao bạn "),
+            (.vni, [("hoc ⌫⌫5 ", false)], "họ "),
+            (.vni, [("toi di hoc ⌫⌫⌫⌫⌫⌫⌫⌫6 ", false)], "tôi "),
+        ]
+        let either: [(InputMethod, String, [String])] = [
+            (.vni, "hoc ban ←⌫5", ["hoc bạ ", "hoc ba5 "]),
+            (.vni, "Chao ban nhe←←←←⌫5", ["Chao bạ nhe", "Chao ba5 nhe"]),
+            (.vni, "di hoc\r⌫⌫5", ["di\nhọ", "di\nho5", "di họ", "di ho5"]),
+        ]
+        for lag in 0...6 {
+            for step in [10.0, 45.0, 120.0] {
+                for (method, steps, expect) in exact {
+                    XCTAssertEqual(run(method, steps, lag: lag, step: step), expect, "\(steps) lag \(lag) step \(step)")
+                }
+                for (method, keys, ok) in either {
+                    let got = run(method, [(keys, false)], lag: lag, step: step)
+                    XCTAssertTrue(ok.contains(got), "\(keys.debugDescription) lag \(lag) step \(step): \(got.debugDescription)")
                 }
             }
         }
