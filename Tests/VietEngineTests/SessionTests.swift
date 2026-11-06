@@ -1375,6 +1375,25 @@ final class SessionTests: XCTestCase {
         XCTAssertTrue(click.userKeysPending(now: u + 5, since: u), "click chưa được phím sau xử lý không hết hạn")
     }
 
+    /// Review a3b1690 (phím ⌫ giả): ⌫ lùi về từ không nạp lại được (dài hơn 12 chữ, chữ lạ) rồi gõ tiếp — từ vẫn nguyên, không bị xoá.
+    func testSyntheticResumeUnseedableWord() {
+        let cases: [(InputMethod, String, String, String)] = [
+            (.telex, "", "documentation ⌫, ", "documentation, "), (.vni, "", "international ⌫s ", "internationals "),
+            (.telex, "x ", "configuration ⌫.", "x configuration."), (.vni, "", "naïve ⌫s ", "naïves "),
+            (.vni, "x ", "understanding ⌫s", "x understandings"),
+        ]
+        for (method, pre, keys, expect) in cases {
+            for backlog in 0...2 {
+                let f = SyntheticField()
+                f.options.method = method
+                f.backlog = backlog
+                f.prefill(pre)
+                f.type(keys)
+                XCTAssertEqual(f.text, expect, "\(keys.debugDescription) backlog \(backlog)")
+            }
+        }
+    }
+
     /// Sổ nhấn phím: lần nhấn phím không bao giờ tới bộ gõ (phím tắt toàn hệ thống) thôi được coi là đang chờ sau 1 s; phím đang
     /// giữ sau khoảng không đọc không làm lần nhấn thật kế tiếp bị coi là đã nhận.
     func testPressLogUserKeysPending() {
@@ -1761,6 +1780,40 @@ final class SessionTests: XCTestCase {
         }
     }
 
+    /// Review a3b1690 (ô web): click bộ gõ không thấy sau lúc ngừng tay; ← rồi gõ trên trang chậm; ⏎ rồi gõ chữ giống dòng trên khi
+    /// trang chậm; click được báo sau ⌫ đầu. Ra đúng hoặc đi nguyên văn — không sửa vào chữ khác.
+    func testChromiumReviewA3b1690() {
+        typealias Case = (InputMethod, (ChromiumField) -> Void, [String])
+        func clickInOrder(_ f: ChromiumField, _ at: Int) { f.caret = at; f.snapshot(); f.tick(300) }
+        let cases: [Case] = [
+            (.vni, { f in f.type("toi di hoc "); f.finish(); f.idle(); clickInOrder(f, 7); f.backspace(gap: .interrupted); f.type("⌫5 ") },
+             ["toi d5 hoc "]),
+            (.telex, { f in f.type("xin chao ban "); f.finish(); f.idle(); clickInOrder(f, 8); f.backspace(gap: .interrupted)
+                       f.type("f ") }, ["xin chaf  ban ", "xin chà  ban "]),
+            (.telex, { f in f.type("toi hoc←←←va ddi ") }, ["toi va đi hoc", "toi va ddi hoc"]),
+            (.telex, { f in f.type("toi\roir ") }, ["toi\rỏi ", "toi\roir "]),
+            (.vni, { f in f.type("toi\roi3 ") }, ["toi\rỏi ", "toi\roi3 "]),
+            (.telex, { f in f.type("toi di hocj\rcos ") }, ["toi di học\rcó ", "toi di học\rcos "]),
+            (.vni, { f in f.type("nao\rnao2 ") }, ["nao\rnào ", "nao\rnao2 "]),
+            (.vni, { f in f.type("hoi3\rhoi3 ") }, ["hỏi\rhỏi ", "hỏi\rhoi3 "]),
+            (.vni, { f in f.type("toi di hoc "); f.finish(); f.caret = 7; f.snapshot(); f.snapshots[f.snapshots.count - 1].due = 2
+                       f.tick(150); f.type("⌫⌫5 ") }, ["toi d5 hoc ", "toi dọ hoc "]),
+        ]
+        for (i, (method, run, ok)) in cases.enumerated() {
+            for lag in 0...6 {
+                for step in [10.0, 45.0, 120.0] {
+                    let f = ChromiumField()
+                    f.options.method = method
+                    f.lag = lag
+                    f.stepMS = step
+                    run(f)
+                    f.finish()
+                    XCTAssertTrue(ok.contains(f.text), "case \(i) lag \(lag) step \(step): \(f.text.debugDescription)")
+                }
+            }
+        }
+    }
+
     /// Phím ⌫ giả tới bộ gõ không được coi là lần nhấn ⌫ của người dùng (sổ nhấn phím): ⌫ thật bấm sau đó vẫn là phím chưa tới;
     /// ⌫ thật đang chờ không bị ⌫ giả tới lấy mất.
     func testSyntheticBackspaceDoesNotConsumeUserPress() {
@@ -1768,18 +1821,18 @@ final class SessionTests: XCTestCase {
         var t = 100.0
         log.sample(at: t, held: [], button: false, flags: 0)
         for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
-        log.syntheticKeyArrived(51, since: t - 0.01)
+        log.syntheticKeyArrived(51, since: t - 0.01, at: t)
         for _ in 0..<10 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
         for _ in 0..<3 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }
         XCTAssertTrue(log.pending.contains { $0.key == 51 }, "⌫ thật bị nuốt")
         let realAt = t
         t += 0.05
-        log.syntheticKeyArrived(51, since: realAt + 0.01)             // ⌫ giả gửi sau lần nhấn thật
+        log.syntheticKeyArrived(51, since: realAt + 0.01, at: realAt + 0.02)             // ⌫ giả gửi sau lần nhấn thật
         XCTAssertTrue(log.pending.contains { $0.key == 51 }, "⌫ giả lấy mất lần nhấn ⌫ thật")
         for _ in 0..<3 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
         t += 0.008
         log.sample(at: t, held: [51], button: false, flags: 0)        // trạng thái phím của ⌫ giả đọc được (máy chậm)
-        log.syntheticKeyArrived(51, since: t - 0.004)
+        log.syntheticKeyArrived(51, since: t - 0.004, at: t - 0.003)
         XCTAssertEqual(log.pending.filter { $0.key == 51 }.count, 1, "lần nhấn của ⌫ giả còn lại")
         log.keyReceived(51, at: t + 0.01, isRepeat: false)            // ⌫ thật tới
         XCTAssertFalse(log.pending.contains { $0.key == 51 })

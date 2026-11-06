@@ -188,7 +188,7 @@ final class KeyWatch {
             covered = previousRead.map { log.covered(since: $0) } ?? true
             read = log.lastSample
             if let since = syntheticSince {
-                log.syntheticKeyArrived(event.keyCode, since: since)
+                log.syntheticKeyArrived(event.keyCode, since: since, at: event.timestamp)
             } else {
                 log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat)
             }
@@ -239,7 +239,7 @@ final class KeyWatch {
             }
             #endif
         case .exact:
-            gap = exactGap(event, modifier: modifier, keyModifier: keyModifier, quietChecks: terminal)
+            gap = exactGap(event, modifier: modifier, keyModifier: keyModifier, quietChecks: terminal, synthetic: synthetic)
         }
         return gap
     }
@@ -247,7 +247,7 @@ final class KeyWatch {
     /// Độ trễ lớn nhất từ lúc bấm tới lúc ứng dụng nhận phím (IME Lab: 1–60 ms), cộng một chu kỳ đọc trạng thái.
     private static let maxDelivery = 0.06 + LiveInput.interval
 
-    private func exactGap(_ event: NSEvent, modifier: Bool, keyModifier: Bool, quietChecks: Bool) -> KeyGap {
+    private func exactGap(_ event: NSEvent, modifier: Bool, keyModifier: Bool, quietChecks: Bool, synthetic: Bool = false) -> KeyGap {
         let since = Self.secondsSinceKeyDown()           // trước bộ đếm
         let count = Self.keyDownCount()
         let verdict = ledger.observe(KeyReading(keyDownCount: count, timestamp: event.timestamp, keyCode: event.keyCode,
@@ -264,7 +264,8 @@ final class KeyWatch {
             if var acc = accounted {
                 let ordered = log.pending.sorted { self.ledger.unwrapped($0.count) < self.ledger.unwrapped($1.count) }
                 var take: [PressLog.Press] = []
-                for press in ordered where press.key != nil && self.ledger.unwrapped(press.count) <= acc {
+                // Phím giả tới: lần nhấn phím đặc biệt còn chờ có thể là trạng thái phím của phím giả kế tiếp — không coi là phím đi vòng.
+                for press in ordered where !synthetic && press.key != nil && self.ledger.unwrapped(press.count) <= acc {
                     take.append(press)
                     acc += 1
                 }

@@ -586,8 +586,12 @@ public struct PressLog {
     /// thấy từ lúc gửi (máy chậm thì trạng thái phím của phím giả cũng đọc được — để lại thì sổ phím coi là phím đi vòng bộ gõ).
     /// ⌫ thật bấm trước lúc gửi đã tới bộ gõ trước phím giả (cùng hàng đợi) nên không bị bỏ nhầm. Không ghi vào danh sách phím đã
     /// nhận (sẽ nuốt lần nhấn thật sau đó).
-    public mutating func syntheticKeyArrived(_ key: UInt16, since: Double) {
-        pending.removeAll { $0.key == key && $0.at >= since }
+    public mutating func syntheticKeyArrived(_ key: UInt16, since: Double, at stamp: Double) {
+        // Chỉ một lần nhấn, đọc thấy quanh lúc hệ thống xử lý chính phím giả này (từ lúc gửi tới ngay sau thời điểm của nó) —
+        // ⌫ thật bấm sau đó vẫn là phím chưa tới.
+        if let i = pending.firstIndex(where: { $0.key == key && $0.at >= since && $0.after < stamp + 0.002 }) {
+            pending.remove(at: i)
+        }
     }
 
     /// Có phím người dùng bấm mà chưa tới bộ gõ — đang nằm trong hàng đợi của ứng dụng, trước mọi phím gửi bây giờ: lần nhấn

@@ -1381,7 +1381,8 @@ public final class Session {
         case let .char(ch):
             if engine.isEmpty {
                 engine.options = options
-                if let word = synResume { _ = engine.seed(word) }
+                // Từ không nạp lại được (dài quá, chữ lạ…): vẫn nằm nguyên trong ô — coi là chữ đã xong, phím này bắt đầu từ mới.
+                if let word = synResume, !engine.seed(word) { synBefore += word }
                 synResume = nil
             }
             return handleSyntheticChar(ch, client)
@@ -1616,6 +1617,9 @@ public final class Session {
         /// Vị trí đầu chuỗi đọc từ bộ đệm lúc trang có thể chưa báo hết các phím trước (⏎, mũi tên, ⌫ ngay trước đó): bộ đệm cho
         /// thấy trạng thái "cũ" của chuỗi thì có thể chỉ là trùng hợp — lần sửa đầu chỉ làm khi bộ đệm khớp đúng chữ đang gõ.
         var trusted = true
+        /// Chuỗi chưa xác minh: ký tự người dùng vừa gõ ngay trước đầu chuỗi (⏎ → "\n", ⇥ → "\t"); bộ đệm cho thấy đúng ký tự đó
+        /// trước đầu chuỗi (hay đầu chuỗi là đầu ô) mới là bằng chứng vị trí. nil: không biết — chỉ ngừng tay lâu mới tin.
+        var expectBefore: Character?
     }
 
     private enum WebRead { case current, lag, moved(Int), foreign }
@@ -1631,6 +1635,10 @@ public final class Session {
     }
     /// Số phím ô web đã xử lý.
     private var webKeyCount = 0
+    /// Ký tự phím kết thúc chuỗi vừa gõ (⏎ / ⇥): chuỗi sau bắt đầu ngay sau nó (xem `WebChain.expectBefore`).
+    private var webNextExpect: Character?
+    /// Phím trước của chuỗi là ⌫.
+    private var webLastWasBackspace = false
     /// Trạng thái mới nhất của chuỗi lúc sổ phím báo click / phím tắt bộ gõ không thấy: bộ đệm cho thấy trạng thái đó hay cũ hơn
     /// thì trang chưa báo gì sau click (trang chậm) — không dùng làm bằng chứng vị trí.
     private var webGapSerial: Int?
@@ -1689,7 +1697,8 @@ public final class Session {
     }
 
     private func startWebChain(at location: Int, trusted: Bool = true) {
-        web = WebChain(caret: location, start: location, proven: false, trusted: trusted)
+        web = WebChain(caret: location, start: location, proven: false, trusted: trusted, expectBefore: webNextExpect)
+        webNextExpect = nil
         anchor = location
         webBefore = ""
         webSetHistory("")
@@ -1720,7 +1729,12 @@ public final class Session {
                 web?.trusted = false
             }
         }
-        if case .backspace = key { return webBackspace(client, dropped: dropped) }
+        if case .backspace = key {
+            let handled = webBackspace(client, dropped: dropped)
+            webLastWasBackspace = true
+            return handled
+        }
+        webLastWasBackspace = false
         let resume = webResumeArmed
         webResumeArmed = false
         switch key {
@@ -1734,7 +1748,7 @@ public final class Session {
                 engine.reset()
                 web = nil
             }
-            if engine.isEmpty { startWebWord(client, options: options, resume: resume) }
+            if engine.isEmpty { startWebWord(client, options: options, resume: resume, dropped: dropped) }
             guard let action = engine.process(ch) else {
                 endWebWord(client, terminator: ch)
                 if Self.producesText(ch) { webNoteInsert(String(ch)) }
@@ -1751,7 +1765,7 @@ public final class Session {
         }
     }
 
-    private func startWebWord(_ client: TextClient, options: EngineOptions, resume: Bool) {
+    private func startWebWord(_ client: TextClient, options: EngineOptions, resume: Bool, dropped: Bool = false) {
         engine.options = options
         endDirectWord()
         marked = false
@@ -1761,13 +1775,14 @@ public final class Session {
         if web != nil, client.currentTime() - webLastKeyAt > Self.webIdleBreak {
             web = nil
             // Vừa ⌫ lùi về một từ rồi ngừng gõ: bộ đệm đã có mọi phím — dựng lại chuỗi từ bộ đệm để gõ tiếp từ đó.
-            if resume, let sel = client.selectedRange(), sel.length == 0 {
+            if resume, !dropped, let sel = client.selectedRange(), sel.length == 0 {
                 _ = webRebuild(client, at: sel.location)
             }
         }
         guard let chain = web else {
+            // Đầu chuỗi đọc từ bộ đệm: chỉ tin khi đã ngừng gõ lâu và không có click / phím tắt bộ gõ không thấy ngay trước.
             startWebChain(at: client.selectedRange()?.location ?? 0,
-                          trusted: client.currentTime() - webLastKeyAt > Self.webIdleBreak)
+                          trusted: client.currentTime() - webLastKeyAt > Self.webIdleBreak && !dropped)
             return
         }
         let text = webHistory.last?.text ?? webBefore
@@ -1777,7 +1792,8 @@ public final class Session {
         // đó (chưa có bằng chứng: lần sửa đầu chờ trang báo).
         if let sel = client.selectedRange(), sel.length == 0, sel.location != chain.caret,
            !webCacheIsOlder(client, sel.location, chain: chain, model: text) {
-            startWebChain(at: sel.location)
+            webNextExpect = nil
+            startWebChain(at: sel.location, trusted: chain.trusted && !dropped)
             return
         }
         anchor = chain.caret
@@ -1950,16 +1966,21 @@ public final class Session {
 
     private func webEdit(old: String, new: String, typed: Character, _ client: TextClient) -> Bool {
         let proven = web?.proven ?? false
+        let trusted = web?.trusted ?? false
         switch webRead(client, word: old) {
         case .foreign:
             // Chữ lạ trước con trỏ (trang tự đổi chữ, dán bằng chuột…): giữ phím, chờ trang báo rồi đọc lại từ ở đó.
             log?("ô web: chữ trước con trỏ khác chuỗi của bộ gõ — chờ trang báo rồi đọc lại")
             deferWebEdit(old: old, new: new, typed: typed, client)
             return true
+        case .moved where !trusted:
+            deferWebEdit(old: old, new: new, typed: typed, client)
+            return true
         case let .moved(at):
             webMove(to: at, word: old)
-        case .current where !proven && webProvable(old):
+        case .current where !proven && webProvable(old) && (trusted || webStartConfirmed(client)):
             web?.proven = true
+            web?.trusted = true
         case .current, .lag:
             if !proven {
                 deferWebEdit(old: old, new: new, typed: typed, client)
@@ -1996,15 +2017,20 @@ public final class Session {
         let trusted = web?.trusted ?? false
         switch webRead(c, word: p.old) {
         case .current:
-            let provable = webProvable(p.old)
+            let provable = webProvable(p.old) && (trusted || webStartConfirmed(c))
             if check < (provable ? 1 : 2) { return }
-            // Đầu chuỗi đọc từ bộ đệm có thể cũ: khớp một ký tự có thể chỉ là lần đoán của Chromium trên vị trí cũ.
+            // Đầu chuỗi đọc từ bộ đệm có thể cũ: bộ đệm khớp có thể chỉ là trùng hợp trên vị trí cũ (dòng trên, chữ cũ).
             if !trusted, !provable { webGiveUp(c, p.typed); return }
         case .lag:
             if check < 2 { return }
             // Bộ đệm vẫn chưa cho thấy chữ đang gõ mà đầu chuỗi chưa xác minh, hay trang chưa báo gì từ lúc có click: không đoán vị trí.
             if !trusted || webGapSerial != nil { webGiveUp(c, p.typed); return }
         case let .moved(at):
+            if !trusted {
+                if check < 2 { return }
+                webGiveUp(c, p.typed)                      // từ trùng ở chỗ khác có thể là chữ có sẵn
+                return
+            }
             webMove(to: at, word: p.old)
         case .foreign:
             if check < 2 { return }                    // còn chờ trang báo
@@ -2019,6 +2045,14 @@ public final class Session {
         web?.proven = true
         web?.trusted = true
         applyWebEdit(old: p.old, new: p.new, c, atPosition: true)
+    }
+
+    /// Chuỗi chưa xác minh: bộ đệm cho thấy đúng ký tự biết trước ngay trước đầu chuỗi (hay đầu chuỗi là đầu ô).
+    private func webStartConfirmed(_ client: TextClient) -> Bool {
+        guard let chain = web, let expect = chain.expectBefore else { return false }
+        if chain.start == 0 { return true }
+        guard let t = client.text(location: chain.start - 1, length: 1) else { return false }
+        return t == String(expect) || (expect == "\n" && t == "\r")
     }
 
     /// Không xác minh được vị trí lần sửa đang chờ: gõ phím đã giữ lại nguyên văn, các chữ còn lại của từ đi nguyên văn.
@@ -2092,6 +2126,7 @@ public final class Session {
 
     private func endWebWord(_ client: TextClient, terminator ch: Character?) {
         continueWordOnNextChar = false
+        webNextExpect = ch == "\r" || ch == "\n" ? "\n" : ch == "\t" ? "\t" : nil
         let continues = ch.map { Self.producesText($0) && !"\r\n\t".contains($0) } ?? false
         guard !engine.isEmpty else {
             if continues, web != nil, let ch {
@@ -2160,13 +2195,21 @@ public final class Session {
                     log?("ô web: ⌫ — bộ đệm cho thấy con trỏ đã được click về \(sel.location)")
                     engine.reset()
                     web = nil
-                    current = true                       // trang đã có cả phần chuỗi sau con trỏ: không chậm
+                    // Trang đã có cả phần chuỗi sau con trỏ: không chậm — trừ khi phím trước cũng là ⌫ (đã áp vào chuỗi cũ sau
+                    // click, bộ đệm có thể chưa có nó).
+                    current = !webLastWasBackspace
+                } else if !webCacheIsOlder(client, sel.location, chain: chain, model: text) {
+                    // Bộ đệm cho thấy chữ không có trong chuỗi (⌫ trước đã áp vào chỗ cũ sau một click trang báo muộn…): bỏ chuỗi.
+                    log?("ô web: ⌫ — bộ đệm khác chuỗi của bộ gõ, bỏ chuỗi")
+                    engine.reset()
+                    web = nil
                 }
             }
         }
         if web == nil {
             engine.reset()
-            guard current, let sel = client.selectedRange(), sel.length == 0 else { return false }
+            webNextExpect = nil                          // ⌫ đi thẳng: không còn biết ký tự trước con trỏ
+            guard current, !dropped, let sel = client.selectedRange(), sel.length == 0 else { return false }
             guard webRebuild(client, at: sel.location) else { return false }
         }
         guard engine.isEmpty else { return webBackspaceInWord(client) }
