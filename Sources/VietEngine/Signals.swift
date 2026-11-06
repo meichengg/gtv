@@ -574,6 +574,14 @@ public struct PressLog {
     }
 
     /// Bộ gõ nhận keyDown `key` (lúc `at`, thời điểm sự kiện).
+    /// Phím giả của bộ gõ (⌫ gửi bằng CGEventPost) vừa tới: không phải phím người dùng — chỉ bỏ lần nhấn đang chờ nếu đúng là nó
+    /// (đọc thấy đang giữ quanh thời điểm của nó), không ghi vào danh sách phím đã nhận (sẽ nuốt lần nhấn thật sau đó).
+    public mutating func syntheticKeyArrived(_ key: UInt16, at stamp: Double) {
+        if let i = pending.firstIndex(where: { $0.key == key && $0.after <= stamp + 0.002 && stamp <= $0.at + 0.002 }) {
+            pending.remove(at: i)
+        }
+    }
+
     public mutating func keyReceived(_ key: UInt16, at: Double, isRepeat: Bool) {
         if let i = pending.firstIndex(where: { $0.key == key }) {
             pending.remove(at: i)
@@ -723,6 +731,13 @@ public struct PointerWatch {
     public mutating func changed(_ total: UInt32, lastClickAt: @autoclosure () -> Double? = nil) -> Bool {
         defer { last = total }
         return differs(total, lastClickAt: lastClickAt())
+    }
+
+    /// Số click mới kể từ lần trước (0 nếu là click được bỏ qua khi lấy mốc), và ghi nhận.
+    public mutating func newClicks(_ total: UInt32, lastClickAt: @autoclosure () -> Double? = nil) -> Int {
+        defer { last = total }
+        guard differs(total, lastClickAt: lastClickAt()), let last else { return 0 }
+        return Int(total &- last)
     }
 
     /// Như `changed` nhưng không ghi nhận.

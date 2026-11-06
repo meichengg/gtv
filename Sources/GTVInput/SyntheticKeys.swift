@@ -33,6 +33,8 @@ final class SyntheticKeys {
 
     private let source = CGEventSource(stateID: .privateState)
     private var expected: [Expected] = []
+    /// ⌫ cuối của một lần gửi vừa khớp: chữ giả gửi sau nó (nếu qua bộ gõ) tới ngay sau — chỉ khớp trong vài mili giây.
+    private var lastPostMatch: (stamp: TimeInterval, at: TimeInterval)?
     private var postedAt: TimeInterval = 0
     /// Phím giả chưa tới sau chừng này giây (tính từ lần gửi / lần khớp gần nhất) thì coi như không tới (ứng dụng đổi ô, bỏ
     /// phím…). Đủ dài cho ứng dụng khựng (Java GC, Burp đang tải): ⌫ giả tới muộn mà bị coi là ⌫ của người dùng thì sai chữ.
@@ -154,6 +156,13 @@ final class SyntheticKeys {
             DebugLog.write("phím giả: \(expected.count) phím không tới (phím bấm sau đó đã tới) — bỏ")
             expected.removeAll { $0.stamp < event.timestamp - 1 }
         }
+        // Chữ giả còn treo sau ⌫ cuối của lần gửi (thường không qua bộ gõ): phím tới không ngay sau ⌫ đó thì chúng đã tới ứng dụng
+        // rồi — bỏ, kẻo nuốt phím thật cùng chữ (phím A: mã 0 như phím chữ giả).
+        if let last = lastPostMatch, !expected.contains(where: { !$0.optional && $0.stamp == last.stamp }),
+           !stampsUsable || event.timestamp - last.at > 0.005 || event.timestamp < last.at {
+            expected.removeAll { $0.optional && $0.stamp <= last.stamp }
+            lastPostMatch = nil
+        }
         var i = 0
         while i < expected.count {
             let e = expected[i]
@@ -171,6 +180,7 @@ final class SyntheticKeys {
                     stampAgreements += 1
                 }
                 expected.removeFirst(i + 1)          // các phím chữ giả trước nó đã tới ứng dụng mà không qua bộ gõ
+                if !e.optional { lastPostMatch = (e.stamp, event.timestamp) }
                 postedAt = ProcessInfo.processInfo.systemUptime
                 DebugLog.write("phím giả: khớp phím \(event.keyCode)\(e.kind == .user ? " (phím thật gửi lại)" : "") Δ \(String(format: "%+.1f", dt * 1000)) ms")
                 return (e.kind, e.optional)

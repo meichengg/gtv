@@ -1878,7 +1878,8 @@ public final class Session {
     /// Từ đang gõ nằm nguyên ngay trước con trỏ trang báo, nhưng ở chỗ khác chỗ bộ gõ nhớ: bắt đầu chuỗi mới ở đó.
     private func webMoved(_ client: TextClient, _ sel: (location: Int, length: Int), _ word: String) -> WebRead {
         let n = word.utf16.count
-        if n > 0, sel.length == 0, sel.location >= n, let t = client.text(location: sel.location - n, length: n), t == word {
+        // Một ký tự trước con trỏ trùng chữ đang gõ không chứng minh được gì (chữ đó có thể là chữ có sẵn).
+        if n >= 2, sel.length == 0, sel.location >= n, let t = client.text(location: sel.location - n, length: n), t == word {
             return .moved(sel.location - n)
         }
         return .foreign
@@ -1937,27 +1938,21 @@ public final class Session {
     private func flushWebPending(_ client: TextClient, check: Int) {
         guard let p = webPending else { return }
         let c = webPendingClient ?? client
+        let trusted = web?.trusted ?? false
         switch webRead(c, word: p.old) {
         case .current:
-            if check < (webProvable(p.old) ? 1 : 2) { return }
+            let provable = webProvable(p.old)
+            if check < (provable ? 1 : 2) { return }
+            // Đầu chuỗi đọc từ bộ đệm có thể cũ: khớp một ký tự có thể chỉ là lần đoán của Chromium trên vị trí cũ.
+            if !trusted, !provable { webGiveUp(c, p.typed); return }
         case .lag:
             if check < 2 { return }
-            if web?.trusted == false {
-                // Đầu chuỗi đọc từ bộ đệm có thể cũ, bộ đệm vẫn chưa cho thấy chữ đang gõ: không đoán vị trí.
-                log?("ô web: chưa chắc vị trí đầu chuỗi — phím \(String(p.typed).debugDescription) đi nguyên văn")
-                webPending = nil
-                webSerial &+= 1
-                c.insertText(String(p.typed))
-                webNoteInsert(String(p.typed))
-                engine.reset()
-                untracked = true
-                web = nil
-                return
-            }
+            if !trusted { webGiveUp(c, p.typed); return }    // bộ đệm vẫn chưa cho thấy chữ đang gõ: không đoán vị trí
         case let .moved(at):
             webMove(to: at, word: p.old)
         case .foreign:
             if check < 2 { return }                    // còn chờ trang báo
+            if !trusted { webGiveUp(c, p.typed); return }    // bộ đệm có thể vẫn cũ: đọc lại từ là đọc chữ đã xoá
             webPending = nil
             webSerial &+= 1
             webResync(c, typed: p.typed)
@@ -1968,6 +1963,18 @@ public final class Session {
         web?.proven = true
         web?.trusted = true
         applyWebEdit(old: p.old, new: p.new, c, atPosition: true)
+    }
+
+    /// Không xác minh được vị trí lần sửa đang chờ: gõ phím đã giữ lại nguyên văn, các chữ còn lại của từ đi nguyên văn.
+    private func webGiveUp(_ client: TextClient, _ typed: Character) {
+        log?("ô web: chưa chắc vị trí — phím \(String(typed).debugDescription) đi nguyên văn")
+        webPending = nil
+        webSerial &+= 1
+        client.insertText(String(typed))
+        webNoteInsert(String(typed))
+        engine.reset()
+        untracked = true
+        web = nil
     }
 
     /// Chữ trước con trỏ không còn là chuỗi của bộ gõ: đọc lại từ đang nằm trước con trỏ (bộ đệm, sau khi trang đã có thời gian
@@ -2078,8 +2085,10 @@ public final class Session {
             return false
         }
         var current = client.currentTime() - webLastKeyAt > Self.webIdleBreak
-        if let chain = web, engine.isEmpty {
+        if let chain = web {
             if current || dropped {
+                // Lâu không gõ (dựng lại từ bộ đệm), hay có click / phím tắt bộ gõ không thấy: bỏ cả từ đang gõ.
+                engine.reset()
                 web = nil
             } else if let sel = client.selectedRange(), sel.length == 0, sel.location != chain.caret {
                 let text = webHistory.last?.text ?? webBefore
@@ -2087,6 +2096,7 @@ public final class Session {
                 if m >= 0, webShowsRest(client, sel.location, m: m, model: text),
                    !webStackedGuesses(client, sel.location, m: m, model: text) {
                     log?("ô web: ⌫ — bộ đệm cho thấy con trỏ đã được click về \(sel.location)")
+                    engine.reset()
                     web = nil
                     current = true                       // trang đã có cả phần chuỗi sau con trỏ: không chậm
                 }
@@ -2121,8 +2131,17 @@ public final class Session {
     private func webExtendBack(_ client: TextClient) -> Bool {
         guard var chain = web else { return false }
         guard chain.start > 0 else { return true }
-        let len = min(chain.start, 4)
+        let len = min(chain.start, 32)
         guard let t = client.text(location: chain.start - len, length: len), t.utf16.count == len, let ch = t.last else {
+            return false
+        }
+        // ⌫ của Blink xoá cả cụm (emoji ghép bằng ZWJ, cờ…) hay từng dấu tổ hợp — khác ký tự của Swift: chỉ theo dõi tiếp khi ký tự
+        // đó là một mã Unicode đơn trong BMP, không phải dấu tổ hợp / ký tự nối, và đọc được trọn (không bị cắt ở đầu cửa sổ).
+        let scalars = Array(ch.unicodeScalars)
+        guard scalars.count == 1, let u = scalars.first, u.value < 0x10000, !(0xD800...0xDFFF).contains(u.value),
+              u.properties.generalCategory != .nonspacingMark, u.properties.generalCategory != .spacingMark,
+              u.properties.generalCategory != .enclosingMark, u.properties.generalCategory != .format,
+              !(0xFE00...0xFE0F).contains(u.value), len < t.utf16.count + 1, t.count > 1 || len == chain.start else {
             return false
         }
         let c = String(ch)

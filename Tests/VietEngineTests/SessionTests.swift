@@ -331,13 +331,24 @@ private final class ChromiumField: TextClient {
             }
         }
     }
-    func backspace() {
+    /// ⌫ của Blink xoá cả cụm (emoji ghép bằng ZWJ…); không bật thì xoá một đơn vị UTF-16.
+    var graphemeBackspace = false
+    /// `gap`: sổ phím báo có click / phím tắt bộ gõ không thấy trước phím này.
+    func backspace(gap: KeyGap = .none) {
         tick(stepMS)
-        if !session.handle(.backspace, self, options: options, forceMarked: false, web: true), caret > 0 {
-            units.remove(at: caret - 1)
-            caret -= 1
+        if !session.handle(.backspace, self, options: options, forceMarked: false, gap: gap, web: true), caret > 0 {
+            let n = graphemeBackspace ? (String(decoding: units[..<caret], as: UTF16.self).last.map { String($0).utf16.count } ?? 1) : 1
+            units.removeSubrange((caret - n)..<caret)
+            caret -= n
             snapshot()
         }
+    }
+    /// Trang tự đổi chữ (dán bằng chuột…) và báo ngay.
+    func pageSet(_ t: String) {
+        units = Array(t.utf16)
+        caret = units.count
+        snapshot()
+        snapshots[snapshots.count - 1].due = 0
     }
     func type(_ keys: String) {
         for k in keys {
@@ -1491,6 +1502,75 @@ final class SessionTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// Review 811e85c: click giữa từ rồi ⌫; chuỗi bắt đầu từ bộ đệm cũ sau ← / ⏎ / ⌫ đi thẳng; click + ⌫ có gap; ⌫ lùi qua emoji.
+    /// Ra đúng hoặc đi nguyên văn — không bao giờ sửa vào chữ khác, chữ đã xoá không sống lại.
+    func testChromiumStaleStartAndMidWordClick() {
+        typealias Case = (InputMethod, (ChromiumField) -> Void, [String])
+        let cases: [Case] = [
+            (.telex, { f in f.type("xin chao ban"); f.finish(); f.finish(); f.click(at: 8); f.tick(300); f.type("⌫s") },
+             ["xin chá ban", "xin chas ban"]),
+            (.vni, { f in f.type("Viet Nam la"); f.finish(); f.finish(); f.click(at: 4); f.tick(300); f.type("⌫⌫e65t") },
+             ["Việt Nam la", "Vie65t Nam la"]),
+            (.vni, { f in f.type("toi di hoc"); f.finish(); f.finish(); f.click(at: 6); f.tick(300); f.type("⌫⌫d9i") },
+             ["toi đi hoc", "toi d9i hoc"]),
+            (.vni, { f in f.type("toi di hoc"); f.finish(); f.finish(); f.click(at: 4); f.tick(300); f.type("⌫5 ") },
+             ["tọi di hoc", "toi5 di hoc"]),
+            (.telex, { f in f.type("xin chao←aa ") }, ["xin chaâ o", "xin chaaa o"]),
+            (.vni, { f in f.type("xin chao←a2 ") }, ["xin chaà o", "xin chaa2 o"]),
+            (.telex, { f in f.type("hoa←oo ") }, ["hoô a", "hooo a"]),
+            (.telex, { f in f.type("Viet Nam←aj ") }, ["Viet Naạ m", "Viet Naaj m"]),
+            (.telex, { f in f.type("cho a\r⌫aa ") }, ["cho aâ ", "cho aaa "]),
+            (.telex, { f in f.type("da\r⌫⌫dd ") }, ["dđ ", "ddd "]),
+            (.telex, { f in f.type("xin chao←⌫uw ") }, ["xin chư o", "xin chuw o"]),
+            (.vni, { f in f.type("toi di hoc ←⌫a1 ") }, ["toi di hoá  ", "toi di hoa1  "]),
+            (.telex, { f in f.type("xin chao←⌫⌫w ") }, ["xin cư o", "xin cw o"]),
+            (.telex, { f in f.type("xin chao\r⌫⌫⌫w ") }, ["xin chư ", "xin chw "]),
+            (.vni, { f in f.type("toi di hoc "); f.finish(); f.click(at: 4); f.tick(300); f.backspace(gap: .interrupted); f.type("⌫d9 ") },
+             ["tođ di hoc ", "tod9 di hoc "]),
+            (.vni, { f in f.type("toi di hoc "); f.finish(); f.click(at: 7); f.tick(300); f.backspace(gap: .interrupted); f.type("a1 ") },
+             ["toi diá hoc ", "toi dia1 hoc "]),
+            (.telex, { f in f.type("abc←w ") }, ["abư c", "abw c"]),
+            (.telex, { f in f.graphemeBackspace = true; f.type("haha "); f.idle(); f.pageSet("haha 🤦‍♂️"); f.finish(); f.idle()
+                       f.type("xy⌫⌫⌫⌫aa ") }, ["hahaâ ", "hahaaa "]),
+            (.vni, { f in f.graphemeBackspace = true; f.type("ban "); f.idle(); f.pageSet("ban 🏳️‍🌈"); f.finish(); f.idle()
+                       f.type("xy⌫⌫⌫⌫a1 ") }, ["bána ", "bana1 ", "bán "]),
+        ]
+        for (i, (method, run, ok)) in cases.enumerated() {
+            for lag in 0...6 {
+                for step in [10.0, 45.0, 120.0] {
+                    let f = ChromiumField()
+                    f.options.method = method
+                    f.lag = lag
+                    f.stepMS = step
+                    run(f)
+                    f.finish()
+                    XCTAssertTrue(ok.contains(f.text), "case \(i) lag \(lag) step \(step): \(f.text.debugDescription)")
+                }
+            }
+        }
+    }
+
+    /// Phím ⌫ giả tới bộ gõ không được coi là lần nhấn ⌫ của người dùng (sổ nhấn phím): ⌫ thật bấm sau đó vẫn là phím chưa tới;
+    /// ⌫ thật đang chờ không bị ⌫ giả tới lấy mất.
+    func testSyntheticBackspaceDoesNotConsumeUserPress() {
+        var log = PressLog()
+        var t = 100.0
+        log.sample(at: t, held: [], button: false, flags: 0)
+        for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
+        log.syntheticKeyArrived(51, at: t)
+        for _ in 0..<10 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
+        for _ in 0..<3 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }
+        XCTAssertTrue(log.pending.contains { $0.key == 51 }, "⌫ thật bị nuốt")
+        log.syntheticKeyArrived(51, at: t - 0.2)                     // ⌫ giả gửi từ trước tới bây giờ
+        XCTAssertTrue(log.pending.contains { $0.key == 51 }, "⌫ giả lấy mất lần nhấn ⌫ thật")
+        log.keyReceived(51, at: t + 0.01, isRepeat: false)            // ⌫ thật tới
+        XCTAssertFalse(log.pending.contains { $0.key == 51 })
+        var w = PointerWatch()
+        w.rebase(10)
+        XCTAssertEqual(w.newClicks(12), 2)
+        XCTAssertEqual(w.newClicks(12), 0)
     }
 
     /// Click / phím tắt bộ gõ không thấy được báo muộn (macOS 27: bộ đếm click công bố mỗi 0,5 s) ở đầu một từ khi trang chậm:

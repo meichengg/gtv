@@ -330,7 +330,7 @@ final class GTVInputController: IMKInputController {
                 // báo trước). ⌫ giả tới ứng dụng đúng lúc này: Session cập nhật chữ thật trong ô.
                 if !m.unseenAlready {
                     let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID),
-                                                      throughIME: true)
+                                                      throughIME: true, synthetic: true)
                     // Click / phím tắt bộ gõ không thấy, lộ ra lúc phím giả tới (sổ phím đã dùng nó): phím thật kế tiếp không
                     // còn thấy — báo luôn cho Session.
                     if gap == .interrupted || gap == .bypassed { session.inputInterrupted() }
@@ -463,7 +463,9 @@ final class GTVInputController: IMKInputController {
                                      keyText: keyText, web: chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil,
                                      synthetic: synthetic)
         if javaView == true, !synthetic { scheduleJavaCommit(client) }
+        // Đường phím giả và ô web Chromium: mọi phím đặc biệt (⌫, mũi tên, ⏎) đều qua bộ gõ.
         syntheticRoute = synthetic || (session.blindLatched && SyntheticKeys.shared.available && terminal == nil)
+            || (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil)
         #if DEBUG
         let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
             : forceMarked ? "gạch chân" : "trực tiếp"
