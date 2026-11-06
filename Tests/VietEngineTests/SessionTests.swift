@@ -161,6 +161,89 @@ private final class Qt5Field: TextClient {
     }
 }
 
+/// Ô web của Chromium (render_widget_host_view_cocoa.mm), theo đúng cách bộ đệm phía trình duyệt cập nhật:
+/// - văn bản thật nằm ở trang; trang báo lại (con trỏ + chữ) cho bộ đệm sau `lag` phím;
+/// - lần sửa của bộ gõ có vùng thay (ImeCommitText) chỉ tới trang, không vào bộ đệm;
+/// - chèn không vùng thay (phím đi thẳng, insertText) làm bộ đệm đoán: con trỏ = vị trí trang báo lần cuối + độ dài, chữ chèn
+///   vào chỗ đó (không cộng dồn);
+/// - ⌫ của trang không vào bộ đệm; mọi thứ tới trang theo đúng thứ tự.
+private final class ChromiumField: TextClient {
+    var units: [UInt16] = []
+    var caret = 0
+    var cUnits: [UInt16] = []
+    var cCaret = 0
+    var base = 0
+    var lag = 0
+    var snapshots: [(units: [UInt16], caret: Int, due: Int)] = []
+    var now = 0.0
+    var timers: [(at: Double, work: () -> Void)] = []
+    var stepMS = 80.0
+    let session = Session()
+    var options = EngineOptions()
+
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { (cCaret, 0) }
+    func text(location: Int, length: Int) -> String? {
+        let lo = max(0, location), hi = min(cUnits.count, location + length)
+        guard lo < hi else { return length == 0 ? "" : nil }
+        return String(decoding: cUnits[lo..<hi], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with t: String) {
+        guard location <= units.count else { return }
+        let lo = location, hi = min(location + length, units.count)
+        units.replaceSubrange(lo..<hi, with: Array(t.utf16))
+        if caret >= hi { caret += t.utf16.count - (hi - lo) } else if caret > lo { caret = lo + t.utf16.count }
+        snapshot()
+    }
+    func insertText(_ t: String) {
+        units.insert(contentsOf: Array(t.utf16), at: caret)
+        caret += t.utf16.count
+        cUnits.insert(contentsOf: Array(t.utf16), at: min(base, cUnits.count))
+        cCaret = base + t.utf16.count
+        snapshot()
+    }
+    func setMarkedText(_ t: String) { XCTFail("ô web không dùng marked text") }
+    func replaceViaMarkedText(location: Int, length: Int, with t: String) { XCTFail("ô web không dùng marked text") }
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { timers.append((now + delay, work)) }
+    func currentTime() -> Double { now }
+
+    func snapshot() { snapshots.append((units, caret, lag)) }
+    func report(_ s: (units: [UInt16], caret: Int, due: Int)) { cUnits = s.units; cCaret = s.caret; base = s.caret }
+
+    /// Thời gian trôi tới phím kế tiếp: trang báo những gì tới hạn, timer tới hạn chạy.
+    func tick(_ ms: Double) {
+        var steps = Int(ms / 10)
+        while steps > 0 {
+            steps -= 1
+            now += 0.01
+            let due = timers.filter { $0.at <= now + 1e-9 }
+            timers.removeAll { $0.at <= now + 1e-9 }
+            due.forEach { $0.work() }
+        }
+        let ready = snapshots.filter { $0.due <= 0 }
+        snapshots = snapshots.filter { $0.due > 0 }.map { ($0.units, $0.caret, $0.due - 1) }
+        ready.forEach(report)
+    }
+
+    func press(_ k: Character) {
+        tick(stepMS)
+        if !session.handle(.char(k), self, options: options, forceMarked: false, web: true) { insertText(String(k)) }
+    }
+    func backspace() {
+        tick(stepMS)
+        if !session.handle(.backspace, self, options: options, forceMarked: false, web: true), caret > 0 {
+            units.remove(at: caret - 1)
+            caret -= 1
+            snapshot()
+        }
+    }
+    func type(_ keys: String) {
+        for k in keys { if k == "⌫" { backspace() } else { press(k) } }
+    }
+    func finish() { for _ in 0..<5 { tick(100) } }
+}
+
 /// Ô GTK 3 (gdk/quartz, imquartz.c): marked text thật, `hasMarkedText` đúng; mỗi phím chỉ giữ LẦN CHÈN CUỐI (TIC_INSERT_TEXT bị
 /// ghi đè) — phím bộ gõ cho đi mà ra chữ thì AppKit chèn chữ đó, đè lên lần chốt từ của bộ gõ trong cùng phím.
 /// `winit`: thay vào đó như winit 0.30 — chèn khi không có marked text thì bị bỏ; sau lần chốt, phím bộ gõ cho đi bị nuốt trừ khi
@@ -997,6 +1080,53 @@ final class SessionTests: XCTestCase {
 
     /// Ô kiểu Qt 5 (con trỏ luôn báo 0, bỏ qua vùng cần thay): không bao giờ chèn ư / ơ vào giữa từ ("awesome" → "aưesome");
     /// thấy rồi thì các từ sau gõ bằng marked text (GTVInput còn nhận ra Qt 5 trước cả từ đầu tiên, xem `AppToolkit`).
+    /// Electron / Chrome khi trang chậm (bộ đệm chậm 0–3 phím, phím cách nhau 10–120 ms): không bao giờ bỏ dấu, không sửa sai
+    /// chỗ (người dùng: "d9a38ng" ra "đa38ng" / "đả8ng").
+    func testChromiumLagNeverDropsTones() {
+        let cases: [(InputMethod, String, String)] = [
+            (.vni, "d9a38ng ", "đẳng "),
+            (.vni, "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c. ", "Việt Nam, tôi yêu tiếng Việt đại học. "),
+            (.telex, "Vieetj Nam ddaij hocj tieengs Vieetj nguwowif ", "Việt Nam đại học tiếng Việt người "),
+            (.telex, "hoafn⌫ ", "hòa "),
+            (.vni, "tie61ng⌫⌫⌫e65t ", "tiệt "),
+            (.telex, "text password coffee ", "text password coffee "),
+            (.vni, "ho6i⌫⌫oi3 ", "hỏi "),
+            (.vni, "ho6i⌫⌫i3 ", "hỉ "),
+        ]
+        for (method, keys, expect) in cases {
+            for lag in 0...3 {
+                for step in [10.0, 45.0, 120.0] {
+                    let f = ChromiumField()
+                    f.options.method = method
+                    f.lag = lag
+                    f.stepMS = step
+                    f.type(keys)
+                    f.finish()
+                    XCTAssertEqual(f.text, expect, "\(method) \(keys) lag \(lag) step \(step)")
+                }
+            }
+        }
+    }
+
+    /// Ô được trang tự focus và điền nháp (trang chưa từng báo: bộ đệm {0,0} rỗng): lần sửa đầu chờ trang báo rồi mới sửa,
+    /// không sửa chữ đầu của nháp ("Hello" + "d9" phải ra "Hellođ", không phải "đellod"). Giới hạn còn lại: trang chậm tới mức
+    /// chưa báo cả phím đầu khi phím thứ ba tới (trễ 2 phím) thì bộ đệm chỉ là lần đoán, không phân biệt được với ô trống.
+    func testChromiumUnreportedDraftNeverEditsWrongPlace() {
+        for lag in 0...1 {
+            for step in [10.0, 80.0] {
+                let f = ChromiumField()
+                f.units = Array("Hello ".utf16)
+                f.caret = 6
+                f.lag = lag
+                f.stepMS = step
+                f.options.method = .vni
+                f.type("d9a38ng ")
+                f.finish()
+                XCTAssertEqual(f.text, "Hello đẳng ", "lag \(lag) step \(step)")
+            }
+        }
+    }
+
     /// SDL (ô chat trong game): con trỏ giả không bao giờ là 0 sau từ đầu — con trỏ không nhích sau dấu cách thì từ sau gõ bằng
     /// marked text (review: trước đây từ thứ hai trở đi ra nguyên văn).
     func testSDLStyleFakeCaretKeepsAllWords() {

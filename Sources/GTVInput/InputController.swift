@@ -95,7 +95,17 @@ final class GTVInputController: IMKInputController {
     private var bundleID = ""
     private var hotkeyArmedAt: TimeInterval?
     /// Ô đang gắn là ô văn bản hay view terminal (hỏi một lần lúc gắn); nil: chưa biết (ô tạm), hỏi lại ở phím kế tiếp.
-    private var clientKind: ClientKind?
+    private var clientKind: ClientKind? {
+        didSet { if clientKind == nil { chromiumWeb = false } }
+    }
+    /// Ô web của Chromium (Chrome, Electron): gõ theo `Session.handleWeb` (bộ gõ tự giữ vị trí từ đang gõ, không bỏ dấu khi
+    /// trang chậm).
+    private var chromiumWeb = false
+    /// RenderWidgetHostViewCocoa (render_widget_host_view_cocoa.mm) khai báo đúng 4 thuộc tính này (AppKit có thể thêm
+    /// NSDictationHiliteMarkedText).
+    private static let chromiumWebAttributes: Set<String> = [
+        "NSUnderline", "NSUnderlineColor", "NSMarkedClauseSegment", "NSTextInputReplacementRangeAttributeName",
+    ]
     /// Ô của ứng dụng Java (AWT…): chỉ gõ được bằng marked text, xem `JavaDetector`. nil: chưa biết.
     private var javaView: Bool?
     /// Đã xét lại loại ô theo bộ công cụ của ứng dụng chưa (SwiftTerm bản mới, xem `refineKind`) — một lần cho mỗi lần gắn.
@@ -119,14 +129,14 @@ final class GTVInputController: IMKInputController {
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
         KeyWatch.shared.rebase()
-        clientKind = Self.kind(of: client)           // một lần cho mỗi lần gắn
+        classify(client)                             // một lần cho mỗi lần gắn
         if clientKind == .textView { javaView = false }
         if clientKind == .terminalView, !Settings.knownTerminals.contains(bundleID) {
             JavaDetector.prefetch(bundleID)          // có kết quả trước phím đầu tiên
         }
         #if DEBUG
         // IME Lab: thuộc tính marked text ô nhập liệu nhận — phân biệt view terminal với ô văn bản thường (NSTextView).
-        DebugLog.write("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-") attrs=[\(Self.markedTextAttributes(client).joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
+        DebugLog.write("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-")\(chromiumWeb ? " web" : "") attrs=[\(Self.markedTextAttributes(client).joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
         #else
         DebugLog.write("activateServer \(bundleID)")
         #endif
@@ -161,6 +171,15 @@ final class GTVInputController: IMKInputController {
         }
     }
 
+    /// Loại ô (và ô web Chromium), từ một lần đọc thuộc tính marked text.
+    private func classify(_ client: Client) {
+        let attrs = Self.markedTextAttributes(client)
+        let kind = ClientKind.classify(attrs)
+        clientKind = kind == .placeholder ? nil : kind
+        chromiumWeb = clientKind != nil
+            && Set(attrs).subtracting(["NSDictationHiliteMarkedText"]) == Self.chromiumWebAttributes
+    }
+
     /// Loại ô; nil khi InputMethodKit chưa gắn ô thật (ô tạm).
     private static func kind(of client: Client) -> ClientKind? {
         let kind = ClientKind.classify(markedTextAttributes(client))
@@ -183,7 +202,7 @@ final class GTVInputController: IMKInputController {
     /// máy ảo Java. Hỏi một lần cho mỗi ô (ô tạm của InputMethodKit: hỏi lại ở phím sau).
     private func isJavaView(_ client: Client) -> Bool {
         if let javaView { return javaView }
-        if clientKind == nil { clientKind = Self.kind(of: client) }
+        if clientKind == nil { classify(client) }
         switch clientKind {
         case .terminalView?:
             guard let java = JavaDetector.usesJVM(bundleID, wait: 0.05) else { return false }   // chưa biết: hỏi lại sau
@@ -338,14 +357,14 @@ final class GTVInputController: IMKInputController {
         adapter.client = client
         defer { adapter.client = nil }
         let toolkit = AppToolkit.profile(bundleID)
-        if clientKind == nil { clientKind = Self.kind(of: client) }
+        if clientKind == nil { classify(client) }
         refineKind(client, toolkit)
         var terminal = settings.terminalStyle(for: bundleID)
         var forceMarked = terminal == nil && (settings.useMarked(for: bundleID)
             || (Settings.knownTerminals.contains(bundleID) && settings.terminalMode == "marked"))
         var earlyCommit = forceMarked && Settings.terminalApps.contains(bundleID)
         if Settings.knownTerminals.contains(bundleID) {
-            if clientKind == nil { clientKind = Self.kind(of: client) }
+            if clientKind == nil { classify(client) }
             if clientKind == .textView || (terminal != nil && Self.inTextField(client, bundleID)) {
                 // Ô văn bản trong app terminal (thanh Find, command palette, đổi tên tab…): gõ như ứng dụng thường —
                 // DEL của kiểu gõ terminal sẽ thành chữ rác ở đây.
@@ -359,7 +378,7 @@ final class GTVInputController: IMKInputController {
         }
         // Ô tự vẽ (ít thuộc tính marked text) của ứng dụng chưa kiểm chứng: từ bắt đầu ở con trỏ {0, 0} gõ bằng marked text
         // (xem `Session.handle(markedAtCaretZero:)`) — không từ nào đi nguyên văn ở ô không cho biết con trỏ.
-        if clientKind == nil { clientKind = Self.kind(of: client) }
+        if clientKind == nil { classify(client) }
         // Flutter: ô văn bản không khai báo thuộc tính nào nhưng thay đúng vùng, con trỏ thật — không cần (marked text vào ô
         // trống còn vướng flutter#194199); terminal xterm.dart thì cần.
         let markedAtCaretZero = !Settings.knownTerminals.contains(bundleID) && clientKind == .terminalView
@@ -374,7 +393,7 @@ final class GTVInputController: IMKInputController {
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),
                                      markedAtCaretZero: markedAtCaretZero, combinedCommit: toolkit.combinedCommit,
                                      clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
-                                     keyText: keyText)
+                                     keyText: keyText, web: chromiumWeb && !forceMarked && terminal == nil)
         if javaView == true { scheduleJavaCommit(client) }
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): \(handled ? "bộ gõ xử lý" : "đi thẳng") sel=\(client.selectedRange()) len=\(client.length())")
         return handled
