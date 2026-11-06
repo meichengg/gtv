@@ -142,6 +142,7 @@ jobs:
       # Thử cấp quyền Trợ năng / gửi phím cho bộ gõ (cần cho cách gõ bằng phím ⌫ giả ở Java, Qt 5, GTK…). GTVInput ghi kết
       # quả vào log lúc khởi động ("quyền gửi phím=…").
       - name: Grant accessibility to GTVInput (thử)
+        if: false
         continue-on-error: true
         run: |
           csrutil status || true
