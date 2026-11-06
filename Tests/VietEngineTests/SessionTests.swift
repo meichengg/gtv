@@ -210,10 +210,14 @@ private final class SyntheticField: TextClient {
             insertText(e.text)
         }
     }
+    /// Như Java: AWT gọi commitComposition sau mọi phím (abandonInput).
+    var commitAfterEveryKey = false
+
     func press(_ k: Character) {
         swallowed = false
         let handled = session.handle(k == "⌫" ? .backspace : .char(k), self, options: options, forceMarked: false,
                                      synthetic: synthetic)
+        if commitAfterEveryKey { session.commitRequested(self) }
         // Ứng dụng nhận phím trừ khi bộ gõ trả lời "đã xử lý" VÀ đã giữ được phím (Java: setMarkedText("")).
         let appGetsKey = !handled || !swallowable || !swallowed
         if appGetsKey { if k == "⌫" { deleteBack() } else { insertText(String(k)) } }
@@ -1159,10 +1163,13 @@ final class SessionTests: XCTestCase {
         ]
         for (method, keys, expect) in cases {
             for swallowable in [true, false] {
-                let f = SyntheticField(swallowable: swallowable)
-                f.options.method = method
-                f.type(keys)
-                XCTAssertEqual(f.text, expect, "\(method) \(keys) swallowable \(swallowable)")
+                for commitEveryKey in [false, true] {
+                    let f = SyntheticField(swallowable: swallowable)
+                    f.commitAfterEveryKey = commitEveryKey
+                    f.options.method = method
+                    f.type(keys)
+                    XCTAssertEqual(f.text, expect, "\(method) \(keys) swallowable \(swallowable) commit \(commitEveryKey)")
+                }
             }
         }
         // Không có quyền gửi phím: không chèn chữ rác — phím đi nguyên văn.

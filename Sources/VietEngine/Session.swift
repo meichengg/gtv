@@ -448,6 +448,9 @@ public final class Session {
     /// gì để chốt: nếu từ đang gõ vẫn nằm nguyên ngay trước con trỏ thì giữ — mọi lần sửa sau đều đối chiếu lại với màn hình
     /// (`inSync`, `replace`). Bỏ từ ở đây làm các phím vừa gõ mất tác dụng (vd. 'd' của "d9" → "d9ẳng").
     public func commitRequested(_ client: TextClient?) {
+        // Phím ⌫ giả: chữ đã nằm thẳng trong ô, không có gì để chốt. Java gọi commitComposition sau MỌI phím (AWTView:
+        // abandonInput sau mỗi lần chèn) — bỏ từ ở đây làm từ không bao giờ đủ dài để thêm dấu (IME Lab 42185713675).
+        if inSynthetic { return }
         if inWeb, let client {
             // Ô web: bộ gõ tự giữ từ đang gõ — chỉ bỏ khi trang cho thấy chữ đã bị đổi bởi thứ khác.
             if webPending != nil { flushWebPending(client, final: true) }

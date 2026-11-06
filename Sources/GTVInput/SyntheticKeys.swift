@@ -53,8 +53,9 @@ final class SyntheticKeys {
     /// Còn phím giả đã gửi mà chưa tới bộ gõ.
     var inFlight: Bool {
         expireIfStale()
-        expected.removeAll { $0.optional && $0.kind == .edit && expected.firstIndex(where: { !$0.optional }) == nil }
-        return expected.contains { !$0.optional }
+        // Chỉ còn phím chữ giả (có thể không bao giờ qua bộ gõ): không còn gì để chờ.
+        if !expected.contains(where: { !$0.optional }) { expected.removeAll() }
+        return !expected.isEmpty
     }
 
     private func expireIfStale() {
