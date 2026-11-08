@@ -52,6 +52,9 @@ final class KeyWatch {
     /// Vị trí con trỏ chuột ở phím trước / phím này (`caretUndisturbed`).
     private var previousKeyLocation: CGPoint?
     private var lastKeyLocation: CGPoint?
+    /// macOS 27: vừa mang chữ theo khi chuyển sang ô mù giữa từ — click chưa công bố (tại chỗ chuột đứng) có thể đã dời con trỏ:
+    /// phím sửa hoãn tới lúc ô 0,5 s của phím đó đã công bố mà không có click mới (`clickUnconfirmed`).
+    private var carryUntil: Double?
     private var checkTimer: DispatchSourceTimer?
     /// Lần đọc trạng thái lúc xử lý phím terminal gần nhất: `LiveInput` phải đọc liên tục từ đó tới phím sau.
     private var lastTerminalRead: Double?
@@ -137,6 +140,7 @@ final class KeyWatch {
         lastRouteRead = nil
         lastPublishedCell = -.infinity
         unreadCell = nil
+        carryUntil = nil
         // macOS 27: click làm ô nhận focus có thể chỉ được công bố sau lúc này.
         pointer.rebase(Self.pointerCount(), at: ProcessInfo.processInfo.systemUptime,
                        quantum: counterMode == .coarse ? 0.5 : nil)
@@ -304,7 +308,8 @@ final class KeyWatch {
             if let u = unreadCell, cellAfter >= u.cell { unreadCell = nil }
             // Còn lại là click bộ gõ không thấy (chạm trackpad, click rất nhanh): báo ngắt ở phím này. Click đó có thể xảy ra sau
             // lúc tạo phím này (ô của nó kết thúc sau): ghi như một click chờ ở cuối ô — phím sửa hoãn, phím tạo sau ô đó báo ngắt.
-            if published > 0, !synthetic, cellAfter + 0.5 + 0.02 > event.timestamp {
+            let createdAt = syntheticSince ?? event.timestamp      // phím giả: lúc gửi (phím thật xếp sau nó tạo sau lúc này)
+            if published > 0, cellAfter + 0.5 + 0.02 > createdAt {
                 let at = cellAfter + 0.5
                 live.withLog { $0.notePublishedClick(at: at, after: cellAfter) }
                 publishedPending.append(at)
@@ -356,8 +361,22 @@ final class KeyWatch {
     /// — click chưa công bố thì chỉ biết qua con trỏ chuột: không dời đi thì click (nếu có) rơi đúng chỗ cũ.
     func caretUndisturbed() -> Bool {
         guard counterMode == .coarse else { return true }
-        guard let a = previousKeyLocation, let b = lastKeyLocation else { return false }
-        return Self.distance(a, b) <= 3 && Self.distance(b, Self.pointerLocation()) <= 3
+        guard let a = previousKeyLocation, let b = lastKeyLocation,
+              Self.distance(a, b) <= 3, Self.distance(b, Self.pointerLocation()) <= 3 else { return false }
+        // Chuột không dời vẫn có thể có click tại chỗ chuột đứng (con trỏ chữ đã đi theo chữ gõ): phím sửa hoãn tới khi ô của
+        // phím này đã công bố.
+        carryUntil = Self.cell(lastKeyAt) + 0.5 + 0.03
+        return true
+    }
+
+    /// Còn click có thể chưa công bố trước lần sửa đầu sau khi mang chữ theo (xem `caretUndisturbed`): có click mới công bố thì
+    /// hoãn tới lúc lần sửa bỏ cuộc hay phím sau báo ngắt.
+    func clickUnconfirmed() -> Bool {
+        guard counterMode == .coarse, let until = carryUntil else { return false }
+        if pointer.differs(Self.pointerCount(), lastClickAt: Self.lastClickTime()) { return true }
+        if ProcessInfo.processInfo.systemUptime < until { return true }
+        carryUntil = nil
+        return false
     }
 
     /// macOS 26 (thời điểm click cập nhật ngay): có click tạo sau (hay quanh) lúc tạo phím gần nhất bộ gõ nhận — ứng dụng đang

@@ -84,7 +84,7 @@ private final class ClientAdapter: TextClient {
     }
     var keysQueued: Bool {
         let watch = KeyWatch.shared
-        return LiveInput.shared.userKeysPending(since: watch.lastKeyAt) || watch.clickSinceLastKey()
+        return LiveInput.shared.userKeysPending(since: watch.lastKeyAt) || watch.clickUnconfirmed() || watch.clickSinceLastKey()
     }
     var keySwallowable: Bool { false }
     func swallowKey() {
