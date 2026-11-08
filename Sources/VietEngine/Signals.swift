@@ -461,12 +461,15 @@ public struct PressLog {
         /// Bộ đếm keyDown của WindowServer lúc đó (macOS 26: cập nhật ngay — sắp được thứ tự so với các phím bộ gõ nhận,
         /// xem `KeyWatch`; macOS 27 thì chỉ công bố mỗi 0,5 s, không dùng).
         public var count: UInt32 = 0
+        /// Bàn phím / chuột thật (HID) thấy giữ lúc đó; nil: không đọc HID.
+        public var physical: Bool?
 
-        public init(key: UInt16?, at: Double, after: Double = -.infinity, count: UInt32 = 0) {
+        public init(key: UInt16?, at: Double, after: Double = -.infinity, count: UInt32 = 0, physical: Bool? = nil) {
             self.key = key
             self.at = at
             self.after = after
             self.count = count
+            self.physical = physical
         }
     }
 
@@ -518,6 +521,8 @@ public struct PressLog {
     /// vòng, nhưng lần nhấn tạo sau sự kiện gây lấy mốc có thể vẫn đang xếp hàng — vẫn chặn phím sửa (`userKeysPendingReason`)
     /// tới khi có bằng chứng thứ tự.
     private var forgotten: [Press] = []
+    /// Click bỏ khỏi sổ mà chưa được lấy ra (sổ đầy): sổ phím báo ngắt ở phím sau (`takeLostClicks`).
+    private var lostClicks = 0
     /// Sai số thứ tự giữa thời điểm sự kiện của các thiết bị (bàn phím, trackpad, Bluetooth) và lần đọc trạng thái.
     private static let orderSlack = 0.02
     /// Lần lặp (isARepeat) gần nhất bộ gõ nhận, theo phím (thời điểm sự kiện).
@@ -664,7 +669,7 @@ public struct PressLog {
         heldSince[k] = t
         heldAfter[k] = after
         if physical == true { physicalPress.insert(k) } else if physical == false { physicalPress.remove(k) }
-        let press = Press(key: k, at: t, after: after, count: count)
+        let press = Press(key: k, at: t, after: after, count: count, physical: physical)
         history.append(press)
         if let i = received.firstIndex(where: { $0.key == k && $0.at > after - 0.03 }) {
             received.remove(at: i)          // bộ gõ đã nhận phím này rồi
@@ -704,9 +709,11 @@ public struct PressLog {
     public mutating func syntheticKeyArrived(_ key: UInt16, since: Double, at stamp: Double) {
         // Chỉ một lần nhấn, đọc thấy quanh lúc hệ thống xử lý chính phím giả này (từ lúc gửi tới ngay sau thời điểm của nó) —
         // ⌫ thật bấm sau đó vẫn là phím chưa tới.
-        if let i = pending.firstIndex(where: { $0.key == key && $0.at >= since && $0.after < stamp + 0.002 }) {
+        // Phím giả chỉ có ở trạng thái phiên: lần nhấn bàn phím thật thấy (HID) là ⌫ thật bấm ngay sau lúc gửi.
+        func ours(_ p: Press) -> Bool { p.key == key && p.physical != true && p.at >= since && p.after < stamp + 0.002 }
+        if let i = pending.firstIndex(where: ours) {
             pending.remove(at: i)
-        } else if let i = forgotten.firstIndex(where: { $0.key == key && $0.at >= since && $0.after < stamp + 0.002 }) {
+        } else if let i = forgotten.firstIndex(where: ours) {
             forgotten.remove(at: i)
         }
     }
@@ -783,6 +790,12 @@ public struct PressLog {
         received.removeAll { $0.at < at - 1 }
     }
 
+    /// Số click đã bỏ khỏi sổ mà chưa được báo (rồi đặt lại).
+    public mutating func takeLostClicks() -> Int {
+        defer { lostClicks = 0 }
+        return lostClicks
+    }
+
     /// Lấy ra (theo thứ tự) các lần nhấn đang chờ thoả `condition`.
     public mutating func take(where condition: (Press) -> Bool) -> [Press] {
         let taken = pending.filter(condition)
@@ -834,10 +847,19 @@ public struct PressLog {
     private mutating func prune(before t: Double) {
         let settled = releases.map { $0.at < t || releaseSettled($0, since: -.infinity) }
         releases = zip(releases, settled).filter { !$0.1 }.map(\.0)
+        // Lần nhấn lúc lấy mốc: chỉ hết chờ theo bằng chứng thứ tự (giữ tối đa 64).
         let stamp = latestStamp
-        forgotten.removeAll { $0.at < t || stamp > $0.at + Self.orderSlack }
+        forgotten.removeAll { stamp > $0.at + Self.orderSlack }
+        if forgotten.count > 64 { forgotten.removeFirst(forgotten.count - 64) }
         history.removeAll { $0.at < t }
-        pending.removeAll { $0.at < t }
+        // Click chờ không hết hạn theo đồng hồ: chỉ ra khỏi sổ khi được lấy ra (phím tạo sau nó tới — báo ngắt) hay lấy mốc mới.
+        // Sổ đầy thì bỏ click cũ nhất và báo ngắt ở phím sau.
+        pending.removeAll { $0.key != nil && $0.at < t }
+        let clicks = pending.filter { $0.key == nil }.count
+        if clicks > 64, let i = pending.firstIndex(where: { $0.key == nil }) {
+            pending.remove(at: i)
+            lostClicks += 1
+        }
         flagChanges.removeAll { $0.at < t }
         flagPresses.removeAll { $0 < t }
     }

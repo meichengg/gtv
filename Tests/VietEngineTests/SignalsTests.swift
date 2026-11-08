@@ -568,6 +568,43 @@ final class SignalsTests: XCTestCase {
         XCTAssertTrue(p.anyHeld(now: 5.3, physical: [36]))
     }
 
+    /// Review 08dd0de (vòng 4): click chờ không bị bỏ theo đồng hồ (8 s) mà không báo; phím giả không khớp ⌫ thật bàn phím thật
+    /// bấm ngay sau lúc gửi.
+    func testPressLogClicksKeptAndSyntheticMatch() {
+        var p = PressLog()
+        var t = 1.0
+        p.sample(at: t, held: [], button: false, flags: 0, physical: [], physicalButton: false)
+        t += 0.008; p.sample(at: t, held: [], button: true, flags: 0, physical: [], physicalButton: true)
+        t += 0.008; p.sample(at: t, held: [], button: false, flags: 0, physical: [], physicalButton: false)
+        for _ in 0..<1200 { t += 0.008; p.sample(at: t, held: [], button: false, flags: 0, physical: [], physicalButton: false) }
+        XCTAssertEqual(p.pending.map(\.key), [nil], "click chờ quá 8 s vẫn còn")
+        XCTAssertEqual(p.takeLostClicks(), 0)
+        // Sổ đầy: bỏ click cũ nhất, báo một lần.
+        for _ in 0..<64 {
+            t += 0.008; p.sample(at: t, held: [], button: true, flags: 0)
+            t += 0.008; p.sample(at: t, held: [], button: false, flags: 0)
+        }
+        XCTAssertEqual(p.pending.filter { $0.key == nil }.count, 64)
+        XCTAssertEqual(p.takeLostClicks(), 1)
+        XCTAssertEqual(p.takeLostClicks(), 0)
+        // ⌫ thật (HID thấy) bấm ngay sau lúc gửi phím sửa: ⌫ giả tới không lấy nó ra.
+        var q = PressLog()
+        var u = 10.0
+        q.sample(at: u, held: [], button: false, flags: 0, physical: [], physicalButton: false)
+        let sent = u + 0.001
+        u += 0.008; q.sample(at: u, held: [51], button: false, flags: 0, physical: [51], physicalButton: false)
+        q.syntheticKeyArrived(51, since: sent, at: sent)
+        XCTAssertEqual(q.pending.map(\.key), [51])
+        // ⌫ giả (chỉ ở trạng thái phiên) thì có.
+        var r = PressLog()
+        var v = 20.0
+        r.sample(at: v, held: [], button: false, flags: 0, physical: [], physicalButton: false)
+        let sent2 = v + 0.001
+        v += 0.008; r.sample(at: v, held: [51], button: false, flags: 0, physical: [], physicalButton: false)
+        r.syntheticKeyArrived(51, since: sent2, at: sent2)
+        XCTAssertTrue(r.pending.isEmpty)
+    }
+
     /// Phím tắt đổi chế độ lúc Return kẹt mà chưa gõ phím nào: chính lần nhấn phím bổ trợ (cùng hàng đợi) là bằng chứng Return
     /// không lặp.
     func testPressLogAnyHeldModifierEvidence() {
