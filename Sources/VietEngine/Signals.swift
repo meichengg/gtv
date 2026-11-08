@@ -506,6 +506,8 @@ public struct PressLog {
     private var repeatRelease: Double?
     /// Lúc bắt đầu thấy giữ từng phím đặc biệt.
     private var heldSince: [UInt16: Double] = [:]
+    /// Lần lặp (isARepeat) gần nhất bộ gõ nhận, theo phím.
+    private var lastRepeat: [UInt16: Double] = [:]
     private var held: Set<UInt16> = []
     private var button = false
     private var flags: UInt64?
@@ -555,7 +557,9 @@ public struct PressLog {
         guard t >= last else { return }         // lần đọc cũ hơn lần đọc cuối: không có gì mới
         lastSample = t
         for k in held.subtracting(keys) {
-            if let from = heldSince.removeValue(forKey: k), t - from > 0.2 { repeatRelease = t }
+            if let from = heldSince.removeValue(forKey: k), t - from > 0.2, (lastRepeat[k] ?? -.infinity) > from {
+                repeatRelease = t                       // giữ lâu và đã lặp thật (không phải trạng thái kẹt)
+            }
         }
         for k in keys.subtracting(held).sorted() {
             heldSince[k] = t
@@ -598,18 +602,29 @@ public struct PressLog {
     /// phím đặc biệt / click đang chờ (trong `maxAge` giây — phím không bao giờ tới bộ gõ, như phím tắt toàn hệ thống, thì thôi),
     /// phím đặc biệt đang giữ (lặp phím tạo thêm phím), phím bổ trợ nhấn sau phím vừa nhận lúc `since` (⌘V, ⌘A…).
     public func userKeysPending(now: Double, since: Double, maxAge: Double = 1) -> Bool {
-        // Click không bao giờ tới bộ gõ: chỉ phím sau (sổ phím báo ngắt) hay lần lấy mốc bỏ nó — không hết hạn (hết hạn thì lần
-        // sửa đang hoãn gửi tới chỗ click).
-        if pending.contains(where: { $0.key == nil || $0.at > now - maxAge }) { return true }
-        if !held.isEmpty || button { return true }
+        userKeysPendingReason(now: now, since: since, maxAge: maxAge) != nil
+    }
+
+    /// Như `userKeysPending`, kèm lý do (nil: không có gì chờ).
+    public func userKeysPendingReason(now: Double, since: Double, maxAge: Double = 1) -> String? {
+        // Click chưa được phím sau xử lý (sổ phím báo ngắt, lấy nó ra) — tới 2 s, quá lần sửa đang hoãn bỏ cuộc (1,5 s): lần sửa
+        // không bao giờ gửi tới chỗ click.
+        if let p = pending.first(where: { $0.key == nil && $0.at > now - 2 }) { return "click lúc \(p.at)" }
+        if let p = pending.first(where: { $0.key != nil && $0.at > now - maxAge }) { return "phím \(p.key!) chưa tới" }
+        // Phím đặc biệt đang giữ chỉ tính khi bộ gõ vừa nhận lần lặp của chính nó (đang lặp: lần lặp kế có thể còn trong hàng đợi).
+        // Trạng thái "đang giữ" kéo dài mà không có lần lặp nào là trạng thái kẹt (ứng dụng khác gửi phím nhấn mà không gửi phím
+        // nhả) — IME Lab / máy người dùng: Return kẹt làm mọi lần sửa bị hoãn mãi.
+        if let k = held.first(where: { k in lastRepeat[k].map { $0 > now - 0.5 } ?? false }) { return "đang giữ phím \(k) (lặp)" }
         // Vừa nhả phím đặc biệt giữ lâu (lặp phím): các lần lặp tạo trước lúc nhả có thể còn trong hàng đợi của ứng dụng — tới khi
         // có phím bấm sau lúc nhả tới bộ gõ (tối đa 0,5 s).
-        if let r = repeatRelease, r > since, r > now - 0.5 { return true }
-        return flagPresses.contains { $0 > since }
+        if let r = repeatRelease, r > since, r > now - 0.5 { return "vừa nhả phím lặp lúc \(r)" }
+        if let f = flagPresses.first(where: { $0 > since }) { return "phím bổ trợ lúc \(f)" }
+        return nil
     }
 
     /// Bộ gõ nhận keyDown `key` (lúc `at`, thời điểm sự kiện).
     public mutating func keyReceived(_ key: UInt16, at: Double, isRepeat: Bool) {
+        if isRepeat { lastRepeat[key] = at }
         if let i = pending.firstIndex(where: { $0.key == key }) {
             pending.remove(at: i)
         } else if !isRepeat, !held.contains(key) {

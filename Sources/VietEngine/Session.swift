@@ -231,6 +231,7 @@ public final class Session {
     private var synDeferred = false
 
     private var synDeferSerial = 0
+    private var synDeferStart = 0.0
     /// ⌫ lùi qua dấu cách về cuối từ trước: chữ sau gõ tiếp từ đó.
     private var synResume: String?
     private var web: WebChain?
@@ -1533,11 +1534,22 @@ public final class Session {
     /// Hoãn lần sửa: thử lại sau mỗi 30 ms (phím kế tiếp tới thì cũng sửa luôn); hơn 1,5 s mà phím đó vẫn chưa tới bộ gõ thì thôi
     /// theo dõi từ (không gửi gì — chỉ mất dấu).
     private func deferSynSync(_ client: TextClient) {
-        if !synDeferred { log?("phím ⌫ giả: còn phím của người dùng chưa tới ứng dụng — hoãn lần sửa") }
+        if !synDeferred {
+            log?("phím ⌫ giả: còn phím của người dùng chưa tới ứng dụng — hoãn lần sửa")
+            synDeferStart = client.currentTime()
+        }
         synDeferred = true
         synDeferSerial &+= 1
         let serial = synDeferSerial
-        let started = client.currentTime()
+        // Tính từ lúc bắt đầu hoãn, kể cả khi người dùng gõ tiếp (mỗi phím lại hoãn): gõ liền không làm hoãn mãi.
+        let started = synDeferStart
+        if client.currentTime() - started > 1.5 {
+            log?("phím ⌫ giả: hoãn quá lâu — thôi theo dõi từ")
+            engine.reset()
+            untracked = true
+            synReset()
+            return
+        }
         func retry() {
             client.schedule(after: 0.03) { [weak self, weak client] in
                 guard let self, let client, self.inSynthetic, self.synDeferred, self.synDeferSerial == serial else { return }

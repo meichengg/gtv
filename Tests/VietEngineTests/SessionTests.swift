@@ -1359,8 +1359,12 @@ final class SessionTests: XCTestCase {
         log.sample(at: t, held: [], button: false, flags: 0)
         for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
         let pressAt = t + 0.008
-        for _ in 0..<60 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }   // giữ ⌫ 0,48 s
         log.keyReceived(51, at: pressAt, isRepeat: false)
+        for i in 0..<60 {                                                                             // giữ ⌫ 0,48 s, có lặp
+            t += 0.008
+            log.sample(at: t, held: [51], button: false, flags: 0)
+            if i > 35, i % 5 == 0 { log.keyReceived(51, at: t, isRepeat: true) }
+        }
         t += 0.008
         log.sample(at: t, held: [], button: false, flags: 0)                                        // nhả
         XCTAssertTrue(log.userKeysPending(now: t + 0.05, since: t - 0.03), "lần lặp tạo trước lúc nhả có thể chưa tới")
@@ -1372,7 +1376,21 @@ final class SessionTests: XCTestCase {
         click.sample(at: u, held: [], button: true, flags: 0)
         u += 0.008
         click.sample(at: u, held: [], button: false, flags: 0)
-        XCTAssertTrue(click.userKeysPending(now: u + 5, since: u), "click chưa được phím sau xử lý không hết hạn")
+        XCTAssertTrue(click.userKeysPending(now: u + 1.6, since: u), "click chưa được phím sau xử lý: còn chờ quá lúc lần sửa bỏ cuộc")
+        // Phím đặc biệt kẹt ở trạng thái "đang giữ" (ứng dụng khác gửi phím nhấn mà không nhả, không có lần lặp nào): không làm
+        // mọi lần sửa bị hoãn mãi (máy người dùng: Return kẹt, gõ dấu ở Burp không ra).
+        var stuck = PressLog()
+        var w = 40.0
+        stuck.sample(at: w, held: [36], button: false, flags: 0)      // lần đọc đầu: đã thấy Return đang giữ
+        for _ in 0..<50 { w += 0.008; stuck.sample(at: w, held: [36], button: false, flags: 0) }
+        XCTAssertFalse(stuck.userKeysPending(now: w, since: w - 0.05), "Return kẹt làm hoãn mãi")
+        var stuck2 = PressLog()
+        var v = 60.0
+        stuck2.sample(at: v, held: [], button: false, flags: 0)
+        for _ in 0..<5 { v += 0.008; stuck2.sample(at: v, held: [], button: false, flags: 0) }
+        for _ in 0..<200 { v += 0.008; stuck2.sample(at: v, held: [36], button: false, flags: 0) }   // nhấn rồi kẹt 1,6 s
+        stuck2.keyReceived(36, at: v - 1.6, isRepeat: false)
+        XCTAssertFalse(stuck2.userKeysPending(now: v, since: v - 0.05), "Return đã tới rồi kẹt làm hoãn mãi")
     }
 
     /// Review a3b1690 (phím ⌫ giả): ⌫ lùi về từ không nạp lại được (dài hơn 12 chữ, chữ lạ) rồi gõ tiếp — từ vẫn nguyên, không bị xoá.

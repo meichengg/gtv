@@ -62,8 +62,16 @@ final class LiveInput {
         lock.lock()
         defer { lock.unlock() }
         guard timer != nil else { return false }
-        return _log.userKeysPending(now: ProcessInfo.processInfo.systemUptime, since: since)
+        let reason = _log.userKeysPendingReason(now: ProcessInfo.processInfo.systemUptime, since: since)
+        #if DEBUG
+        if reason != lastPendingReason, let reason { DebugLog.write("phím chưa tới: \(reason)") }
+        lastPendingReason = reason
+        #endif
+        return reason != nil
     }
+    #if DEBUG
+    private var lastPendingReason: String?
+    #endif
 
     /// Bản sao sổ lúc này.
     var log: PressLog {
