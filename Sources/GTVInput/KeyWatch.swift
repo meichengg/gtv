@@ -35,6 +35,9 @@ final class KeyWatch {
     private var clicksAtLastKey: UInt32 = 0
     /// macOS 27: số click lần đọc nút chuột đã thấy mà bộ đếm của hệ thống chưa công bố.
     private var clickCredit = 0
+    /// Click còn chờ trong sổ (theo `PressLog.Press.at`) mà bộ đếm đã công bố trước lúc phím tạo sau nó tới: lúc sổ lấy nó ra
+    /// không tính là click mới công bố lần nữa.
+    private var publishedPending: [Double] = []
     private var checkTimer: DispatchSourceTimer?
     /// Lần đọc trạng thái lúc xử lý phím terminal gần nhất: `LiveInput` phải đọc liên tục từ đó tới phím sau.
     private var lastTerminalRead: Double?
@@ -116,6 +119,7 @@ final class KeyWatch {
         modifierPressed = false
         burstCarry = false
         clickCredit = 0
+        publishedPending = []
         // macOS 27: click làm ô nhận focus có thể chỉ được công bố sau lúc này.
         pointer.rebase(Self.pointerCount(), at: ProcessInfo.processInfo.systemUptime,
                        quantum: counterMode == .coarse ? 0.5 : nil)
@@ -207,15 +211,33 @@ final class KeyWatch {
             // Click lần đọc nút chuột đã thấy (đã báo ở phím này hay phím trước) thì lúc bộ đếm công bố không báo lần nữa — báo
             // hai lần là bỏ ngang một từ đang gõ sau click (dấu rời khỏi từ).
             var published = pointer.newClicks(Self.pointerCount(), lastClickAt: Self.lastClickTime())
-            clickCredit += order.taken.filter { $0.key == nil }.count
+            let takenClicks = order.taken.filter { $0.key == nil }.map(\.at)
+            clickCredit += takenClicks.filter { !publishedPending.contains($0) }.count
+            publishedPending.removeAll { takenClicks.contains($0) }
             let known = min(published, clickCredit)
             published -= known
             clickCredit -= known
             if published > 0 {
-                // Bộ đếm báo trước: click còn chờ trong sổ là chính click đó — lấy ra luôn, không báo lại ở phím sau.
-                let waiting = live.withLog { log in log.take { $0.key == nil } }.count
-                clickCredit = max(0, waiting - published)
+                // Bộ đếm báo trước: click còn chờ trong sổ là chính click đó. Click có thể trước phím này: lấy ra luôn, không báo
+                // lại ở phím sau. Click đọc thấy sau lúc tạo phím này thì còn xếp sau nó trong hàng đợi của ứng dụng: để lại trong
+                // sổ (phím sửa vẫn hoãn tới khi phím tạo sau click tới — sổ lấy nó ra và báo ngắt lúc đó), ghi là đã công bố.
+                let stamp = event.timestamp
+                let owed = publishedPending
+                let earlier = live.withLog { log in
+                    log.take { $0.key == nil && $0.after < stamp && !owed.contains($0.at) }
+                }.count
+                let matched = min(published, earlier)
+                clickCredit += earlier - matched
+                published -= matched
+                if published > 0 {
+                    let later = live.withLog { log in log.pending.filter { $0.key == nil && !owed.contains($0.at) }.map(\.at) }
+                    let paid = later.prefix(published)
+                    publishedPending += paid
+                    published -= paid.count
+                }
             }
+            let stillPending = live.withLog { log in log.pending.filter { $0.key == nil }.map(\.at) }
+            publishedPending.removeAll { !stillPending.contains($0) }
             let clicked = published > 0
             let carried = burst && burstCarry
             if shortcut {
@@ -261,10 +283,9 @@ final class KeyWatch {
         // (sổ còn thấy nó là phím chưa thấy: "chưa biết").
         let accounted = ledger.accounted
         let (taken, clickPending) = LiveInput.shared.withLog { log -> ([PressLog.Press], Bool) in
-            var taken: [PressLog.Press] = []
+            var take: [PressLog.Press] = []
             if var acc = accounted {
                 let ordered = log.pending.sorted { self.ledger.unwrapped($0.count) < self.ledger.unwrapped($1.count) }
-                var take: [PressLog.Press] = []
                 // Phím giả tới: lần nhấn phím đặc biệt còn chờ có thể là trạng thái phím của phím giả kế tiếp — không coi là phím đi vòng.
                 for press in ordered where !synthetic && press.key != nil && self.ledger.unwrapped(press.count) <= acc {
                     take.append(press)
@@ -273,8 +294,15 @@ final class KeyWatch {
                 for press in ordered where press.key == nil && self.ledger.unwrapped(press.count) < acc {
                     take.append(press)
                 }
-                taken = log.take { press in take.contains(press) }
             }
+            // Click đọc thấy trước lúc tạo phím này (phím thật): theo thứ tự thì ứng dụng đã xử lý nó trước phím này — cả khi sổ
+            // phím chưa có mốc (click chờ không còn hết hạn theo đồng hồ).
+            if !synthetic {
+                for press in log.pending where press.key == nil && press.at + 0.02 < event.timestamp && !take.contains(press) {
+                    take.append(press)
+                }
+            }
+            let taken = take.isEmpty ? [] : log.take { press in take.contains(press) }
             return (taken, log.pending.contains { $0.key == nil })
         }
         let missedKeys = taken.filter { $0.key != nil }.count

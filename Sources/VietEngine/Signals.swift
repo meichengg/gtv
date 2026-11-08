@@ -514,6 +514,12 @@ public struct PressLog {
     private var lastPhysicalButton: Bool?
     /// Phím đang giữ mà lần nhấn gần nhất là trên bàn phím thật (HID thấy giữ).
     private var physicalPress: Set<UInt16> = []
+    /// Lần nhấn đang chờ lúc lấy mốc mới (`forget`: đổi ô nhập liệu, click bộ gõ thấy): không còn dùng để sắp thứ tự phím đi
+    /// vòng, nhưng lần nhấn tạo sau sự kiện gây lấy mốc có thể vẫn đang xếp hàng — vẫn chặn phím sửa (`userKeysPendingReason`)
+    /// tới khi có bằng chứng thứ tự.
+    private var forgotten: [Press] = []
+    /// Sai số thứ tự giữa thời điểm sự kiện của các thiết bị (bàn phím, trackpad, Bluetooth) và lần đọc trạng thái.
+    private static let orderSlack = 0.02
     /// Lần lặp (isARepeat) gần nhất bộ gõ nhận, theo phím (thời điểm sự kiện).
     private var lastRepeat: [UInt16: Double] = [:]
     /// Thời điểm sự kiện mới nhất trong các phím người dùng bộ gõ đã nhận.
@@ -597,6 +603,9 @@ public struct PressLog {
             heldSince = Dictionary(uniqueKeysWithValues: keys.map { ($0, heldSince[$0] ?? t) })
             heldAfter = Dictionary(uniqueKeysWithValues: keys.map { ($0, heldAfter[$0] ?? -.infinity) })
             physicalPress.formIntersection(keys)
+            // Phím đang giữ mà HID cũng thấy giữ: lần nhấn trên bàn phím thật (nhả trên bàn phím thật thì không còn tính).
+            if let phys = physical { physicalPress.formUnion(keys.intersection(phys)) }
+            received.removeAll { $0.at <= t - 0.03 }
             lastPhysical = physical
             lastPhysicalButton = physicalButton
             held = keys
@@ -645,6 +654,8 @@ public struct PressLog {
             if f & ~old != 0 { flagPresses.append(t) }
         }
         flags = f
+        // keyDown đã nhận mà chưa thấy lần nhấn: lần nhấn thấy sau này bắt đầu sau lần đọc này — không thể là của nó.
+        received.removeAll { $0.at <= t - 0.03 }
         prune(before: t - keep)
     }
 
@@ -655,7 +666,7 @@ public struct PressLog {
         if physical == true { physicalPress.insert(k) } else if physical == false { physicalPress.remove(k) }
         let press = Press(key: k, at: t, after: after, count: count)
         history.append(press)
-        if let i = received.firstIndex(where: { $0.key == k }) {
+        if let i = received.firstIndex(where: { $0.key == k && $0.at > after - 0.03 }) {
             received.remove(at: i)          // bộ gõ đã nhận phím này rồi
         } else {
             pending.append(press)
@@ -681,7 +692,7 @@ public struct PressLog {
     /// hay lần lặp cuối đã nhận gần lúc nhả tới mức lần lặp kế (nếu có) phải tạo sau lúc nhả. Không dựa vào đồng hồ: ứng dụng
     /// giao phím chậm thì chờ (lần sửa đang hoãn bỏ cuộc sau 1,5 s — chỉ mất dấu).
     private func releaseSettled(_ r: (key: UInt16, at: Double, from: Double), since: Double) -> Bool {
-        if max(latestStamp, since) > r.at { return true }
+        if max(latestStamp, since) > r.at + Self.orderSlack { return true }
         guard let last = lastRepeat[r.key], last > r.from else { return false }
         return last + min(repeatInterval, 2) - 0.01 > r.at
     }
@@ -695,6 +706,8 @@ public struct PressLog {
         // ⌫ thật bấm sau đó vẫn là phím chưa tới.
         if let i = pending.firstIndex(where: { $0.key == key && $0.at >= since && $0.after < stamp + 0.002 }) {
             pending.remove(at: i)
+        } else if let i = forgotten.firstIndex(where: { $0.key == key && $0.at >= since && $0.after < stamp + 0.002 }) {
+            forgotten.remove(at: i)
         }
     }
 
@@ -707,17 +720,25 @@ public struct PressLog {
     }
 
     /// Như `userKeysPending`, kèm lý do (nil: không có gì chờ).
-    public func userKeysPendingReason(now: Double, since: Double) -> String? {
+    public func userKeysPendingReason(now: Double, since rawSince: Double) -> String? {
+        // Thời điểm phím vượt trước đồng hồ: không phải bằng chứng (như `eventReceived`).
+        let since = rawSince <= now + 0.01 ? rawSince : latestStamp
         let evidence = max(latestStamp, since)
         // Không đọc liên tục từ lúc tạo phím vừa nhận (lần đọc đầu sau khi thôi đọc lâu không gõ, ứng dụng giao chậm): phím đặc
         // biệt bấm-rồi-nhả trong khoảng đó không để lại dấu vết.
         if !covered(since: since + 0.03) { return "khoảng không đọc từ \(coveredSince ?? -1)" }
-        // Click chưa được phím sau xử lý (sổ phím báo ngắt, lấy nó ra) — tới 3 s, quá lần sửa đang hoãn bỏ cuộc (1,5 s từ lúc
-        // bắt đầu hoãn, chậm nhất 0,5 s sau click: bộ đếm click công bố mỗi 0,5 s): lần sửa không bao giờ gửi tới chỗ click.
-        if let p = pending.first(where: { $0.key == nil && $0.at > now - 3 }) { return "click lúc \(p.at)" }
+        // Click chưa được phím sau xử lý (sổ phím lấy nó ra lúc một phím tạo sau nó tới — báo ngắt, bỏ từ): không hết hạn —
+        // lần sửa không bao giờ gửi tới chỗ click (lần sửa đang hoãn tự bỏ cuộc).
+        if let p = pending.first(where: { $0.key == nil }) { return "click lúc \(p.at)" }
         // Lần nhấn phím đặc biệt chưa tới — thôi chờ khi bộ gõ đã nhận một phím tạo sau nó (nó đi vòng bộ gõ, như phím tắt
         // toàn hệ thống: theo thứ tự thì nó phải tới trước).
-        if let p = pending.first(where: { $0.key != nil && !(evidence > $0.at + 0.002) }) { return "phím \(p.key!) chưa tới" }
+        if let p = pending.first(where: { $0.key != nil && !(evidence > $0.at + Self.orderSlack) }) {
+            return "phím \(p.key!) chưa tới"
+        }
+        // Lần nhấn / click lúc lấy mốc mới (click bộ gõ thấy, đổi ô): cái tạo sau sự kiện đó có thể vẫn đang xếp hàng.
+        if let p = forgotten.first(where: { !(evidence > $0.at + Self.orderSlack) }) {
+            return "\(p.key.map { "phím \($0)" } ?? "click") trước lúc lấy mốc chưa tới"
+        }
         // Phím đặc biệt đang giữ (lặp phím tạo thêm phím) — trừ phím chắc chắn không lặp (`notRepeating`): trạng thái kẹt (máy
         // người dùng: Return kẹt làm mọi lần sửa bị hoãn).
         if let k = held.first(where: { !notRepeating($0) && !physicallyReleased($0) }) { return "đang giữ phím \(k)" }
@@ -739,16 +760,20 @@ public struct PressLog {
             latestStamp = max(latestStamp, at)
             if isRepeat {
                 lastRepeat[key] = at
-            } else if held.contains(key), at > (heldSince[key] ?? -.infinity) {
-                // Lần nhấn mới của phím đang giữ (lần nhả trước đó nằm trong khoảng hở không đọc, hay phím kẹt được nhấn thật).
-                heldSince[key] = at
+            } else if held.contains(key) {
+                // keyDown của phím đang giữ: lần nhấn đang giữ bắt đầu không sớm hơn nó (thấy giữ ngay ở lần đọc sau khoảng hở
+                // thì chưa biết lúc nhấn); keyDown mới hơn lần nhấn đã biết là lần nhấn mới (lần nhả trước đó nằm trong khoảng
+                // hở không đọc, hay phím kẹt được nhấn thật).
+                if at > (heldSince[key] ?? -.infinity) { heldSince[key] = at }
                 heldAfter[key] = max(heldAfter[key] ?? -.infinity, at - 0.01)
             }
         }
+        forgotten.removeAll { $0.key == key && $0.after < at + Self.orderSlack }
         // Lần nhấn của chính phím này: lần gần nhất bắt đầu trước thời điểm phím (lần nhấn cũ không bao giờ tới — phím kẹt ở
         // trạng thái phiên — không che lần nhấn thật sau nó).
+        // Lần lặp không bao giờ là của lần nhấn bắt đầu sau nó; keyDown thường: cho trạng thái phiên cập nhật trễ tới 50 ms.
         if let i = pending.lastIndex(where: { $0.key == key && $0.after < at + 0.002 })
-            ?? pending.firstIndex(where: { $0.key == key }) {
+            ?? (isRepeat ? nil : pending.firstIndex(where: { $0.key == key && $0.after < at + 0.05 })) {
             pending.remove(at: i)
         } else if !isRepeat, !held.contains(key) {
             // Đang giữ mà không có lần nhấn nào chờ (lần đọc sau khoảng hở không ghi lần nhấn): không ghi nhận — ghi thì lần nhấn
@@ -780,6 +805,7 @@ public struct PressLog {
 
     /// Bỏ mọi lần nhấn đang chờ và phím đã nhận chưa đối chiếu (đổi ô nhập liệu, click bộ gõ thấy…).
     public mutating func forget() {
+        forgotten += pending
         pending = []
         received = []
     }
@@ -808,6 +834,8 @@ public struct PressLog {
     private mutating func prune(before t: Double) {
         let settled = releases.map { $0.at < t || releaseSettled($0, since: -.infinity) }
         releases = zip(releases, settled).filter { !$0.1 }.map(\.0)
+        let stamp = latestStamp
+        forgotten.removeAll { $0.at < t || stamp > $0.at + Self.orderSlack }
         history.removeAll { $0.at < t }
         pending.removeAll { $0.at < t }
         flagChanges.removeAll { $0.at < t }

@@ -446,8 +446,9 @@ final class GTVInputController: IMKInputController {
         if synthetic || (session.blindLatched && SyntheticKeys.shared.available && terminal == nil) {
             // Đọc liên tục nút chuột / phím đặc biệt trong lúc gõ (như terminal): click giữa từ mà bộ gõ không thấy thì phím ⌫
             // giả của lần sửa sau sẽ xoá ở chỗ mới — macOS 27 chỉ công bố bộ đếm click mỗi 0,5 s; phím đặc biệt đã bấm mà chưa
-            // tới bộ gõ thì hoãn phím sửa (`keysQueued`).
-            LiveInput.shared.keepTerminal(for: 5)
+            // tới bộ gõ thì hoãn phím sửa (`keysQueued`). Đọc lâu hơn terminal: phím đầu tiên sau lúc thôi đọc có khoảng không đọc
+            // (ứng dụng giao chậm thì lần sửa của nó phải hoãn tới phím sau).
+            LiveInput.shared.keepTerminal(for: 15)
         }
         adapter.swallowsWithEmptyMark = javaView == true
         if clientKind == nil { classify(client) }

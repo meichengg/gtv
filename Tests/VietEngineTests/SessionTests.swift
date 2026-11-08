@@ -1505,7 +1505,7 @@ final class SessionTests: XCTestCase {
         log.sample(at: t, held: [], button: false, flags: 0)
         XCTAssertTrue(log.userKeysPending(now: t + 0.5, since: t - 0.03))
         XCTAssertTrue(log.userKeysPending(now: t + 1.5, since: t - 0.03))
-        XCTAssertFalse(log.userKeysPending(now: t + 1.5, since: t))
+        XCTAssertFalse(log.userKeysPending(now: t + 1.5, since: t + 0.02))
         var g = PressLog()
         var u = 10.0
         g.sample(at: u, held: [51], button: false, flags: 0)        // lần đọc đầu sau khoảng hở: đang giữ ⌫, không ghi lần nhấn

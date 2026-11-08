@@ -420,8 +420,10 @@ final class SignalsTests: XCTestCase {
         let arrow = u
         u += 0.008
         q.sample(at: u, held: [], button: false, flags: 0)
-        q.keyReceived(0, at: arrow - 0.1, isRepeat: false)
-        XCTAssertTrue(q.userKeysPending(now: arrow + 1.5, since: arrow - 0.1))
+        q.keyReceived(0, at: arrow - 0.01, isRepeat: false)
+        XCTAssertEqual(q.userKeysPendingReason(now: arrow + 1.5, since: arrow - 0.01)?.hasPrefix("phím 123"), true)
+        q.keyReceived(1, at: arrow + 0.01, isRepeat: false)                 // tạo ngay sau: chưa đủ sai số thứ tự
+        XCTAssertEqual(q.userKeysPendingReason(now: arrow + 1.5, since: arrow + 0.01)?.hasPrefix("phím 123"), true)
         q.keyReceived(1, at: arrow + 0.05, isRepeat: false)
         XCTAssertFalse(q.userKeysPending(now: arrow + 1.5, since: arrow + 0.05))
         // Khoảng không đọc: lần đọc đầu sau khi thôi đọc muộn hơn lúc tạo phím vừa nhận quá 30 ms.
@@ -482,8 +484,10 @@ final class SignalsTests: XCTestCase {
         p.keyReceived(36, at: pressAt + 0.5, isRepeat: true, now: t)
         XCTAssertTrue(p.userKeysPending(now: t, since: pressAt + 0.5), "lần lặp tạo trước lúc nhả có thể còn chờ")
         XCTAssertFalse(p.anyHeld(now: t), "Return đã nhả trên bàn phím thật: phím tắt đổi chế độ không bị chặn")
-        p.keyReceived(0, at: releaseAt + 0.01, isRepeat: false, now: t)
-        XCTAssertFalse(p.userKeysPending(now: t, since: releaseAt + 0.01))
+        p.keyReceived(0, at: releaseAt + 0.01, isRepeat: false, now: t)          // tạo ngay sau lúc nhả: chưa đủ sai số
+        XCTAssertTrue(p.userKeysPending(now: t, since: releaseAt + 0.01))
+        p.keyReceived(1, at: releaseAt + 0.03, isRepeat: false, now: t + 0.03)
+        XCTAssertFalse(p.userKeysPending(now: t + 0.03, since: releaseAt + 0.03))
         // Nút chuột kẹt ở trạng thái phiên: click thật (HID) vẫn là click chờ.
         var c = PressLog()
         var u = 5.0
@@ -493,6 +497,75 @@ final class SignalsTests: XCTestCase {
         u += 0.008
         c.sample(at: u, held: [], button: true, flags: 0, physical: [], physicalButton: true)
         XCTAssertEqual(c.pending.map(\.key), [nil])
+    }
+
+    /// Review 9d5df04 (vòng 3): đối chiếu keyDown với lần nhấn — lần lặp cũ không lấy lần nhấn bắt đầu sau nó, keyDown đã nhận mà
+    /// không có lần nhấn đọc được không nuốt lần nhấn thật sau đó, lần chạm ⌫ ngắn thấy ở lần đọc sau khoảng hở không bị coi là
+    /// nhả phím giữ lâu, lần nhấn lúc lấy mốc mới vẫn chặn phím sửa tới khi có bằng chứng, thời điểm phím vượt trước đồng hồ.
+    func testPressLogMatchingAndForget() {
+        // Lần lặp cũ (tạo lúc giữ ⌫ trước) tới sau khi chạm ⌫ lần nữa: lần chạm vẫn chờ.
+        var p = PressLog()
+        var t = 1.0
+        p.sample(at: t, held: [], button: false, flags: 0)
+        for _ in 0..<5 { t += 0.008; p.sample(at: t, held: [], button: false, flags: 0) }
+        t += 0.008; p.sample(at: t, held: [51], button: false, flags: 0)      // chạm ⌫
+        let tap = t
+        p.keyReceived(51, at: tap - 0.4, isRepeat: true)                          // lần lặp tạo 0,4 s trước
+        XCTAssertEqual(p.pending.map(\.key), [51])
+        p.keyReceived(51, at: tap - 0.3, isRepeat: false)                         // keyDown cũ (tạo trước lần chạm)
+        XCTAssertEqual(p.pending.map(\.key), [51])
+        p.keyReceived(51, at: tap - 0.003, isRepeat: false)                       // keyDown của chính lần chạm
+        XCTAssertTrue(p.pending.isEmpty)
+        // keyDown tới mà lần nhấn của nó không đọc được (khoảng hở): không nuốt lần nhấn thật kế tiếp.
+        var r = PressLog()
+        r.sample(at: 10, held: [], button: false, flags: 0)
+        r.keyReceived(51, at: 9.85, isRepeat: false)
+        var u = 10.0
+        for _ in 0..<60 { u += 0.008; r.sample(at: u, held: [], button: false, flags: 0) }
+        u += 0.008; r.sample(at: u, held: [51], button: false, flags: 0)
+        XCTAssertEqual(r.pending.map(\.key), [51])
+        // Chạm ⌫ ngắn, thấy ở lần đọc sau khoảng hở: không phải nhả phím giữ lâu.
+        var g = PressLog()
+        g.sample(at: 10, held: [], button: false, flags: 0)
+        g.sample(at: 16, held: [51], button: false, flags: 0)                      // khoảng hở
+        g.keyReceived(51, at: 15.995, isRepeat: false)
+        var v = 16.0
+        for _ in 0..<12 { v += 0.008; g.sample(at: v, held: [51], button: false, flags: 0) }
+        v += 0.008; g.sample(at: v, held: [], button: false, flags: 0)
+        XCTAssertFalse(g.userKeysPending(now: v + 0.01, since: 15.995 + 0.04))
+        // Lấy mốc mới (click bộ gõ thấy): ⌫ bấm sau đó mà chưa tới vẫn chặn.
+        var f = PressLog()
+        var w = 30.0
+        f.sample(at: w, held: [], button: false, flags: 0)
+        for _ in 0..<5 { w += 0.008; f.sample(at: w, held: [], button: false, flags: 0) }
+        w += 0.008; f.sample(at: w, held: [51], button: false, flags: 0)
+        let bs = w
+        w += 0.008; f.sample(at: w, held: [], button: false, flags: 0)
+        f.forget()
+        XCTAssertTrue(f.pending.isEmpty)
+        f.keyReceived(0, at: bs - 0.05, isRepeat: false)
+        XCTAssertEqual(f.userKeysPendingReason(now: w, since: bs - 0.05)?.contains("lấy mốc"), true)
+        f.keyReceived(51, at: bs - 0.004, isRepeat: false)
+        XCTAssertFalse(f.userKeysPending(now: w, since: bs - 0.004))
+        // Thời điểm phím vượt trước đồng hồ: không làm mất lý do chờ.
+        var h = PressLog()
+        h.sample(at: 40, held: [], button: false, flags: 0)
+        h.sample(at: 40.008, held: [123], button: false, flags: 0)
+        h.sample(at: 40.016, held: [], button: false, flags: 0)
+        XCTAssertTrue(h.userKeysPending(now: 40.02, since: 1e6))
+    }
+
+    /// Return kẹt chỉ thấy qua các lần đọc sau khoảng hở (ứng dụng thường, không đọc liên tục): bấm Return thật rồi nhả, phím tắt
+    /// đổi chế độ ngay sau đó không bị chặn.
+    func testPressLogAnyHeldAfterRealPressOfStuckKey() {
+        var p = PressLog()
+        p.sample(at: 1, held: [36], button: false, flags: 0, physical: [], physicalButton: false)
+        p.sample(at: 5, held: [36], button: false, flags: 0, physical: [36], physicalButton: false)   // bấm Return thật
+        p.keyReceived(36, at: 4.99, isRepeat: false, now: 5)
+        p.sample(at: 5.3, held: [36], button: false, flags: 0, physical: [], physicalButton: false)  // đã nhả
+        p.eventReceived(at: 5.29, now: 5.3)
+        XCTAssertFalse(p.anyHeld(now: 5.3, physical: []))
+        XCTAssertTrue(p.anyHeld(now: 5.3, physical: [36]))
     }
 
     /// Phím tắt đổi chế độ lúc Return kẹt mà chưa gõ phím nào: chính lần nhấn phím bổ trợ (cùng hàng đợi) là bằng chứng Return
