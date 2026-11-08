@@ -15,7 +15,7 @@ packages:
 
 settings:
   base:
-    MARKETING_VERSION: "1.13"
+    MARKETING_VERSION: "1.13.1"
     # Số build mặc định = phiên bản (bản build bằng Xcode / IME Lab). build.sh (DMG, install.sh, phát hành) ghi đè
     # CFBundleVersion = YYYYMMDD.HHMMSS và GTVBuildStamp: Sparkle so CFBundleVersion, nên mọi bản phát hành phải qua
     # build.sh (số luôn tăng; bản đã cài có số dạng ngày sẽ không nhận bản có số kiểu 1.12).

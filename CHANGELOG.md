@@ -4,6 +4,16 @@ Mỗi phiên bản là một mục `## <phiên bản> — <ngày>`. Nội dung c
 note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớp `MARKETING_VERSION` trong
 `project.yml`.
 
+## 1.13.1 — 2026-11-08
+
+### Sửa lỗi
+- Burp / Java / Qt 5 / GTK (gõ bằng phím ⌫ giả): có máy gõ dấu không ra ("d9a38ng" ra nguyên văn, "đẳng" ra "đ"). Hệ thống
+  báo một phím (Return) kẹt ở trạng thái "đang nhấn" — do ứng dụng khác gửi phím nhấn mà không gửi phím nhả — và GTV coi đó là
+  phím người dùng chưa tới ứng dụng nên hoãn mọi lần sửa dấu. Giờ phím kẹt không còn được tính; lần hoãn (khi có phím thật
+  của người dùng chưa tới) cũng không bao giờ kéo dài quá 1,5 s dù người dùng gõ liền.
+- Phím tắt đổi Anh/Việt (⌘⇧…) không ăn khi hệ thống báo một phím kẹt như trên: GTV tưởng đang giữ phím khác lúc nhấn tổ hợp.
+  Giờ phím "đang giữ" quá 2 s mà không lặp (nút chuột: quá 10 s) không còn tính.
+
 ## 1.13 — 2026-11-06
 
 ### Thay đổi
