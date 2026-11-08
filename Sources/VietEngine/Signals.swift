@@ -510,6 +510,8 @@ public struct PressLog {
     private var lastRepeat: [UInt16: Double] = [:]
     private var held: Set<UInt16> = []
     private var button = false
+    /// Lúc bắt đầu thấy giữ nút chuột.
+    private var buttonSince: Double?
     private var flags: UInt64?
 
     /// Phím tắt đổi chế độ (macOS 27, xem `hotkeyTapClean`): thời điểm các sự kiện HID mới (bàn phím / chuột thật,
@@ -533,8 +535,16 @@ public struct PressLog {
 
     public init() {}
 
-    /// Đang giữ phím đặc biệt hay nút chuột nào (theo lần đọc cuối).
-    public var anyHeld: Bool { !held.isEmpty || button }
+    /// Đang giữ phím đặc biệt hay nút chuột nào (theo lần đọc cuối, lúc `now`), bỏ qua trạng thái kẹt: phím "đang giữ" quá
+    /// `stuckAfter` giây mà bộ gõ không nhận lần lặp nào trong 0,5 s qua (ứng dụng khác gửi phím nhấn mà không gửi phím nhả —
+    /// máy người dùng: Return kẹt làm phím tắt đổi chế độ không bao giờ là nhấn "trơn"), nút chuột giữ quá 10 s.
+    public func anyHeld(now: Double, stuckAfter: Double = 2) -> Bool {
+        if let since = buttonSince, now - since <= 10 { return true }
+        return held.contains { k in
+            if let since = heldSince[k], now - since <= stuckAfter { return true }
+            return lastRepeat[k].map { $0 > now - 0.5 } ?? false
+        }
+    }
 
     /// Phím bổ trợ theo lần đọc cuối.
     public var lastFlags: UInt64? { flags }
@@ -549,6 +559,7 @@ public struct PressLog {
             lastSample = t
             heldSince = Dictionary(uniqueKeysWithValues: keys.map { ($0, heldSince[$0] ?? t) })
             held = keys
+            buttonSince = pressed ? (buttonSince ?? t) : nil
             button = pressed
             flags = f
             prune(before: t - keep)
@@ -577,6 +588,7 @@ public struct PressLog {
             history.append(press)
             pending.append(press)
         }
+        buttonSince = pressed ? (buttonSince ?? t) : nil
         button = pressed
         if let old = flags, old != f {
             flagChanges.append(FlagChange(after: last, at: t, keys: (old ^ f).nonzeroBitCount))

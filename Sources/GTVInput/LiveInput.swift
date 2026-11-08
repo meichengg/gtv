@@ -254,7 +254,7 @@ final class LiveInput {
 
     /// Đang giữ phím đặc biệt hay nút chuột nào không (đọc ngay).
     func anyHeld() -> Bool {
-        sampled { $0.anyHeld }
+        sampled { $0.anyHeld(now: ProcessInfo.processInfo.systemUptime) }
     }
 
     /// Người dùng có nhấn phím đặc biệt, nút chuột hay nhấn thêm phím bổ trợ (nhả thì không tính) trong [from, to] không —

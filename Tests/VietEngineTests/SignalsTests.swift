@@ -352,7 +352,31 @@ final class SignalsTests: XCTestCase {
         p.forget()                                                           // …rồi đổi ô nhập liệu
         p.sample(at: 1.024, held: [51], button: false, flags: 0x40000)      // ⌫ Terminal.app tự xử lý
         XCTAssertEqual(p.pending.map(\.key), [51])
-        XCTAssertTrue(p.anyHeld)
+        XCTAssertTrue(p.anyHeld(now: 1.03))
+    }
+
+    /// Phím tắt đổi chế độ lúc có phím kẹt (Return "đang giữ" mãi, không lặp): không tính là đang giữ; phím giữ thật (mới nhấn,
+    /// hay đang lặp) và nút chuột thì tính.
+    func testPressLogAnyHeldIgnoresStuckKeys() {
+        var p = PressLog()
+        p.maxGap = 1
+        p.sample(at: 1.0, held: [36], button: false, flags: 0)                 // Return kẹt từ trước khi đọc
+        XCTAssertTrue(p.anyHeld(now: 1.5))
+        p.sample(at: 4.0, held: [36], button: false, flags: 0)
+        XCTAssertFalse(p.anyHeld(now: 4.0))                                     // kẹt 3 s, không lặp
+        p.sample(at: 4.5, held: [36, 123], button: false, flags: 0)            // giữ ← thật
+        XCTAssertTrue(p.anyHeld(now: 4.6))
+        p.sample(at: 7.0, held: [36, 123], button: false, flags: 0)
+        XCTAssertFalse(p.anyHeld(now: 7.0))
+        p.keyReceived(123, at: 7.1, isRepeat: true)                              // ← đang lặp
+        XCTAssertTrue(p.anyHeld(now: 7.2))
+        XCTAssertFalse(p.anyHeld(now: 7.8))
+        p.sample(at: 8.0, held: [36], button: true, flags: 0)                   // nhả ←, giữ chuột
+        XCTAssertTrue(p.anyHeld(now: 8.1))
+        p.sample(at: 19.0, held: [36], button: true, flags: 0)
+        XCTAssertFalse(p.anyHeld(now: 19.0))                                    // nút chuột kẹt
+        p.sample(at: 19.5, held: [36], button: false, flags: 0)
+        XCTAssertFalse(p.anyHeld(now: 19.5))
     }
 
     /// Đọc trạng thái phím đặc biệt / nút chuột: phím bộ gõ nhận được đối chiếu, phím terminal tự xử lý và click thì không.
