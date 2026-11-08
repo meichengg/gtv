@@ -523,6 +523,8 @@ public struct PressLog {
     private var forgotten: [Press] = []
     /// Click bỏ khỏi sổ mà chưa được lấy ra (sổ đầy): sổ phím báo ngắt ở phím sau (`takeLostClicks`).
     private var lostClicks = 0
+    /// Lúc mới nhất của lần nhấn / nhả / phím bổ trợ bỏ khỏi sổ (sổ đầy) mà chưa có bằng chứng đã tới.
+    private var unresolvedAt: Double?
     /// Sai số thứ tự giữa thời điểm sự kiện của các thiết bị (bàn phím, trackpad, Bluetooth) và lần đọc trạng thái.
     private static let orderSlack = 0.02
     /// Lần lặp (isARepeat) gần nhất bộ gõ nhận, theo phím (thời điểm sự kiện).
@@ -742,6 +744,7 @@ public struct PressLog {
         if let p = pending.first(where: { $0.key != nil && !(evidence > $0.at + Self.orderSlack) }) {
             return "phím \(p.key!) chưa tới"
         }
+        if let u = unresolvedAt, !(evidence > u + Self.orderSlack) { return "phím bỏ khỏi sổ lúc \(u) chưa tới" }
         // Lần nhấn / click lúc lấy mốc mới (click bộ gõ thấy, đổi ô): cái tạo sau sự kiện đó có thể vẫn đang xếp hàng.
         if let p = forgotten.first(where: { !(evidence > $0.at + Self.orderSlack) }) {
             return "\(p.key.map { "phím \($0)" } ?? "click") trước lúc lấy mốc chưa tới"
@@ -812,7 +815,11 @@ public struct PressLog {
     /// phím đi vòng; chỉ xét click.
     public mutating func order(keyAt stamp: Double, maxDelivery: Double, burst: Bool,
                                clicksOnly: Bool = false) -> (taken: [Press], uncertain: Bool) {
-        let taken = burst ? [] : take { (!clicksOnly || $0.key == nil) && $0.at <= stamp - maxDelivery }
+        // Click đọc thấy sớm hơn lúc tạo phím quá sai số thứ tự: chắc chắn trước phím (đọc trễ chỉ làm `at` muộn hơn) — như
+        // `KeyWatch.exactGap`. Phím đặc biệt giữ ngưỡng độ trễ giao phím.
+        let taken = burst ? [] : take { press in
+            press.key == nil ? press.at + Self.orderSlack < stamp : !clicksOnly && press.at <= stamp - maxDelivery
+        }
         return (taken, pending.contains { (!clicksOnly || $0.key == nil) && $0.after < stamp })
     }
 
@@ -845,23 +852,39 @@ public struct PressLog {
     }
 
     private mutating func prune(before t: Double) {
-        let settled = releases.map { $0.at < t || releaseSettled($0, since: -.infinity) }
-        releases = zip(releases, settled).filter { !$0.1 }.map(\.0)
-        // Lần nhấn lúc lấy mốc: chỉ hết chờ theo bằng chứng thứ tự (giữ tối đa 64).
         let stamp = latestStamp
+        // Lần nhả / lần nhấn phím / phím bổ trợ còn có thể đang xếp hàng: chỉ bỏ theo bằng chứng thứ tự (đồng hồ chỉ để dọn
+        // những cái đã có bằng chứng). Sổ đầy thì nhớ lúc của cái bỏ đi: phím sửa vẫn hoãn tới khi có phím tạo sau nó tới.
+        let settled = releases.map { releaseSettled($0, since: -.infinity) }
+        releases = zip(releases, settled).filter { !$0.1 }.map(\.0)
+        if releases.count > 64 {
+            unresolvedAt = max(unresolvedAt ?? -.infinity, releases[releases.count - 65].at)
+            releases.removeFirst(releases.count - 64)
+        }
+        flagPresses.removeAll { $0 < t && stamp > $0 + Self.orderSlack }
+        if flagPresses.count > 64 {
+            unresolvedAt = max(unresolvedAt ?? -.infinity, flagPresses[flagPresses.count - 65])
+            flagPresses.removeFirst(flagPresses.count - 64)
+        }
+        if let u = unresolvedAt, stamp > u + Self.orderSlack { unresolvedAt = nil }
+        // Lần nhấn lúc lấy mốc: chỉ hết chờ theo bằng chứng thứ tự (giữ tối đa 64).
         forgotten.removeAll { stamp > $0.at + Self.orderSlack }
         if forgotten.count > 64 { forgotten.removeFirst(forgotten.count - 64) }
         history.removeAll { $0.at < t }
         // Click chờ không hết hạn theo đồng hồ: chỉ ra khỏi sổ khi được lấy ra (phím tạo sau nó tới — báo ngắt) hay lấy mốc mới.
-        // Sổ đầy thì bỏ click cũ nhất và báo ngắt ở phím sau.
-        pending.removeAll { $0.key != nil && $0.at < t }
+        // Sổ đầy thì bỏ click cũ nhất và báo ngắt ở phím sau. Lần nhấn phím: bỏ khi đã cũ và có bằng chứng.
+        pending.removeAll { $0.key != nil && $0.at < t && stamp > $0.at + Self.orderSlack }
+        let keyPresses = pending.filter { $0.key != nil }
+        if keyPresses.count > 64, let oldest = keyPresses.first, let i = pending.firstIndex(of: oldest) {
+            unresolvedAt = max(unresolvedAt ?? -.infinity, oldest.at)
+            pending.remove(at: i)
+        }
         let clicks = pending.filter { $0.key == nil }.count
         if clicks > 64, let i = pending.firstIndex(where: { $0.key == nil }) {
             pending.remove(at: i)
             lostClicks += 1
         }
         flagChanges.removeAll { $0.at < t }
-        flagPresses.removeAll { $0 < t }
     }
 
     // MARK: Phím tắt đổi chế độ (macOS 27)

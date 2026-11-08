@@ -824,12 +824,18 @@ def main():
         finally:
             close_terminal(key)
 
-    for app in os.environ.get("APPS", "field blind swing chrome").split():
-        try:
-            results += run_app_suite(app)
-        except Exception as e:  # noqa: BLE001
-            results.append({"terminal": app, "test": "-", "error": str(e)})
-            shot(f"{app}-fatal")
+    # Ứng dụng thường cũng chạy từng chế độ bộ đếm: đường ⌫ giả / ô web trên macOS 27 khác hẳn macOS 26.
+    for counter_mode in counter_modes:
+        suffix = set_counter_mode(counter_mode)
+        for app in os.environ.get("APPS", "field blind swing chrome").split():
+            try:
+                part = run_app_suite(app)
+            except Exception as e:  # noqa: BLE001
+                part = [{"terminal": app, "test": "-", "error": str(e)}]
+                shot(f"{app}{suffix}-fatal")
+            for r in part:
+                r["terminal"] = r.get("terminal", app) + suffix
+            results += part
 
     if os.environ.get("MODES_TEST", "1") == "1":
         for counter_mode in counter_modes:

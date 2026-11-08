@@ -34,7 +34,9 @@ final class KeyWatch {
     /// Bộ đếm click lúc đọc phím gần nhất (`lateEditSafe`).
     private var clicksAtLastKey: UInt32 = 0
     /// macOS 27: số click lần đọc nút chuột đã thấy mà bộ đếm của hệ thống chưa công bố.
-    private var clickCredit = 0
+    /// macOS 27: click lần đọc nút chuột đã thấy và đã báo mà bộ đếm chưa công bố (theo `PressLog.Press.at`): lúc bộ đếm
+    /// công bố chúng thì không báo lần nữa.
+    private var clickCredit: [Double] = []
     /// Click còn chờ trong sổ (theo `PressLog.Press.at`) mà bộ đếm đã công bố trước lúc phím tạo sau nó tới: lúc sổ lấy nó ra
     /// không tính là click mới công bố lần nữa.
     private var publishedPending: [Double] = []
@@ -121,7 +123,7 @@ final class KeyWatch {
         ledger.rebase(keyDownCount: Self.keyDownCount())
         modifierPressed = false
         burstCarry = false
-        clickCredit = 0
+        clickCredit = []
         publishedPending = []
         lastRouteRead = nil
         // macOS 27: click làm ô nhận focus có thể chỉ được công bố sau lúc này.
@@ -160,7 +162,10 @@ final class KeyWatch {
     /// mà bộ gõ thấy và phím này có phím / click nào bộ gõ không thấy không.
     /// `terminal`: ô nhập liệu của app terminal (chỉ ở đó các tín hiệu này được dùng: đọc trạng thái liên tục, hẹn kiểm tra).
     /// `syntheticSince`: phím giả của chính bộ gõ, gửi lúc đó (vẫn vào sổ đếm, không được coi là lần nhấn của người dùng).
-    func observe(_ event: NSEvent, terminal: Bool, throughIME: Bool = false, syntheticSince: Double? = nil) -> KeyGap {
+    /// `readsContinuously`: phím trước đi đường LiveInput đọc liên tục lúc gõ (⌫ giả, ô mù — `keepTerminal`): khoảng không
+    /// đọc từ đó là có thể có click bộ gõ không thấy.
+    func observe(_ event: NSEvent, terminal: Bool, throughIME: Bool = false, readsContinuously: Bool = false,
+                 syntheticSince: Double? = nil) -> KeyGap {
         if !counterModeKnown {
             let before = counterMode
             detectCounterMode()
@@ -211,7 +216,7 @@ final class KeyWatch {
             }
         }
         if terminal { lastTerminalRead = read }
-        lastRouteRead = throughIME ? read : nil
+        lastRouteRead = readsContinuously ? read : nil
 
         let gap: KeyGap
         switch counterMode {
@@ -223,40 +228,41 @@ final class KeyWatch {
             // Đường ⌫ giả: khoảng không đọc từ phím trước (lâu không gõ) — click ô Java / Qt trong khoảng đó bộ gõ không thấy, bộ
             // đếm có thể chưa công bố: báo ngắt ngay (bỏ từ), không báo lại lúc bộ đếm công bố nó (mọi click trong khoảng hở đều
             // trước lúc này).
-            let unread = throughIME && !synthetic && !routeCovered
-            if unread {
-                pointer.rebase(Self.pointerCount(), at: ProcessInfo.processInfo.systemUptime, quantum: 0.5)
-            }
-            // Bộ đếm click chỉ có thể đã công bố click trước mốc 0,5 s gần nhất (lấy trước lúc đọc bộ đếm).
-            let boundary = (ProcessInfo.processInfo.systemUptime / 0.5).rounded(.down) * 0.5
-            var published = pointer.newClicks(Self.pointerCount(), lastClickAt: Self.lastClickTime())
+            let unread = readsContinuously && !synthetic && !routeCovered
+            let now = ProcessInfo.processInfo.systemUptime
             let takenClicks = order.taken.filter { $0.key == nil }.map(\.at)
-            clickCredit += takenClicks.filter { !publishedPending.contains($0) }.count
+            if unread {
+                // Mọi click đã thấy (lấy ra ở phím này hay còn chờ) đều trước lúc này: lần công bố của chúng bị mốc mới nuốt —
+                // không thành credit (credit thừa sẽ nuốt lần công bố của click không thấy sau này).
+                pointer.rebase(Self.pointerCount(), at: now, quantum: 0.5)
+                clickCredit = []
+                publishedPending = takenClicks + live.withLog { log in log.pending.filter { $0.key == nil }.map(\.at) }
+            }
+            // Mốc 0,5 s chắc chắn đã công bố (lấy trước lúc đọc bộ đếm; chừa độ trễ công bố): số vừa công bố gồm mọi click tới
+            // mốc này — credit tới mốc mà không khớp là đã được tính ở lần đọc trước, bỏ (thừa credit thì nuốt click không thấy).
+            let boundary = ((now - Self.publishLag) / 0.5).rounded(.down) * 0.5
+            var published = pointer.newClicks(Self.pointerCount(), lastClickAt: Self.lastClickTime())
+            clickCredit += takenClicks.filter { !publishedPending.contains($0) }
             publishedPending.removeAll { takenClicks.contains($0) }
-            let known = min(published, clickCredit)
+            let known = min(published, clickCredit.filter { $0 <= boundary }.count)
             published -= known
-            clickCredit -= known
+            clickCredit.removeAll { $0 <= boundary }
             if published > 0 {
-                // Bộ đếm báo trước: click còn chờ trong sổ là chính click đó. Click có thể trước phím này: lấy ra luôn, không báo
-                // lại ở phím sau. Click đọc thấy sau lúc tạo phím này thì còn xếp sau nó trong hàng đợi của ứng dụng: để lại trong
-                // sổ (phím sửa vẫn hoãn tới khi phím tạo sau click tới — sổ lấy nó ra và báo ngắt lúc đó), ghi là đã công bố.
+                // Bộ đếm công bố click chưa giải thích được: báo ngắt ở phím này (không biết click không thấy nào nằm trước nó).
+                // Click chắc chắn trước phím này (cùng sai số thứ tự với `PressLog`): lấy ra luôn. Click có thể nằm trong lần
+                // công bố này (thấy trước mốc 0,5 s mới nhất) thì không thành credit — credit thừa sẽ nuốt lần công bố của click
+                // không thấy sau này; click lấy ra mà công bố sau thì thành credit. Click còn chờ (đọc thấy sau hay gần lúc tạo
+                // phím này: còn xếp sau nó, phím sửa vẫn hoãn tới khi phím tạo sau nó tới — sổ lấy nó ra, báo ngắt lúc đó) mà
+                // có thể đã công bố thì ghi là đã công bố.
                 let stamp = event.timestamp
                 let owed = publishedPending
-                // Chắc chắn trước phím này (cùng sai số thứ tự với `PressLog`); click đọc thấy gần lúc tạo phím thì chưa chắc —
-                // để lại (phím này vẫn báo ngắt vì `order.uncertain`).
+                let latestGrid = (now / 0.5).rounded(.down) * 0.5
                 let earlier = live.withLog { log in
                     log.take { $0.key == nil && $0.at + 0.02 < stamp && !owed.contains($0.at) }
                 }
-                let matched = min(published, earlier.filter { $0.at <= boundary }.count)
-                clickCredit += earlier.count - matched
-                published -= matched
-                if published > 0 {
-                    let later = live.withLog { log in
-                        log.pending.filter { $0.key == nil && !owed.contains($0.at) && $0.at <= boundary }.map(\.at)
-                    }
-                    let paid = later.prefix(published)
-                    publishedPending += paid
-                    published -= paid.count
+                clickCredit += earlier.map(\.at).filter { $0 > latestGrid }
+                publishedPending += live.withLog { log in
+                    log.pending.filter { $0.key == nil && !owed.contains($0.at) && $0.at <= latestGrid }.map(\.at)
                 }
             }
             let stillPending = live.withLog { log in log.pending.filter { $0.key == nil }.map(\.at) }
@@ -289,6 +295,15 @@ final class KeyWatch {
             gap = lostClicks > 0 ? .bypassed : exact        // click bỏ khỏi sổ mà chưa báo (sổ đầy)
         }
         return gap
+    }
+
+    /// macOS 27: bộ đếm click được công bố muộn hơn mốc 0,5 s của nó tối đa bấy nhiêu giây.
+    private static let publishLag = 0.05
+
+    /// macOS 26 (thời điểm click cập nhật ngay): có click tạo sau (hay quanh) lúc tạo phím gần nhất bộ gõ nhận — ứng dụng đang
+    /// giữ nó, hay đã xử lý, trước mọi phím giả gửi bây giờ (cả click lần đọc nút chuột không thấy: chạm để click trên trackpad).
+    func clickSinceLastKey() -> Bool {
+        counterMode == .exact && Self.lastClickTime() > lastKeyAt - 0.02
     }
 
     /// Độ trễ lớn nhất từ lúc bấm tới lúc ứng dụng nhận phím (IME Lab: 1–60 ms), cộng một chu kỳ đọc trạng thái.

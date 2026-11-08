@@ -605,6 +605,36 @@ final class SignalsTests: XCTestCase {
         XCTAssertTrue(r.pending.isEmpty)
     }
 
+    /// Review aafb2f6 (vòng 5): macOS 27 — click chắc chắn trước phím (sai số thứ tự) được lấy ra ngay, không báo hai lần; lần
+    /// nhấn / nhả / phím bổ trợ còn chờ quá 8 s (ứng dụng đứng) không bị bỏ khi chưa có bằng chứng đã tới.
+    func testPressLogOrderClicksAndEvidencePrune() {
+        var p = PressLog()
+        p.sample(at: 1.0, held: [], button: false, flags: 0)
+        p.sample(at: 1.008, held: [], button: false, flags: 0)
+        p.sample(at: 1.016, held: [], button: true, flags: 0)
+        p.sample(at: 1.024, held: [], button: false, flags: 0)
+        let first = p.order(keyAt: 1.040, maxDelivery: 0.068, burst: false, clicksOnly: true)
+        XCTAssertEqual(first.taken.map(\.key), [nil])
+        XCTAssertFalse(first.uncertain)
+        XCTAssertTrue(p.order(keyAt: 1.2, maxDelivery: 0.068, burst: false, clicksOnly: true).taken.isEmpty)
+        // Ứng dụng đứng 10 s: ← và ⌘ bấm sau 'j' còn xếp hàng.
+        var q = PressLog()
+        var t = 0.0
+        q.sample(at: t, held: [], button: false, flags: 0)
+        for _ in 0..<150 { t += 0.008; q.sample(at: t, held: [], button: false, flags: 0) }       // tới 1,2
+        q.sample(at: t + 0.008, held: [123], button: false, flags: 0)
+        t += 0.016; q.sample(at: t, held: [], button: false, flags: 0)
+        q.sample(at: t + 0.008, held: [], button: false, flags: 0x100000)                         // ⌘
+        t += 0.016; q.sample(at: t, held: [], button: false, flags: 0)
+        while t < 10 { t += 0.008; q.sample(at: t, held: [], button: false, flags: 0) }
+        q.keyReceived(38, at: 1.0, isRepeat: false, now: t)                                       // 'j' tạo lúc 1,0 tới lúc 10
+        XCTAssertEqual(q.userKeysPendingReason(now: t, since: 1.0)?.hasPrefix("phím 123"), true)
+        q.keyReceived(123, at: 1.205, isRepeat: false, now: t)
+        XCTAssertEqual(q.userKeysPendingReason(now: t, since: 1.205)?.hasPrefix("phím bổ trợ"), true)
+        q.keyReceived(0, at: 1.3, isRepeat: false, now: t)
+        XCTAssertFalse(q.userKeysPending(now: t, since: 1.3))
+    }
+
     /// Phím tắt đổi chế độ lúc Return kẹt mà chưa gõ phím nào: chính lần nhấn phím bổ trợ (cùng hàng đợi) là bằng chứng Return
     /// không lặp.
     func testPressLogAnyHeldModifierEvidence() {
