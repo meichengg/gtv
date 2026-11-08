@@ -1544,27 +1544,32 @@ public final class Session {
         // Tính từ lúc bắt đầu hoãn, kể cả khi người dùng gõ tiếp (mỗi phím lại hoãn): gõ liền không làm hoãn mãi.
         let started = synDeferStart
         if client.currentTime() - started > 1.5 {
-            log?("phím ⌫ giả: hoãn quá lâu — thôi theo dõi từ")
-            engine.reset()
-            untracked = true
-            synReset()
+            synGiveUp("phím ⌫ giả: hoãn quá lâu — thôi theo dõi từ")
             return
         }
         func retry() {
             client.schedule(after: 0.03) { [weak self, weak client] in
                 guard let self, let client, self.inSynthetic, self.synDeferred, self.synDeferSerial == serial else { return }
-                if !client.keysQueued { self.synSync(client); return }
+                // Hết hạn trước khi hỏi lại: phím / click đang chờ hết hạn (sổ phím thôi báo) không làm lần sửa gửi ra sau nó.
                 if client.currentTime() - started > 1.5 {
-                    self.log?("phím ⌫ giả: phím của người dùng không tới — thôi theo dõi từ")
-                    self.engine.reset()
-                    self.untracked = true
-                    self.synReset()
+                    self.synGiveUp("phím ⌫ giả: phím của người dùng không tới — thôi theo dõi từ")
                     return
                 }
+                if !client.keysQueued { self.synSync(client); return }
                 retry()
             }
         }
         retry()
+    }
+
+    /// Bỏ lần sửa đang hoãn (không gửi gì — chỉ mất dấu). Đang gõ dở từ thì các chữ còn lại của từ đi nguyên văn; từ đã kết thúc
+    /// (dấu cách, dấu câu) thì từ sau gõ lại từ đầu như thường.
+    private func synGiveUp(_ why: String) {
+        log?(why)
+        let midWord = synIntended.last.map(Self.continuesWord) ?? false
+        engine.reset()
+        untracked = midWord
+        synReset()
     }
 
     /// Một phím ⌫ giả của bộ gõ vừa tới ứng dụng (InputController nhận ra nó): cập nhật chữ thật trong ô.

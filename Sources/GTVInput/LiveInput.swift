@@ -106,6 +106,8 @@ final class LiveInput {
 
     private func startLocked() {
         guard timer == nil else { return }
+        _log.repeatDelay = NSEvent.keyRepeatDelay           // cài đặt lặp phím (người dùng có thể đổi lúc nào cũng được)
+        _log.repeatInterval = NSEvent.keyRepeatInterval
         sampleLocked()
         let t = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
         t.setEventHandler { [weak self] in self?.tick() }
@@ -254,7 +256,15 @@ final class LiveInput {
 
     /// Đang giữ phím đặc biệt hay nút chuột nào không (đọc ngay).
     func anyHeld() -> Bool {
-        sampled { $0.anyHeld(now: ProcessInfo.processInfo.systemUptime) }
+        // Bàn phím / chuột thật (trạng thái HID): phím kẹt ở trạng thái của phiên (ứng dụng khác gửi phím nhấn mà không gửi
+        // phím nhả) không có ở đây.
+        var physical = Set<UInt16>()
+        for key in Self.watchedKeys where CGEventSource.keyState(.hidSystemState, key: key) { physical.insert(UInt16(key)) }
+        let button = [CGMouseButton.left, .right, .center]
+            .contains { CGEventSource.buttonState(.hidSystemState, button: $0) }
+        return sampled {
+            $0.anyHeld(now: ProcessInfo.processInfo.systemUptime, physical: physical, physicalButton: button)
+        }
     }
 
     /// Người dùng có nhấn phím đặc biệt, nút chuột hay nhấn thêm phím bổ trợ (nhả thì không tính) trong [from, to] không —

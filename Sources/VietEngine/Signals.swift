@@ -506,8 +506,15 @@ public struct PressLog {
     private var repeatRelease: Double?
     /// Lúc bắt đầu thấy giữ từng phím đặc biệt.
     private var heldSince: [UInt16: Double] = [:]
-    /// Lần lặp (isARepeat) gần nhất bộ gõ nhận, theo phím.
+    /// Lần lặp (isARepeat) gần nhất bộ gõ nhận, theo phím (thời điểm sự kiện).
     private var lastRepeat: [UInt16: Double] = [:]
+    /// Thời điểm sự kiện mới nhất trong các phím người dùng bộ gõ đã nhận.
+    private var latestStamp = -Double.infinity
+    /// Cài đặt lặp phím của macOS (`LiveInput` cập nhật): giữ bấy nhiêu giây thì bắt đầu lặp, rồi lặp mỗi bấy nhiêu giây.
+    public var repeatDelay = 0.5
+    public var repeatInterval = 0.083
+    /// Sai số lúc tạo lần lặp.
+    private static let repeatSlack = 0.1
     private var held: Set<UInt16> = []
     private var button = false
     /// Lúc bắt đầu thấy giữ nút chuột.
@@ -535,14 +542,31 @@ public struct PressLog {
 
     public init() {}
 
-    /// Đang giữ phím đặc biệt hay nút chuột nào (theo lần đọc cuối, lúc `now`), bỏ qua trạng thái kẹt: phím "đang giữ" quá
-    /// `stuckAfter` giây mà bộ gõ không nhận lần lặp nào trong 0,5 s qua (ứng dụng khác gửi phím nhấn mà không gửi phím nhả —
-    /// máy người dùng: Return kẹt làm phím tắt đổi chế độ không bao giờ là nhấn "trơn"), nút chuột giữ quá 10 s.
-    public func anyHeld(now: Double, stuckAfter: Double = 2) -> Bool {
+    /// Phím đặc biệt `k` đang giữ chắc chắn không lặp nữa: bộ gõ đã nhận một phím có thời điểm sau lúc lần lặp kế của `k` phải
+    /// được tạo, mà lần lặp đó không tới trước (ứng dụng giao phím theo đúng thứ tự tạo). Đúng với phím kẹt ở trạng thái "đang
+    /// giữ" (ứng dụng khác gửi phím nhấn mà không gửi phím nhả — máy người dùng: Return kẹt) ngay khi người dùng gõ phím kế, và
+    /// với phím giữ lúc đã tắt lặp phím. Không dựa vào đồng hồ: ứng dụng giao phím chậm thì các lần lặp còn nằm trong hàng đợi
+    /// của nó, chưa có phím nào sau chúng tới bộ gõ — vẫn coi là có thể đang lặp.
+    public func notRepeating(_ k: UInt16) -> Bool {
+        guard let since = heldSince[k] else { return false }
+        // Tắt lặp phím: macOS đặt số rất lớn — sau 2 s mà vẫn có phím sau tới thì chắc là không lặp.
+        if let r = lastRepeat[k], r >= since { return latestStamp > r + min(repeatInterval, 2) + Self.repeatSlack }
+        return latestStamp > since + min(repeatDelay, 2) + Self.repeatSlack
+    }
+
+    /// Đang giữ phím đặc biệt hay nút chuột nào (lúc `now`) — cho phím tắt đổi chế độ. `physical` / `physicalButton`: phím, nút
+    /// chuột đang giữ trên bàn phím / chuột thật (trạng thái HID). Phím chỉ "đang giữ" ở trạng thái của phiên (phím do chương
+    /// trình gửi, hay kẹt) thì chỉ tính khi chưa chắc là không lặp và mới thấy giữ / mới lặp trong `stuckAfter` giây — phím kẹt
+    /// từ trước khi gõ phím nào cũng không làm phím tắt mất "trơn" mãi; nút chuột: trong 10 s.
+    public func anyHeld(now: Double, physical: Set<UInt16> = [], physicalButton: Bool = false,
+                        stuckAfter: Double = 2) -> Bool {
+        if physicalButton { return true }
         if let since = buttonSince, now - since <= 10 { return true }
         return held.contains { k in
-            if let since = heldSince[k], now - since <= stuckAfter { return true }
-            return lastRepeat[k].map { $0 > now - 0.5 } ?? false
+            if physical.contains(k) { return true }
+            if notRepeating(k) { return false }
+            let last = max(heldSince[k] ?? -.infinity, lastRepeat[k] ?? -.infinity)
+            return now - last <= stuckAfter
         }
     }
 
@@ -568,9 +592,10 @@ public struct PressLog {
         guard t >= last else { return }         // lần đọc cũ hơn lần đọc cuối: không có gì mới
         lastSample = t
         for k in held.subtracting(keys) {
-            if let from = heldSince.removeValue(forKey: k), t - from > 0.2, (lastRepeat[k] ?? -.infinity) > from {
-                repeatRelease = t                       // giữ lâu và đã lặp thật (không phải trạng thái kẹt)
-            }
+            // Giữ lâu (có thể đã lặp, các lần lặp có thể còn nằm trong hàng đợi của ứng dụng) — trừ phím chắc chắn không lặp
+            // (phím kẹt được nhả).
+            if let from = heldSince[k], t - from > 0.2, !notRepeating(k) { repeatRelease = t }
+            heldSince.removeValue(forKey: k)
         }
         for k in keys.subtracting(held).sorted() {
             heldSince[k] = t
@@ -619,14 +644,13 @@ public struct PressLog {
 
     /// Như `userKeysPending`, kèm lý do (nil: không có gì chờ).
     public func userKeysPendingReason(now: Double, since: Double, maxAge: Double = 1) -> String? {
-        // Click chưa được phím sau xử lý (sổ phím báo ngắt, lấy nó ra) — tới 2 s, quá lần sửa đang hoãn bỏ cuộc (1,5 s): lần sửa
-        // không bao giờ gửi tới chỗ click.
-        if let p = pending.first(where: { $0.key == nil && $0.at > now - 2 }) { return "click lúc \(p.at)" }
+        // Click chưa được phím sau xử lý (sổ phím báo ngắt, lấy nó ra) — tới 3 s, quá lần sửa đang hoãn bỏ cuộc (1,5 s từ lúc
+        // bắt đầu hoãn, chậm nhất 0,5 s sau click: bộ đếm click công bố mỗi 0,5 s): lần sửa không bao giờ gửi tới chỗ click.
+        if let p = pending.first(where: { $0.key == nil && $0.at > now - 3 }) { return "click lúc \(p.at)" }
         if let p = pending.first(where: { $0.key != nil && $0.at > now - maxAge }) { return "phím \(p.key!) chưa tới" }
-        // Phím đặc biệt đang giữ chỉ tính khi bộ gõ vừa nhận lần lặp của chính nó (đang lặp: lần lặp kế có thể còn trong hàng đợi).
-        // Trạng thái "đang giữ" kéo dài mà không có lần lặp nào là trạng thái kẹt (ứng dụng khác gửi phím nhấn mà không gửi phím
-        // nhả) — IME Lab / máy người dùng: Return kẹt làm mọi lần sửa bị hoãn mãi.
-        if let k = held.first(where: { k in lastRepeat[k].map { $0 > now - 0.5 } ?? false }) { return "đang giữ phím \(k) (lặp)" }
+        // Phím đặc biệt đang giữ (lặp phím tạo thêm phím) — trừ phím chắc chắn không lặp (`notRepeating`): trạng thái kẹt (máy
+        // người dùng: Return kẹt làm mọi lần sửa bị hoãn).
+        if let k = held.first(where: { !notRepeating($0) }) { return "đang giữ phím \(k)" }
         // Vừa nhả phím đặc biệt giữ lâu (lặp phím): các lần lặp tạo trước lúc nhả có thể còn trong hàng đợi của ứng dụng — tới khi
         // có phím bấm sau lúc nhả tới bộ gõ (tối đa 0,5 s).
         if let r = repeatRelease, r > since, r > now - 0.5 { return "vừa nhả phím lặp lúc \(r)" }
@@ -636,7 +660,13 @@ public struct PressLog {
 
     /// Bộ gõ nhận keyDown `key` (lúc `at`, thời điểm sự kiện).
     public mutating func keyReceived(_ key: UInt16, at: Double, isRepeat: Bool) {
-        if isRepeat { lastRepeat[key] = at }
+        latestStamp = max(latestStamp, at)
+        if isRepeat {
+            lastRepeat[key] = at
+        } else if held.contains(key) {
+            // Lần nhấn mới của phím đang giữ (lần nhả trước đó nằm trong khoảng hở không đọc, hay phím kẹt được nhấn thật).
+            heldSince[key] = max(heldSince[key] ?? at, at)
+        }
         if let i = pending.firstIndex(where: { $0.key == key }) {
             pending.remove(at: i)
         } else if !isRepeat, !held.contains(key) {

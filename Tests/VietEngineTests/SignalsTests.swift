@@ -356,27 +356,40 @@ final class SignalsTests: XCTestCase {
     }
 
     /// Phím tắt đổi chế độ lúc có phím kẹt (Return "đang giữ" mãi, không lặp): không tính là đang giữ; phím giữ thật (mới nhấn,
-    /// hay đang lặp) và nút chuột thì tính.
+    /// đang lặp, đang giữ trên bàn phím thật) và nút chuột thì tính.
     func testPressLogAnyHeldIgnoresStuckKeys() {
         var p = PressLog()
         p.maxGap = 1
         p.sample(at: 1.0, held: [36], button: false, flags: 0)                 // Return kẹt từ trước khi đọc
         XCTAssertTrue(p.anyHeld(now: 1.5))
         p.sample(at: 4.0, held: [36], button: false, flags: 0)
-        XCTAssertFalse(p.anyHeld(now: 4.0))                                     // kẹt 3 s, không lặp
+        XCTAssertFalse(p.anyHeld(now: 4.0))                                     // kẹt 3 s, chưa gõ gì
+        XCTAssertTrue(p.anyHeld(now: 4.0, physical: [36]))                      // giữ thật trên bàn phím
+        p.keyReceived(0, at: 4.1, isRepeat: false)                              // gõ "a": Return chắc không lặp
+        XCTAssertTrue(p.notRepeating(36))
         p.sample(at: 4.5, held: [36, 123], button: false, flags: 0)            // giữ ← thật
         XCTAssertTrue(p.anyHeld(now: 4.6))
         p.sample(at: 7.0, held: [36, 123], button: false, flags: 0)
         XCTAssertFalse(p.anyHeld(now: 7.0))
         p.keyReceived(123, at: 7.1, isRepeat: true)                              // ← đang lặp
         XCTAssertTrue(p.anyHeld(now: 7.2))
-        XCTAssertFalse(p.anyHeld(now: 7.8))
+        p.keyReceived(0, at: 7.3, isRepeat: false)                              // phím sau lần lặp kế phải có: ← thôi lặp
+        XCTAssertFalse(p.anyHeld(now: 7.4))
         p.sample(at: 8.0, held: [36], button: true, flags: 0)                   // nhả ←, giữ chuột
         XCTAssertTrue(p.anyHeld(now: 8.1))
         p.sample(at: 19.0, held: [36], button: true, flags: 0)
         XCTAssertFalse(p.anyHeld(now: 19.0))                                    // nút chuột kẹt
+        XCTAssertTrue(p.anyHeld(now: 19.0, physicalButton: true))
         p.sample(at: 19.5, held: [36], button: false, flags: 0)
         XCTAssertFalse(p.anyHeld(now: 19.5))
+        // Lần nhả nằm trong khoảng hở không đọc rồi nhấn lại: keyDown tới bộ gõ là lần nhấn mới.
+        var q = PressLog()
+        q.sample(at: 1.0, held: [123], button: false, flags: 0)
+        q.keyReceived(123, at: 1.0, isRepeat: false)
+        q.sample(at: 3.2, held: [123], button: false, flags: 0)                 // khoảng hở
+        q.keyReceived(123, at: 3.2, isRepeat: false)
+        XCTAssertTrue(q.anyHeld(now: 3.25))
+        XCTAssertFalse(q.notRepeating(123))
     }
 
     /// Đọc trạng thái phím đặc biệt / nút chuột: phím bộ gõ nhận được đối chiếu, phím terminal tự xử lý và click thì không.

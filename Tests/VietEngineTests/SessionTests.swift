@@ -204,8 +204,12 @@ private final class SyntheticField: TextClient {
     /// Vừa có click / ⌘V (bộ gõ không thấy): GTVInput còn thấy phím bổ trợ / nút chuột tới khi phím kế tiếp tới (sổ phím báo
     /// `.interrupted` ở phím đó).
     var interruptPending = false
+    /// Sổ phím báo có phím của người dùng chưa tới (phím / click không bao giờ tới bộ gõ…).
+    var forceQueued = false
+    var now = 0.0
+    func currentTime() -> Double { now }
     var keysQueued: Bool {
-        interruptPending || queue.contains {
+        forceQueued || interruptPending || queue.contains {
             switch $0 {
             case let .key(k): return k == "⌫" || k == "\n"
             case .click, .paste, .unseenClick: return true    // click / ⌘V: GTVInput thấy nút chuột, phím bổ trợ
@@ -1360,11 +1364,7 @@ final class SessionTests: XCTestCase {
         for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
         let pressAt = t + 0.008
         log.keyReceived(51, at: pressAt, isRepeat: false)
-        for i in 0..<60 {                                                                             // giữ ⌫ 0,48 s, có lặp
-            t += 0.008
-            log.sample(at: t, held: [51], button: false, flags: 0)
-            if i > 35, i % 5 == 0 { log.keyReceived(51, at: t, isRepeat: true) }
-        }
+        for _ in 0..<60 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }       // giữ ⌫ 0,48 s
         t += 0.008
         log.sample(at: t, held: [], button: false, flags: 0)                                        // nhả
         XCTAssertTrue(log.userKeysPending(now: t + 0.05, since: t - 0.03), "lần lặp tạo trước lúc nhả có thể chưa tới")
@@ -1376,21 +1376,101 @@ final class SessionTests: XCTestCase {
         click.sample(at: u, held: [], button: true, flags: 0)
         u += 0.008
         click.sample(at: u, held: [], button: false, flags: 0)
-        XCTAssertTrue(click.userKeysPending(now: u + 1.6, since: u), "click chưa được phím sau xử lý: còn chờ quá lúc lần sửa bỏ cuộc")
-        // Phím đặc biệt kẹt ở trạng thái "đang giữ" (ứng dụng khác gửi phím nhấn mà không nhả, không có lần lặp nào): không làm
-        // mọi lần sửa bị hoãn mãi (máy người dùng: Return kẹt, gõ dấu ở Burp không ra).
+        XCTAssertTrue(click.userKeysPending(now: u + 2.5, since: u), "click chưa được phím sau xử lý: còn chờ quá lúc lần sửa bỏ cuộc")
+        // Phím đặc biệt kẹt ở trạng thái "đang giữ" (ứng dụng khác gửi phím nhấn mà không nhả, không có lần lặp nào): phím người
+        // dùng gõ sau lúc lần lặp phải có mà lần lặp không tới trước — không làm mọi lần sửa bị hoãn (máy người dùng: Return
+        // kẹt, gõ dấu ở Burp không ra).
         var stuck = PressLog()
         var w = 40.0
         stuck.sample(at: w, held: [36], button: false, flags: 0)      // lần đọc đầu: đã thấy Return đang giữ
-        for _ in 0..<50 { w += 0.008; stuck.sample(at: w, held: [36], button: false, flags: 0) }
-        XCTAssertFalse(stuck.userKeysPending(now: w, since: w - 0.05), "Return kẹt làm hoãn mãi")
+        for _ in 0..<100 { w += 0.008; stuck.sample(at: w, held: [36], button: false, flags: 0) }
+        XCTAssertTrue(stuck.userKeysPending(now: w, since: w - 0.05), "chưa có phím nào tới sau: chưa chắc là kẹt")
+        stuck.keyReceived(0, at: w - 0.01, isRepeat: false)            // gõ "a"
+        XCTAssertFalse(stuck.userKeysPending(now: w, since: w - 0.01), "Return kẹt làm hoãn mãi")
         var stuck2 = PressLog()
         var v = 60.0
         stuck2.sample(at: v, held: [], button: false, flags: 0)
         for _ in 0..<5 { v += 0.008; stuck2.sample(at: v, held: [], button: false, flags: 0) }
         for _ in 0..<200 { v += 0.008; stuck2.sample(at: v, held: [36], button: false, flags: 0) }   // nhấn rồi kẹt 1,6 s
         stuck2.keyReceived(36, at: v - 1.6, isRepeat: false)
-        XCTAssertFalse(stuck2.userKeysPending(now: v, since: v - 0.05), "Return đã tới rồi kẹt làm hoãn mãi")
+        stuck2.keyReceived(2, at: v - 0.02, isRepeat: false)           // gõ "d"
+        XCTAssertFalse(stuck2.userKeysPending(now: v, since: v - 0.02), "Return đã tới rồi kẹt làm hoãn mãi")
+        stuck2.keyReceived(36, at: v - 0.01, isRepeat: false)          // nhấn Return thật (vẫn "đang giữ"): có thể lặp
+        XCTAssertTrue(stuck2.userKeysPending(now: v, since: v - 0.01))
+    }
+
+    /// Review 6ea6328: giữ ⌫ ở ứng dụng giao phím chậm (Burp bận) — các lần lặp nằm trong hàng đợi của ứng dụng, chưa lần nào tới
+    /// bộ gõ: vẫn hoãn lần sửa (gửi bây giờ thì ⌫ giả tới sau các lần lặp, xoá lố vào chữ có sẵn); nhả trước khi lần lặp đầu tới
+    /// bộ gõ cũng vậy. Không dựa vào đồng hồ: lần lặp tới trễ hơn 0,5 s vẫn là đang lặp.
+    func testSyntheticHeldKeyInLaggyApp() {
+        var log = PressLog()
+        log.repeatDelay = 0.225
+        log.repeatInterval = 0.03
+        var t = 10.0
+        log.sample(at: t, held: [], button: false, flags: 0)
+        for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
+        let pressAt = t + 0.008
+        for _ in 0..<50 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }      // giữ ⌫ 0,4 s
+        log.keyReceived(9, at: pressAt - 0.05, isRepeat: false)                                       // "v" bấm trước ⌫ tới
+        XCTAssertTrue(log.userKeysPending(now: t, since: pressAt - 0.05), "⌫ chưa tới")
+        log.keyReceived(51, at: pressAt, isRepeat: false)                                             // ⌫ đầu tới, trễ 0,4 s
+        XCTAssertTrue(log.userKeysPending(now: t, since: pressAt), "các lần lặp còn trong hàng đợi của ứng dụng")
+        for i in 0..<100 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0); _ = i }   // giữ tiếp 0,8 s
+        log.keyReceived(51, at: pressAt + 0.225, isRepeat: true)                                      // lần lặp đầu tới, trễ 0,9 s
+        XCTAssertTrue(log.userKeysPending(now: t, since: pressAt), "lần lặp tới trễ vẫn là đang lặp")
+        // Nhả trước khi lần lặp đầu tới bộ gõ.
+        var r = PressLog()
+        r.repeatDelay = 0.225
+        var u = 30.0
+        r.sample(at: u, held: [], button: false, flags: 0)
+        for _ in 0..<5 { u += 0.008; r.sample(at: u, held: [], button: false, flags: 0) }
+        let press = u + 0.008
+        for _ in 0..<50 { u += 0.008; r.sample(at: u, held: [51], button: false, flags: 0) }        // giữ 0,4 s
+        u += 0.008
+        r.sample(at: u, held: [], button: false, flags: 0)                                            // nhả
+        r.keyReceived(51, at: press, isRepeat: false)                                                 // ⌫ đầu tới sau lúc nhả
+        XCTAssertTrue(r.userKeysPending(now: u + 0.1, since: press), "lần lặp tạo trước lúc nhả có thể chưa tới")
+        r.keyReceived(0, at: u + 0.05, isRepeat: false)                                               // phím bấm sau lúc nhả tới
+        XCTAssertFalse(r.userKeysPending(now: u + 0.1, since: u + 0.05))
+    }
+
+    /// Review 6ea6328: lần sửa hoãn quá 1,5 s thì bỏ — hết hạn trước khi hỏi lại sổ phím (phím / click chờ vừa hết hạn không làm
+    /// lần sửa gửi ra sau nó); bỏ lúc từ đã kết thúc thì từ sau vẫn gõ dấu như thường, bỏ giữa từ thì phần còn lại đi nguyên văn.
+    func testSyntheticDeferralGiveUp() {
+        // Hết hạn đúng lúc phím chờ cũng hết hạn: không gửi gì.
+        let f = SyntheticField()
+        f.options.method = .telex
+        f.prefill("x ")
+        f.forceQueued = true
+        f.type("as")
+        XCTAssertEqual(f.text, "x as")
+        f.now = 1.6
+        f.forceQueued = false
+        f.runTimers()
+        f.drain()
+        XCTAssertEqual(f.text, "x as", "lần sửa gửi ra sau phím / click vừa hết hạn")
+        // Bỏ sau dấu cách: từ sau vẫn theo dõi.
+        let g = SyntheticField()
+        g.options.method = .telex
+        g.prefill("x ")
+        g.forceQueued = true
+        g.type("as ")
+        g.now = 2
+        g.runTimers()
+        g.forceQueued = false
+        g.type("vieejt")
+        XCTAssertEqual(g.text, "x as việt")
+        // Bỏ giữa từ: các chữ còn lại của từ đi nguyên văn, từ sau như thường.
+        let h = SyntheticField()
+        h.options.method = .telex
+        h.prefill("x ")
+        h.forceQueued = true
+        h.type("viee")
+        h.now = 2
+        h.runTimers()
+        h.forceQueued = false
+        h.type("jt as")
+        XCTAssertEqual(h.text, "x vieejt á")
     }
 
     /// Review a3b1690 (phím ⌫ giả): ⌫ lùi về từ không nạp lại được (dài hơn 12 chữ, chữ lạ) rồi gõ tiếp — từ vẫn nguyên, không bị xoá.
