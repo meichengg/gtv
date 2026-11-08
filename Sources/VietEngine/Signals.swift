@@ -711,8 +711,8 @@ public struct PressLog {
     public mutating func syntheticKeyArrived(_ key: UInt16, since: Double, at stamp: Double) {
         // Chỉ một lần nhấn, đọc thấy quanh lúc hệ thống xử lý chính phím giả này (từ lúc gửi tới ngay sau thời điểm của nó) —
         // ⌫ thật bấm sau đó vẫn là phím chưa tới.
-        // Phím giả chỉ có ở trạng thái phiên: lần nhấn bàn phím thật thấy (HID) là ⌫ thật bấm ngay sau lúc gửi.
-        func ours(_ p: Press) -> Bool { p.key == key && p.physical != true && p.at >= since && p.after < stamp + 0.002 }
+        // (Phím giả gửi ở tầng HID: trạng thái HID cũng thấy nó — không dùng để phân biệt với ⌫ thật.)
+        func ours(_ p: Press) -> Bool { p.key == key && p.at >= since && p.after < stamp + 0.002 }
         if let i = pending.firstIndex(where: ours) {
             pending.remove(at: i)
         } else if let i = forgotten.firstIndex(where: ours) {
@@ -791,6 +791,13 @@ public struct PressLog {
             received.append((key, at))
         }
         received.removeAll { $0.at < at - 1 }
+    }
+
+    /// macOS 27: bộ đếm công bố một click lần đọc nút chuột không thấy, có thể xảy ra tới `at` (cuối ô 0,5 s của nó): ghi như
+    /// một click chờ — phím sửa hoãn tới khi phím tạo sau nó tới (sổ lấy nó ra, báo ngắt).
+    public mutating func notePublishedClick(at: Double, after: Double) {
+        guard !pending.contains(where: { $0.key == nil && $0.at == at }) else { return }
+        pending.append(Press(key: nil, at: at, after: after))
     }
 
     /// Số click đã bỏ khỏi sổ mà chưa được báo (rồi đặt lại).

@@ -568,8 +568,7 @@ final class SignalsTests: XCTestCase {
         XCTAssertTrue(p.anyHeld(now: 5.3, physical: [36]))
     }
 
-    /// Review 08dd0de (vòng 4): click chờ không bị bỏ theo đồng hồ (8 s) mà không báo; phím giả không khớp ⌫ thật bàn phím thật
-    /// bấm ngay sau lúc gửi.
+    /// Review 08dd0de (vòng 4): click chờ không bị bỏ theo đồng hồ (8 s) mà không báo; phím giả khớp lần nhấn của nó dù HID thấy.
     func testPressLogClicksKeptAndSyntheticMatch() {
         var p = PressLog()
         var t = 1.0
@@ -587,14 +586,14 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(p.pending.filter { $0.key == nil }.count, 64)
         XCTAssertEqual(p.takeLostClicks(), 1)
         XCTAssertEqual(p.takeLostClicks(), 0)
-        // ⌫ thật (HID thấy) bấm ngay sau lúc gửi phím sửa: ⌫ giả tới không lấy nó ra.
+        // ⌫ giả gửi ở tầng HID nên trạng thái HID cũng thấy nó (IME Lab): vẫn khớp được.
         var q = PressLog()
         var u = 10.0
         q.sample(at: u, held: [], button: false, flags: 0, physical: [], physicalButton: false)
         let sent = u + 0.001
         u += 0.008; q.sample(at: u, held: [51], button: false, flags: 0, physical: [51], physicalButton: false)
         q.syntheticKeyArrived(51, since: sent, at: sent)
-        XCTAssertEqual(q.pending.map(\.key), [51])
+        XCTAssertTrue(q.pending.isEmpty)
         // ⌫ giả (chỉ ở trạng thái phiên) thì có.
         var r = PressLog()
         var v = 20.0
@@ -633,6 +632,22 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(q.userKeysPendingReason(now: t, since: 1.205)?.hasPrefix("phím bổ trợ"), true)
         q.keyReceived(0, at: 1.3, isRepeat: false, now: t)
         XCTAssertFalse(q.userKeysPending(now: t, since: 1.3))
+    }
+
+    /// Review a8b59d0 (vòng 7): click bộ đếm công bố mà lần đọc không thấy, có thể xảy ra sau phím vừa nhận — ghi như click chờ
+    /// ở cuối ô 0,5 s: phím sửa hoãn tới khi phím tạo sau ô đó tới (sổ lấy nó ra, báo ngắt).
+    func testPressLogPublishedUnseenClick() {
+        var p = PressLog()
+        p.sample(at: 100.2, held: [], button: false, flags: 0)
+        p.sample(at: 100.208, held: [], button: false, flags: 0)
+        p.keyReceived(0, at: 100.3, isRepeat: false, now: 100.55)
+        p.notePublishedClick(at: 100.5, after: 100.0)
+        p.notePublishedClick(at: 100.5, after: 100.0)                    // không ghi hai lần
+        XCTAssertEqual(p.pending.filter { $0.key == nil }.count, 1)
+        XCTAssertEqual(p.userKeysPendingReason(now: 100.55, since: 100.3)?.hasPrefix("click"), true)
+        let taken = p.order(keyAt: 100.6, maxDelivery: 0.068, burst: false, clicksOnly: true)
+        XCTAssertEqual(taken.taken.map(\.key), [nil])
+        XCTAssertFalse(p.userKeysPending(now: 100.6, since: 100.6))
     }
 
     /// Phím tắt đổi chế độ lúc Return kẹt mà chưa gõ phím nào: chính lần nhấn phím bổ trợ (cùng hàng đợi) là bằng chứng Return

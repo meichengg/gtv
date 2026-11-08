@@ -69,6 +69,7 @@ private final class ClientAdapter: TextClient {
     func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
 
     func lateEditSafe() -> Bool { KeyWatch.shared.lateEditSafe() }
+    func caretUndisturbed() -> Bool { KeyWatch.shared.caretUndisturbed() }
 
     /// Ô Java (AWT): trả lời "đã xử lý" không làm Java bỏ phím; marked text rỗng thì có (AWTView: fKeyEventsNeeded = NO) —
     /// nhưng sau đó Java coi như đang có phần gõ dở rỗng và đưa các phím ⌫ giả vào đó thay vì xoá chữ (IME Lab 42187016328:

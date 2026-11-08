@@ -19,6 +19,8 @@ public protocol TextClient: AnyObject {
     /// Từ phím bộ gõ nhận gần nhất tới giờ không có phím tắt (⌘/⌃/⌥) hay click nào (GTVInput). Lần sửa gửi muộn (kiểu
     /// `.deferred`) chỉ gửi khi đúng như vậy; không thì để phím kế tiếp quyết định.
     func lateEditSafe() -> Bool
+    /// Từ phím trước tới phím này không có click nào có thể dời con trỏ mà sổ phím chưa báo (gap).
+    func caretUndisturbed() -> Bool
     /// Ô không thay được chữ qua bộ gõ (Java, Qt 5, GTK…): gửi `deleting` phím ⌫ giả rồi `inserting` như phím gõ (CGEventPost),
     /// tới ứng dụng ngay sau phím đang xử lý. false nếu không gửi được (chưa có quyền Trợ năng).
     func postKeys(deleting: Int, inserting: String) -> Bool
@@ -40,6 +42,7 @@ public extension TextClient {
     func hasMarkedText() -> Bool { false }
     func currentTime() -> Double { 0 }
     func lateEditSafe() -> Bool { true }
+    func caretUndisturbed() -> Bool { lateEditSafe() }
     func postKeys(deleting: Int, inserting: String) -> Bool { false }
     var keySwallowable: Bool { false }
     func swallowKey() {}
@@ -440,7 +443,7 @@ public final class Session {
                         // phím ⌫ giả, không cần vị trí.
                         log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chuyển sang phím ⌫ giả")
                         latchBlind(sel)
-                        if !gap.drops && !client.lateEditSafe() {
+                        if !gap.drops && !client.caretUndisturbed() {
                             // Không biết có click bộ gõ không thấy từ phím trước không (chữ đã đi thẳng có thể không còn trước con
                             // trỏ): các chữ còn lại của từ đi nguyên văn.
                             log?("gõ trực tiếp: không chắc chữ đã gõ còn trước con trỏ — các chữ còn lại của từ đi nguyên văn")
