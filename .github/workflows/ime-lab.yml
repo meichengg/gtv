@@ -78,20 +78,20 @@ jobs:
           if [ -z "${TERMS// }" ]; then echo "TERMS rỗng: bỏ qua cài terminal"; exit 0; fi
           for c in iterm2 kitty wezterm; do brew install --cask "$c" >/dev/null || echo "::warning::không cài được $c"; done
           # Ghostty đúng bản người dùng đang dùng (1.4.0; cask có thể cũ hơn, khác hành vi insertText)
-          m="$(mktemp -d)"; curl -sfL https://release.files.ghostty.org/1.4.0/Ghostty.dmg -o "$RUNNER_TEMP/ghostty.dmg"
+          m="$(mktemp -d)"; curl -sfL --retry 6 --retry-all-errors --retry-delay 15 https://release.files.ghostty.org/1.4.0/Ghostty.dmg -o "$RUNNER_TEMP/ghostty.dmg"
           hdiutil attach -nobrowse -quiet -mountpoint "$m" "$RUNNER_TEMP/ghostty.dmg" && cp -R "$m/Ghostty.app" /Applications/ && hdiutil detach -quiet "$m"
           defaults read /Applications/Ghostty.app/Contents/Info.plist CFBundleShortVersionString
           # Rex (libghostty, mã nguồn đóng): bản mới nhất từ feed Sparkle
           url="$(curl -sfL https://blob.superlogical.com/public/rex-app/preview-arm64/appcast.xml | grep -o 'url="[^"]*"' | head -1 | cut -d'"' -f2)" || true
           if [ -n "$url" ]; then
-            f="$RUNNER_TEMP/rex.${url##*.}"; curl -sfL "$url" -o "$f" || true
+            f="$RUNNER_TEMP/rex.${url##*.}"; curl -sfL --retry 6 --retry-all-errors --retry-delay 15 "$url" -o "$f" || true
             case "$f" in
               *.dmg) m="$(mktemp -d)"; hdiutil attach -nobrowse -quiet -mountpoint "$m" "$f" && cp -R "$m"/*.app /Applications/ && hdiutil detach -quiet "$m" ;;
               *.zip) ditto -x -k "$f" /Applications/ ;;
             esac
           fi
           # Muxy 2.3.0 (libghostty-vt, lớp nhập liệu riêng)
-          curl -sfL https://github.com/muxy-app/muxy/releases/download/v2.3.0/Muxy-2.3.0-arm64.dmg -o "$RUNNER_TEMP/muxy.dmg" && {
+          curl -sfL --retry 6 --retry-all-errors --retry-delay 15 https://github.com/muxy-app/muxy/releases/download/v2.3.0/Muxy-2.3.0-arm64.dmg -o "$RUNNER_TEMP/muxy.dmg" && {
             m="$(mktemp -d)"; hdiutil attach -nobrowse -quiet -mountpoint "$m" "$RUNNER_TEMP/muxy.dmg" && cp -R "$m"/*.app /Applications/ && hdiutil detach -quiet "$m"; } || true
           # Herdr (GPUI + libghostty-vt) và herdr-core (chạy các terminal; cài sẵn để app mở thẳng cửa sổ chính)
           brew install --cask herdr-app >/dev/null || echo "::warning::không cài được Herdr"
@@ -112,6 +112,12 @@ jobs:
       - name: Build GTV (Debug)
         run: |
           xcodegen
+          # Tải gói Swift (Sparkle từ GitHub Releases) có lúc lỗi 503/504: thử lại trước khi build.
+          for i in 1 2 3 4 5 6; do
+            xcodebuild -resolvePackageDependencies -project GTV.xcodeproj -scheme GTV -derivedDataPath build/dd \
+              > "$RUNNER_TEMP/resolve.log" 2>&1 && break
+            grep -E "error|failed" "$RUNNER_TEMP/resolve.log" | head -3; echo "giải gói lỗi (lần $i), thử lại"; sleep $((i * 20))
+          done
           set -o pipefail
           xcodebuild -project GTV.xcodeproj -scheme GTV -configuration Debug -derivedDataPath build/dd build \
             | grep -E "error:|BUILD (SUCCEEDED|FAILED)"

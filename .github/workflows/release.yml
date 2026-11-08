@@ -65,6 +65,12 @@ jobs:
 
       - name: Test
         run: |
+          # Tải gói Swift (Sparkle từ GitHub Releases) có lúc lỗi 503/504: thử lại trước khi build.
+          for i in 1 2 3 4 5 6; do
+            xcodebuild -resolvePackageDependencies -project GTV.xcodeproj -scheme GTV -derivedDataPath build/dd \
+              > "$RUNNER_TEMP/resolve.log" 2>&1 && break
+            grep -E "error|failed" "$RUNNER_TEMP/resolve.log" | head -3; echo "giải gói lỗi (lần $i), thử lại"; sleep $((i * 20))
+          done
           set -o pipefail
           xcodebuild -project GTV.xcodeproj -scheme GTV -derivedDataPath build/dd test \
             | grep -E "Executed|error:|TEST (SUCCEEDED|FAILED)|BUILD (SUCCEEDED|FAILED)"
