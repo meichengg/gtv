@@ -440,9 +440,21 @@ public final class Session {
                         // phím ⌫ giả, không cần vị trí.
                         log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chuyển sang phím ⌫ giả")
                         latchBlind(sel)
+                        if !gap.drops && !client.lateEditSafe() {
+                            // Không biết có click bộ gõ không thấy từ phím trước không (chữ đã đi thẳng có thể không còn trước con
+                            // trỏ): các chữ còn lại của từ đi nguyên văn.
+                            log?("gõ trực tiếp: không chắc chữ đã gõ còn trước con trỏ — các chữ còn lại của từ đi nguyên văn")
+                            engine.reset()
+                            untracked = true
+                            return false
+                        }
                         inSynthetic = true
                         synReset()
-                        synScreen = engine.displayed          // các chữ của từ đều đã đi thẳng
+                        if gap.drops {
+                            engine.reset()                     // click / phím tắt bộ gõ không thấy: phím này bắt đầu từ mới
+                        } else {
+                            synScreen = engine.displayed      // các chữ của từ đều đã đi thẳng
+                        }
                         return handleSyntheticChar(ch, client)
                     }
                     if blindReason(sel, frozen: false) {

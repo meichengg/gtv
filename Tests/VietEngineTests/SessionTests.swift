@@ -208,6 +208,9 @@ private final class SyntheticField: TextClient {
     var forceQueued = false
     var now = 0.0
     func currentTime() -> Double { now }
+    /// `lateEditSafe` (sổ phím: không có click / phím tắt bộ gõ không thấy từ phím trước).
+    var lateSafe = true
+    func lateEditSafe() -> Bool { lateSafe }
     var keysQueued: Bool {
         forceQueued || interruptPending || queue.contains {
             switch $0 {
@@ -2245,6 +2248,32 @@ final class SessionTests: XCTestCase {
         f.type("d9a38ng tie61ng vie65t ")
         XCTAssertEqual(f.text, "đẳng tiếng việt ")
         XCTAssertTrue(f.session.blindLatched)
+    }
+
+    /// Review d15fca3 (vòng 6): chuyển sang ô mù giữa từ — có click bộ gõ không thấy ngay trước phím (sổ phím báo ngắt) thì phím
+    /// này bắt đầu từ mới; không chắc (macOS 27, chưa đọc liên tục) thì phần còn lại của từ đi nguyên văn — không xoá chữ ở chỗ
+    /// click.
+    func testFrozenCaretLatchRespectsGap() {
+        let f = SyntheticField(blind: true)
+        f.frozenCaret = 3
+        f.synthetic = false
+        f.options.method = .vni
+        f.prefill("abc ")
+        f.type("d")
+        f.caret = 1                                                  // click bộ gõ không thấy
+        f.interruptPending = true
+        f.type("d9 ")
+        XCTAssertEqual(f.text, "ađ bc d", "phím sửa xoá ở chỗ click: \(f.text)")
+        let g = SyntheticField(blind: true)
+        g.frozenCaret = 3
+        g.synthetic = false
+        g.options.method = .vni
+        g.prefill("abc ")
+        g.type("d")
+        g.caret = 1
+        g.lateSafe = false
+        g.type("d9 ")
+        XCTAssertEqual(g.text, "ad9 bc d")
     }
 
     /// Ứng dụng được nhận ra (Java, Qt…) giữa từ đầu tiên: đổi sang phím ⌫ giả không nhân đôi các chữ đã đi thẳng.

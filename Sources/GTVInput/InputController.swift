@@ -473,6 +473,7 @@ final class GTVInputController: IMKInputController {
         // Đường phím giả và ô web Chromium: mọi phím đặc biệt (⌫, mũi tên, ⏎) đều qua bộ gõ.
         readingRoute = synthetic || (session.blindLatched && SyntheticKeys.shared.available && terminal == nil)
         syntheticRoute = readingRoute || (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil)
+        if readingRoute { LiveInput.shared.keepTerminal(for: 15) }     // cả phím vừa chuyển sang ô mù
         #if DEBUG
         let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
             : forceMarked ? "gạch chân" : "trực tiếp"

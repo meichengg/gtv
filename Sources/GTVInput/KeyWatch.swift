@@ -34,9 +34,9 @@ final class KeyWatch {
     /// Bộ đếm click lúc đọc phím gần nhất (`lateEditSafe`).
     private var clicksAtLastKey: UInt32 = 0
     /// macOS 27: số click lần đọc nút chuột đã thấy mà bộ đếm của hệ thống chưa công bố.
-    /// macOS 27: click lần đọc nút chuột đã thấy và đã báo mà bộ đếm chưa công bố (theo `PressLog.Press.at`): lúc bộ đếm
-    /// công bố chúng thì không báo lần nữa.
-    private var clickCredit: [Double] = []
+    /// macOS 27: click lần đọc nút chuột đã thấy và đã báo mà bộ đếm chưa công bố (`PressLog.Press.at` / `after`): lúc bộ
+    /// đếm công bố chúng thì không báo lần nữa.
+    private var clickCredit: [(at: Double, after: Double)] = []
     /// Click còn chờ trong sổ (theo `PressLog.Press.at`) mà bộ đếm đã công bố trước lúc phím tạo sau nó tới: lúc sổ lấy nó ra
     /// không tính là click mới công bố lần nữa.
     private var publishedPending: [Double] = []
@@ -216,7 +216,7 @@ final class KeyWatch {
             }
         }
         if terminal { lastTerminalRead = read }
-        lastRouteRead = readsContinuously ? read : nil
+        lastRouteRead = read           // phím sau tự xét (đường của nó có đọc liên tục không)
 
         let gap: KeyGap
         switch counterMode {
@@ -229,44 +229,48 @@ final class KeyWatch {
             // đếm có thể chưa công bố: báo ngắt ngay (bỏ từ), không báo lại lúc bộ đếm công bố nó (mọi click trong khoảng hở đều
             // trước lúc này).
             let unread = readsContinuously && !synthetic && !routeCovered
-            let now = ProcessInfo.processInfo.systemUptime
-            let takenClicks = order.taken.filter { $0.key == nil }.map(\.at)
+            let takenClicks = order.taken.filter { $0.key == nil }
             if unread {
                 // Mọi click đã thấy (lấy ra ở phím này hay còn chờ) đều trước lúc này: lần công bố của chúng bị mốc mới nuốt —
                 // không thành credit (credit thừa sẽ nuốt lần công bố của click không thấy sau này).
-                pointer.rebase(Self.pointerCount(), at: now, quantum: 0.5)
+                pointer.rebase(Self.pointerCount(), at: ProcessInfo.processInfo.systemUptime, quantum: 0.5)
                 clickCredit = []
-                publishedPending = takenClicks + live.withLog { log in log.pending.filter { $0.key == nil }.map(\.at) }
+                publishedPending = takenClicks.map(\.at) + live.withLog { log in log.pending.filter { $0.key == nil }.map(\.at) }
             }
-            // Mốc 0,5 s chắc chắn đã công bố (lấy trước lúc đọc bộ đếm; chừa độ trễ công bố): số vừa công bố gồm mọi click tới
-            // mốc này — credit tới mốc mà không khớp là đã được tính ở lần đọc trước, bỏ (thừa credit thì nuốt click không thấy).
-            let boundary = ((now - Self.publishLag) / 0.5).rounded(.down) * 0.5
+            // Bộ đếm công bố click theo ô 0,5 s; thời điểm click cuối đã công bố (làm tròn về đầu ô) cho biết chính xác ô nào đã
+            // công bố. Đọc trước và sau bộ đếm (lần công bố có thể rơi vào giữa): "chắc đã công bố" theo lần đọc trước, "có thể
+            // đã công bố" theo lần đọc sau. Click thấy được nằm trong ô (after, at].
+            let cellBefore = Self.publishedClickCell()
             var published = pointer.newClicks(Self.pointerCount(), lastClickAt: Self.lastClickTime())
-            clickCredit += takenClicks.filter { !publishedPending.contains($0) }
-            publishedPending.removeAll { takenClicks.contains($0) }
-            let known = min(published, clickCredit.filter { $0 <= boundary }.count)
-            published -= known
-            clickCredit.removeAll { $0 <= boundary }
-            if published > 0 {
-                // Bộ đếm công bố click chưa giải thích được: báo ngắt ở phím này (không biết click không thấy nào nằm trước nó).
-                // Click chắc chắn trước phím này (cùng sai số thứ tự với `PressLog`): lấy ra luôn. Click có thể nằm trong lần
-                // công bố này (thấy trước mốc 0,5 s mới nhất) thì không thành credit — credit thừa sẽ nuốt lần công bố của click
-                // không thấy sau này; click lấy ra mà công bố sau thì thành credit. Click còn chờ (đọc thấy sau hay gần lúc tạo
-                // phím này: còn xếp sau nó, phím sửa vẫn hoãn tới khi phím tạo sau nó tới — sổ lấy nó ra, báo ngắt lúc đó) mà
-                // có thể đã công bố thì ghi là đã công bố.
-                let stamp = event.timestamp
-                let owed = publishedPending
-                let latestGrid = (now / 0.5).rounded(.down) * 0.5
-                let earlier = live.withLog { log in
-                    log.take { $0.key == nil && $0.at + 0.02 < stamp && !owed.contains($0.at) }
-                }
-                clickCredit += earlier.map(\.at).filter { $0 > latestGrid }
-                publishedPending += live.withLog { log in
-                    log.pending.filter { $0.key == nil && !owed.contains($0.at) && $0.at <= latestGrid }.map(\.at)
+            let cellAfter = Self.publishedClickCell()
+            func surely(_ at: Double) -> Bool { cellBefore >= Self.cell(at) }
+            func maybe(_ after: Double) -> Bool { cellAfter >= Self.cell(after + 0.0005) }
+            // Lần công bố của click đã thấy, lần đầu thấy được ở lần đọc này (nằm trong số vừa công bố) — giải thích được.
+            var explained = 0
+            var kept: [(at: Double, after: Double)] = []
+            for c in clickCredit {
+                if surely(c.at) { explained += 1 } else if !maybe(c.after) { kept.append(c) }   // có thể đã công bố: bỏ
+            }
+            clickCredit = kept
+            for c in takenClicks where !publishedPending.contains(c.at) {
+                // Lấy ra ở phím này (phím này báo ngắt): công bố rồi thì giải thích được, chưa thì thành credit.
+                if surely(c.at) { explained += 1 } else if !maybe(c.after) { clickCredit.append((c.at, c.after)) }
+            }
+            publishedPending.removeAll { a in takenClicks.contains { $0.at == a } }
+            // Click còn chờ (đọc thấy sau hay gần lúc tạo phím này: còn xếp sau nó — phím sửa vẫn hoãn tới khi phím tạo sau nó
+            // tới, sổ lấy nó ra và báo ngắt lúc đó): đã công bố thì ghi lại, không bao giờ thành credit.
+            let waiting = live.withLog { log in log.pending.filter { $0.key == nil } }
+            for c in waiting where !publishedPending.contains(c.at) {
+                if surely(c.at) {
+                    explained += 1
+                    publishedPending.append(c.at)
+                } else if maybe(c.after) {
+                    publishedPending.append(c.at)
                 }
             }
-            let stillPending = live.withLog { log in log.pending.filter { $0.key == nil }.map(\.at) }
-            publishedPending.removeAll { !stillPending.contains($0) }
+            // Còn lại là click bộ gõ không thấy (chạm trackpad, click rất nhanh): báo ngắt ở phím này.
+            published -= min(published, explained)
+            publishedPending.removeAll { a in !waiting.contains { $0.at == a } }
             let clicked = published > 0 || lostClicks > 0
             let carried = burst && burstCarry
             if shortcut {
@@ -297,8 +301,12 @@ final class KeyWatch {
         return gap
     }
 
-    /// macOS 27: bộ đếm click được công bố muộn hơn mốc 0,5 s của nó tối đa bấy nhiêu giây.
-    private static let publishLag = 0.05
+    /// macOS 27: đầu ô 0,5 s của click cuối đã công bố (thời điểm làm tròn xuống; lệch vài micro giây do hai lần đọc đồng hồ).
+    private static func publishedClickCell() -> Double {
+        cell(lastClickTime() + 0.01)
+    }
+
+    private static func cell(_ t: Double) -> Double { (t / 0.5).rounded(.down) * 0.5 }
 
     /// macOS 26 (thời điểm click cập nhật ngay): có click tạo sau (hay quanh) lúc tạo phím gần nhất bộ gõ nhận — ứng dụng đang
     /// giữ nó, hay đã xử lý, trước mọi phím giả gửi bây giờ (cả click lần đọc nút chuột không thấy: chạm để click trên trackpad).

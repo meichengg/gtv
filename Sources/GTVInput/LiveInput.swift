@@ -61,7 +61,11 @@ final class LiveInput {
     func userKeysPending(since: Double) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard timer != nil else { return false }
+        if timer == nil {
+            // Chỉ đường ⌫ giả hỏi (luôn đọc liên tục): chưa đọc thì bắt đầu — khoảng không đọc từ lúc tạo phím là lý do hoãn.
+            terminalUntil = max(terminalUntil, ProcessInfo.processInfo.systemUptime + 15)
+            startLocked()
+        }
         sampleLocked()          // lần thử lại của lần sửa đang hoãn không đi qua KeyWatch: không dùng lần đọc cũ
         let reason = _log.userKeysPendingReason(now: ProcessInfo.processInfo.systemUptime, since: since)
         #if DEBUG
