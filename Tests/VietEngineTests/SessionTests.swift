@@ -1492,18 +1492,19 @@ final class SessionTests: XCTestCase {
         }
     }
 
-    /// Sổ nhấn phím: lần nhấn phím không bao giờ tới bộ gõ (phím tắt toàn hệ thống) thôi được coi là đang chờ sau 1 s; phím đang
-    /// giữ sau khoảng không đọc không làm lần nhấn thật kế tiếp bị coi là đã nhận.
+    /// Sổ nhấn phím: lần nhấn phím không bao giờ tới bộ gõ (phím tắt toàn hệ thống) thôi được coi là đang chờ khi phím tạo sau
+    /// nó đã tới bộ gõ (không theo đồng hồ); phím đang giữ sau khoảng không đọc không làm lần nhấn thật kế tiếp bị coi là đã nhận.
     func testPressLogUserKeysPending() {
         var log = PressLog()
         var t = 50.0
         log.sample(at: t, held: [], button: false, flags: 0)
         t += 0.008
         log.sample(at: t, held: [123], button: false, flags: 0)
-        XCTAssertTrue(log.userKeysPending(now: t, since: t - 1))
+        XCTAssertTrue(log.userKeysPending(now: t, since: t - 0.02))
         t += 0.008
         log.sample(at: t, held: [], button: false, flags: 0)
-        XCTAssertTrue(log.userKeysPending(now: t + 0.5, since: t))
+        XCTAssertTrue(log.userKeysPending(now: t + 0.5, since: t - 0.03))
+        XCTAssertTrue(log.userKeysPending(now: t + 1.5, since: t - 0.03))
         XCTAssertFalse(log.userKeysPending(now: t + 1.5, since: t))
         var g = PressLog()
         var u = 10.0

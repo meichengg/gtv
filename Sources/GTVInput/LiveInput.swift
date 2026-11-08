@@ -225,7 +225,15 @@ final class LiveInput {
                                   .maskSecondaryFn]
         let flags = CGEventSource.flagsState(.combinedSessionState).intersection(mask).rawValue
         let count = CGEventSource.counterForEventType(.combinedSessionState, eventType: .keyDown)
-        _log.sample(at: now, held: held, button: button, flags: flags, keyDownCount: count)
+        // Bàn phím / chuột thật: thấy lần nhấn thật của phím đang kẹt ở trạng thái phiên (xem `PressLog.sample`).
+        var physical = Set<UInt16>()
+        for key in Self.watchedKeys where CGEventSource.keyState(.hidSystemState, key: key) {
+            physical.insert(UInt16(key))
+        }
+        let physicalButton = [CGMouseButton.left, .right, .center]
+            .contains { CGEventSource.buttonState(.hidSystemState, button: $0) }
+        _log.sample(at: now, held: held, button: button, flags: flags, keyDownCount: count, physical: physical,
+                    physicalButton: physicalButton)
         if now < hidUntil {
             if let event = readHID() { _log.noteHID(event) }
         } else if _log.hidActive {
@@ -252,6 +260,11 @@ final class LiveInput {
     /// Bỏ các lần nhấn đang chờ đối chiếu (đổi ô nhập liệu, click bộ gõ thấy…).
     func forgetPending() {
         withLog { $0.forget() }
+    }
+
+    /// Bộ gõ nhận sự kiện đổi phím bổ trợ tạo lúc `stamp`: bằng chứng thứ tự như phím (xem `PressLog.eventReceived`).
+    func eventReceived(at stamp: Double) {
+        withLog { $0.eventReceived(at: stamp, now: ProcessInfo.processInfo.systemUptime) }
     }
 
     /// Đang giữ phím đặc biệt hay nút chuột nào không (đọc ngay).

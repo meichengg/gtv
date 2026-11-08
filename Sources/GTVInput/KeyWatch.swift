@@ -190,7 +190,8 @@ final class KeyWatch {
             if let since = syntheticSince {
                 log.syntheticKeyArrived(event.keyCode, since: since, at: event.timestamp)
             } else {
-                log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat)
+                log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat,
+                                now: ProcessInfo.processInfo.systemUptime)
             }
             if coarse {
                 order = log.order(keyAt: event.timestamp, maxDelivery: Self.maxDelivery, burst: burst, clicksOnly: throughIME)

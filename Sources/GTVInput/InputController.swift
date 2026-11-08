@@ -300,6 +300,7 @@ final class GTVInputController: IMKInputController {
         switch event.type {
         case .flagsChanged:
             KeyWatch.shared.noteModifiers(flags)
+            LiveInput.shared.eventReceived(at: event.timestamp)
             // Phím tắt chuyển Anh/Việt: nhấn rồi nhả tổ hợp phím bổ trợ, không kèm phím nào khác.
             if let hotkey = settings.hotkey.flags {
                 if flags == hotkey {
