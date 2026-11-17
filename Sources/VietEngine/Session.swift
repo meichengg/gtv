@@ -19,22 +19,6 @@ public protocol TextClient: AnyObject {
     /// Từ phím bộ gõ nhận gần nhất tới giờ không có phím tắt (⌘/⌃/⌥) hay click nào (GTVInput). Lần sửa gửi muộn (kiểu
     /// `.deferred`) chỉ gửi khi đúng như vậy; không thì để phím kế tiếp quyết định.
     func lateEditSafe() -> Bool
-    /// Từ phím trước tới phím này không có click nào có thể dời con trỏ mà sổ phím chưa báo (gap).
-    func caretUndisturbed() -> Bool
-    /// Ô không thay được chữ qua bộ gõ (Java, Qt 5, GTK…): gửi `deleting` phím ⌫ giả rồi `inserting` như phím gõ (CGEventPost),
-    /// tới ứng dụng ngay sau phím đang xử lý. false nếu không gửi được (chưa có quyền Trợ năng).
-    func postKeys(deleting: Int, inserting: String) -> Bool
-    /// Bộ gõ giữ được phím đang xử lý (trả lời "đã xử lý" là ứng dụng không nhận phím đó, sau `swallowKey`).
-    var keySwallowable: Bool { get }
-    /// Làm ứng dụng bỏ phím đang xử lý (Java: setMarkedText("") — trả lời "đã xử lý" không đủ).
-    func swallowKey()
-    /// Gửi được phím giả không (đã có quyền Trợ năng).
-    var canPostKeys: Bool { get }
-    /// Như `postKeys(deleting:inserting:)`, có thêm chữ `prefix` gõ trước các ⌫.
-    func postKeys(prefix: String, deleting: Int, inserting: String) -> Bool
-    /// Người dùng đã bấm phím đặc biệt (⌫, mũi tên, ⏎…) mà phím đó chưa tới bộ gõ: nó đang nằm trong hàng đợi của ứng dụng,
-    /// trước mọi phím giả gửi bây giờ (GTVInput đọc trạng thái phím của hệ thống).
-    var keysQueued: Bool { get }
 }
 
 public extension TextClient {
@@ -42,15 +26,6 @@ public extension TextClient {
     func hasMarkedText() -> Bool { false }
     func currentTime() -> Double { 0 }
     func lateEditSafe() -> Bool { true }
-    func caretUndisturbed() -> Bool { lateEditSafe() }
-    func postKeys(deleting: Int, inserting: String) -> Bool { false }
-    var keySwallowable: Bool { false }
-    func swallowKey() {}
-    var canPostKeys: Bool { false }
-    func postKeys(prefix: String, deleting: Int, inserting: String) -> Bool {
-        prefix.isEmpty ? postKeys(deleting: deleting, inserting: inserting) : false
-    }
-    var keysQueued: Bool { false }
 }
 
 public enum Key: Equatable {
@@ -193,10 +168,8 @@ public final class Session {
     private var trustMarked = false
     /// Phím gần nhất được xử lý theo đường của ô web Chromium (`handleWeb`).
     private var inWeb = false
-    /// Phím gần nhất được xử lý bằng phím ⌫ giả (`handleSynthetic`).
-    private var inSynthetic = false
-    /// Ô đã cho thấy không cho biết con trỏ thật (gõ trực tiếp: con trỏ nil / ở đầu văn bản / không nhích sau phím đi thẳng):
-    /// từ đó gõ bằng phím ⌫ giả nếu được (`TextClient.canPostKeys`) — không đoán vị trí, không gạch chân.
+    /// Ô đã cho thấy không cho biết con trỏ thật (gõ trực tiếp: con trỏ nil / ở đầu văn bản): không thay chữ trực tiếp được ở
+    /// đây — từ sau gõ bằng phần chữ đang soạn của InputMethodKit (`marked`), không đoán vị trí.
     public private(set) var blindLatched = false
     /// Con trỏ ô báo lúc bật `blindLatched`. Ô mù báo mãi một giá trị (nil, {0,0}, vùng chọn cũ của SDL); đầu từ sau mà ô báo con
     /// trỏ khác là ô thật (ô chậm vừa báo kịp, hay khung khác trong cùng view — terminal và editor của Zed): gỡ cờ.
@@ -208,35 +181,11 @@ public final class Session {
         blindSel = sel
     }
 
-    /// Có phím / click bộ gõ không thấy giữa chừng (GTVInput thấy khi phím giả của bộ gõ tới): thôi theo dõi từ đang gõ bằng
-    /// phím ⌫ giả — con trỏ có thể đã ở chỗ khác.
-    public func inputInterrupted() {
-        guard inSynthetic else { return }
-        engine.reset()
-        untracked = false
-        synReset()
-    }
-
     /// Bộ gõ được gắn vào ô khác / người dùng click: cờ ô mù không còn đúng.
     public func fieldChanged() {
         blindLatched = false
         blindSel = nil
     }
-    /// Phím ⌫ giả: chữ người dùng định gõ (từ mốc đồng bộ) trước từ đang gõ.
-    private var synBefore = ""
-    /// Phím ⌫ giả: chữ thật trong ô (từ mốc đồng bộ), theo đúng thứ tự ứng dụng xử lý các phím (phím thật và ⌫ giả đều đi qua
-    /// bộ gõ theo thứ tự đó).
-    private var synScreen = ""
-    /// Các lần sửa đã gửi mà ứng dụng chưa xử lý hết: chữ gõ trước các ⌫ (`started`: đã nằm trong ô), số ⌫ còn chờ và chữ chèn
-    /// sau chúng.
-    private var synPending: [(prefix: String, started: Bool, deletes: Int, insert: String)] = []
-    /// Lần sửa đang hoãn vì còn phím đặc biệt của người dùng chưa tới (`TextClient.keysQueued`).
-    private var synDeferred = false
-
-    private var synDeferSerial = 0
-    private var synDeferStart = 0.0
-    /// ⌫ lùi qua dấu cách về cuối từ trước: chữ sau gõ tiếp từ đó.
-    private var synResume: String?
     private var web: WebChain?
     /// Phím vừa rồi là ⌫ trong chuỗi và từ đang gõ trống: chữ sau gõ tiếp từ nằm ngay trước con trỏ (chữ của chuỗi).
     private var webResumeArmed = false
@@ -255,7 +204,6 @@ public final class Session {
 
     public func reset() {
         resetWeb()
-        synReset()
         engine.reset()
         onLine = nil
         suspect = nil
@@ -299,39 +247,16 @@ public final class Session {
                        qtApp: Bool = false, terminal: TerminalStyle? = nil, repeatDelay: Double? = nil,
                        earlyCommit: Bool = false, gap: KeyGap = .none, legacy: String? = nil,
                        combinedCommit: Bool = false, clearAfterCommit: Bool = false,
-                       trustMarked: Bool = false, keyText: String? = nil, web: Bool = false,
-                       synthetic: Bool = false) -> Bool {
-        if blindLatched, !client.canPostKeys, terminal == nil, !web, !synthetic, engine.isEmpty, !marked, case .char = key {
+                       trustMarked: Bool = false, keyText: String? = nil, web: Bool = false) -> Bool {
+        if blindLatched, terminal == nil, !web, engine.isEmpty, !marked, case .char = key {
             let sel = client.selectedRange()
             if sel?.location != blindSel?.location || sel?.length != blindSel?.length {
                 log?("ô báo con trỏ \(String(describing: sel)) khác lúc nhận là ô mù (\(String(describing: blindSel))) — gõ lại như ô thường")
                 fieldChanged()
             }
         }
-        // Ô mù (không cho biết con trỏ) mà chưa có quyền gửi phím: gạch chân còn hơn chữ đi nguyên văn.
-        let forceMarked = forceMarked || (blindLatched && !client.canPostKeys && terminal == nil && !web && !synthetic)
-        if synthetic || (blindLatched && client.canPostKeys && terminal == nil && !web && !forceMarked) {
-            inTerminal = false
-            inWeb = false
-            if marked || literalTail { reset() }
-            if !inSynthetic {
-                // Vừa đổi sang phím ⌫ giả giữa từ (ứng dụng vừa được nhận ra): chữ của từ đã đi thẳng thì ô đang có đúng chúng;
-                // từ đã được sửa theo cách khác thì không chắc — bỏ từ, không xoá gì.
-                let carry = !engine.isEmpty && !untracked
-                let exact = carry && lastEdit == nil && !inWeb
-                inSynthetic = true
-                synReset()
-                if exact {
-                    synScreen = engine.displayed
-                } else if carry {
-                    engine.reset()
-                    untracked = true
-                }
-            }
-            inWeb = false
-            return handleSynthetic(key, client, options: options, gap: gap)
-        }
-        inSynthetic = false
+        // Ô mù (không cho biết con trỏ): không thay chữ trực tiếp được — soạn từ bằng InputMethodKit còn hơn chữ đi nguyên văn.
+        let forceMarked = forceMarked || (blindLatched && terminal == nil && !web)
         if web {
             inTerminal = false
             if marked || literalTail { reset() }
@@ -415,13 +340,6 @@ public final class Session {
                     anchor = 0
                 } else {
                     sel = client.selectedRange()
-                    if sel == nil, client.canPostKeys {
-                        // Ô không cho biết con trỏ: gõ bằng phím ⌫ giả (không gạch chân).
-                        latchBlind(nil)
-                        inSynthetic = true
-                        synReset()
-                        return handleSyntheticChar(ch, client)
-                    }
                     marked = sel == nil
                     anchor = sel?.location ?? 0
                 }
@@ -438,32 +356,10 @@ public final class Session {
             } else if !marked {
                 sel = client.selectedRange()
                 if let reason = lostTrack(sel) {
-                    if blindReason(sel, frozen: true), client.canPostKeys {
-                        // Ô không cho biết con trỏ thật: các chữ của từ đều đã đi thẳng (đúng trên màn hình) — từ phím này gõ bằng
-                        // phím ⌫ giả, không cần vị trí.
-                        log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chuyển sang phím ⌫ giả")
-                        latchBlind(sel)
-                        if !gap.drops && !client.caretUndisturbed() {
-                            // Không biết có click bộ gõ không thấy từ phím trước không (chữ đã đi thẳng có thể không còn trước con
-                            // trỏ): các chữ còn lại của từ đi nguyên văn.
-                            log?("gõ trực tiếp: không chắc chữ đã gõ còn trước con trỏ — các chữ còn lại của từ đi nguyên văn")
-                            engine.reset()
-                            untracked = true
-                            return false
-                        }
-                        inSynthetic = true
-                        synReset()
-                        if gap.drops {
-                            engine.reset()                     // click / phím tắt bộ gõ không thấy: phím này bắt đầu từ mới
-                        } else {
-                            synScreen = engine.displayed      // các chữ của từ đều đã đi thẳng
-                        }
-                        return handleSyntheticChar(ch, client)
-                    }
-                    if blindReason(sel, frozen: false) {
-                        // Chưa có quyền gửi phím (Trợ năng): từ sau gõ bằng gạch chân. (Con trỏ đứng yên kiểu SDL thì không: ở
-                        // đó marked text đổi con trỏ báo, cờ sẽ bật / gỡ xen kẽ — từ gạch chân từ không.)
-                        log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ, chưa có quyền gửi phím: từ sau gạch chân")
+                    if blindReason(sel) {
+                        // Ô không cho biết con trỏ: từ sau soạn bằng InputMethodKit. (Con trỏ đứng yên kiểu SDL thì không: ở đó
+                        // phần đang soạn đổi con trỏ báo, cờ sẽ bật / gỡ xen kẽ.)
+                        log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ: từ sau soạn bằng InputMethodKit")
                         latchBlind(sel)
                     }
                     log?("gõ trực tiếp: \(reason) — các chữ còn lại của từ \(engine.displayed.debugDescription) đi nguyên văn")
@@ -535,9 +431,6 @@ public final class Session {
     /// gì để chốt: nếu từ đang gõ vẫn nằm nguyên ngay trước con trỏ thì giữ — mọi lần sửa sau đều đối chiếu lại với màn hình
     /// (`inSync`, `replace`). Bỏ từ ở đây làm các phím vừa gõ mất tác dụng (vd. 'd' của "d9" → "d9ẳng").
     public func commitRequested(_ client: TextClient?) {
-        // Phím ⌫ giả: chữ đã nằm thẳng trong ô, không có gì để chốt. Java gọi commitComposition sau MỌI phím (AWTView:
-        // abandonInput sau mỗi lần chèn) — bỏ từ ở đây làm từ không bao giờ đủ dài để thêm dấu (IME Lab 42185713675).
-        if inSynthetic { return }
         if inWeb, let client {
             // Ô web: bộ gõ tự giữ từ đang gõ — chỉ bỏ khi trang cho thấy chữ đã bị đổi bởi thứ khác.
             if webPending != nil { flushWebPending(client, final: true) }
@@ -1369,260 +1262,13 @@ public final class Session {
         if engine.seed(word) { anchor = sel.location - word.utf16.count }
     }
 
-    // MARK: - Phím ⌫ giả (Java, Qt 5, GTK, winit…)
-
-    /// Ô không thay được chữ qua bộ gõ — Java (AWT bỏ qua vùng thay, chỉ có marked text: luôn gạch chân), Qt 5, GTK, winit,
-    /// LibreOffice, Emacs, MacVim, ô tự vẽ không cho biết con trỏ: mọi phím đi thẳng như thường; bộ gõ gửi phím ⌫ giả rồi chữ
-    /// mới như phím gõ (CGEventPost) để ô có đúng chữ người dùng định gõ — không gạch chân, không cần vị trí con trỏ.
-    ///
-    /// Không đoán thứ tự: ứng dụng chậm thì phím thật kế tiếp có thể tới trước các phím giả. Nhưng mọi phím ứng dụng xử lý (phím
-    /// thật và ⌫ giả) đều đi qua bộ gõ theo đúng thứ tự xử lý — bộ gõ dựng lại chữ thật trong ô (`synScreen`), so với chữ định
-    /// gõ (`synBefore` + từ đang gõ), lệch bao nhiêu thì gửi đúng bấy nhiêu phím sửa (`synSync`).
-    private func handleSynthetic(_ key: Key, _ client: TextClient, options: EngineOptions, gap: KeyGap) -> Bool {
-        if gap == .interrupted || gap == .bypassed {
-            // Có phím tắt / click bộ gõ không thấy (Java: ⌘ đi thẳng vào menu): con trỏ có thể đã đổi chỗ — bỏ từ.
-            engine.reset()
-            untracked = false
-            synReset()
-        }
-        switch key {
-        case .other:
-            // Mũi tên, phím tắt…: phím tác dụng trước mọi phím giả gửi sau — bỏ từ, không sửa gì nữa.
-            engine.reset()
-            untracked = false
-            synReset()
-            return false
-        case .backspace:
-            return synBackspace(client)
-        case let .char(ch):
-            if engine.isEmpty {
-                engine.options = options
-                // Từ không nạp lại được (dài quá, chữ lạ…): vẫn nằm nguyên trong ô — coi là chữ đã xong, phím này bắt đầu từ mới.
-                if let word = synResume, !engine.seed(word) { synBefore += word }
-                synResume = nil
-            }
-            return handleSyntheticChar(ch, client)
-        }
-    }
-
-    private func handleSyntheticChar(_ ch: Character, _ client: TextClient) -> Bool {
-        if untracked {
-            if Self.continuesWord(ch) { return false }
-            untracked = false
-            engine.reset()
-            synReset()
-        }
-        let printable = Self.producesText(ch) && !"\r\n\t".contains(ch)
-        guard engine.process(ch) != nil else {
-            // Kết thúc từ.
-            guard printable else {
-                // ⏎ ⇥ ⎋ mũi tên: phím tác dụng trước phím giả — không khôi phục từ, bỏ theo dõi.
-                engine.reset()
-                synReset()
-                return false
-            }
-            if !engine.isEmpty {
-                let (final, _) = engine.finishWord()        // khôi phục từ tiếng Anh / sửa "ươ": phím sửa gửi sau dấu cách
-                synBefore += final
-            }
-            synBefore += String(ch)
-            synScreen += String(ch)
-            synSync(client)
-            return false
-        }
-        // Phím đi thẳng (cả phím dấu): ứng dụng chèn ký tự của nó, phím giả sửa phần còn lại.
-        if printable { synScreen += String(ch) }
-        synSync(client)
-        return false
-    }
-
-    private func synBackspace(_ client: TextClient) -> Bool {
-        let resume = synResume
-        synResume = nil
-        if untracked {
-            untracked = false
-            engine.reset()
-            synReset()
-            return false
-        }
-        if engine.isEmpty, let word = resume {
-            // ⌫ tiếp vào từ vừa lùi về (dấu cách đã xoá): xoá ký tự cuối của chính từ đó — từ vẫn là chữ định gõ.
-            if engine.seed(word) {
-                _ = engine.backspace()
-            } else {
-                let rest = String(word.dropLast())
-                synResume = rest.isEmpty ? nil : rest
-            }
-        } else if engine.isEmpty {
-            if synBefore.isEmpty {
-                // ⌫ xoá vào chữ trước phần theo dõi. Ô còn chữ bộ gõ chưa kịp sửa (ứng dụng chậm) thì ⌫ này xoá vào chữ đó — không
-                // xoá bù ký tự người dùng định xoá (phím người dùng gõ tiếp có thể tới trước, ⌫ bù sẽ xoá lố): thiếu một lần xoá
-                // còn hơn xoá chữ không do bộ gõ gõ.
-                if synScreen.isEmpty, synPending.isEmpty, !synDeferred { synReset() }
-            } else {
-                synBefore.removeLast()
-                // Lùi qua hết phần ngăn cách về cuối một từ: chữ sau gõ tiếp từ đó.
-                let word = String(synBefore.reversed().prefix(while: { $0.isLetter }).reversed())
-                if !word.isEmpty, synBefore.last?.isLetter == true {
-                    synBefore.removeLast(word.count)
-                    synResume = word
-                }
-            }
-        } else {
-            _ = engine.backspace()                           // chữ định gõ (kể cả dời dấu: "hoàn" ⌫ → "hòa")
-        }
-        if !synScreen.isEmpty { synScreen.unicodeScalars.removeLast() }     // ⌫ của người dùng tới ứng dụng
-        synSync(client)
-        return false
-    }
-
-    private func synReset() {
-        synBefore = ""
-        synScreen = ""
-        synPending = []
-        synResume = nil
-        synDeferred = false
-        synDeferSerial &+= 1
-    }
-
-    /// Chữ người dùng định gõ (từ mốc đồng bộ). Chưa gõ tiếp từ sau khi ⌫ lùi về cuối nó: từ đó vẫn nằm nguyên.
-    private var synIntended: String { synBefore + (engine.isEmpty ? (synResume ?? "") : engine.displayed) }
-
-    /// Chữ trong ô sau khi ứng dụng xử lý xong các lần sửa đang chờ.
-    private var synProjected: String {
-        var t = synScreen
-        for e in synPending { t = Self.dropScalars(t + (e.started ? "" : e.prefix), e.deletes) + e.insert }
-        return t
-    }
-
-    private static func dropScalars(_ s: String, _ n: Int) -> String {
-        var u = s.unicodeScalars
-        u.removeLast(min(n, u.count))
-        return String(u)
-    }
-
-    /// Gửi phím sửa để chữ trong ô (sau các lần sửa đang chờ) thành chữ định gõ. Đồng bộ và không còn gì chờ thì dời mốc về đầu
-    /// từ đang gõ (chuỗi theo dõi không dài ra mãi).
-    private func synSync(_ client: TextClient) {
-        let projected = synProjected, target = synIntended
-        if Array(projected.unicodeScalars) == Array(target.unicodeScalars) {
-            synDeferred = false
-            if synPending.isEmpty, synResume == nil {
-                // Dời mốc tới đầu từ cuối cùng đã xong (giữ nó và phần ngăn cách sau nó: ⌫ lùi về cuối nó rồi gõ tiếp).
-                let tail = String(synBefore.reversed().prefix(while: { !$0.isLetter }).reversed())
-                let word = String(synBefore.dropLast(tail.count).reversed().prefix(while: { $0.isLetter }).reversed())
-                synBefore = word + tail
-                synScreen = synBefore + engine.displayed
-            }
-            return
-        }
-        if client.keysQueued {
-            // Phím đặc biệt người dùng đã bấm (⌫, mũi tên, ⏎…) còn nằm trước trong hàng đợi của ứng dụng: phím sửa gửi bây giờ sẽ
-            // tới SAU nó (⌫ giả xoá lố vào chữ có sẵn, hay xoá ở chỗ con trỏ mới). Hoãn: phím đó tới bộ gõ thì sửa gộp một lần.
-            deferSynSync(client)
-            return
-        }
-        synDeferred = false
-        var (deletes, insert) = Self.synDiff(projected, target)
-        var prefix = ""
-        if deletes == 0, let last = projected.unicodeScalars.last {
-            // Chỉ chèn: vẫn xoá rồi gõ lại ký tự cuối — ⌫ giả đi qua bộ gõ cho biết lúc chữ giả tới ứng dụng (phím thật đang chờ
-            // trong hàng đợi của ứng dụng tới trước nó).
-            deletes = 1
-            insert = String(last) + insert
-        } else if deletes == 0, let last = insert.unicodeScalars.last {
-            // Ô (phần theo dõi) trống: gõ chữ, xoá ký tự cuối rồi gõ lại nó — cũng để có ⌫ đi qua bộ gõ.
-            prefix = insert
-            deletes = 1
-            insert = String(last)
-        }
-        guard client.postKeys(prefix: prefix, deleting: deletes, inserting: insert) else {
-            log?("phím ⌫ giả: không gửi được — các chữ còn lại của từ đi nguyên văn")
-            engine.reset()
-            untracked = true
-            synReset()
-            return
-        }
-        synPending.append((prefix, false, deletes, insert))
-    }
-
-    /// Hoãn lần sửa: thử lại sau mỗi 30 ms (phím kế tiếp tới thì cũng sửa luôn); hơn 1,5 s mà phím đó vẫn chưa tới bộ gõ thì thôi
-    /// theo dõi từ (không gửi gì — chỉ mất dấu).
-    private func deferSynSync(_ client: TextClient) {
-        if !synDeferred {
-            log?("phím ⌫ giả: còn phím của người dùng chưa tới ứng dụng — hoãn lần sửa")
-            synDeferStart = client.currentTime()
-        }
-        synDeferred = true
-        synDeferSerial &+= 1
-        let serial = synDeferSerial
-        // Tính từ lúc bắt đầu hoãn, kể cả khi người dùng gõ tiếp (mỗi phím lại hoãn): gõ liền không làm hoãn mãi.
-        let started = synDeferStart
-        if client.currentTime() - started > 1.5 {
-            synGiveUp("phím ⌫ giả: hoãn quá lâu — thôi theo dõi từ")
-            return
-        }
-        func retry() {
-            client.schedule(after: 0.03) { [weak self, weak client] in
-                guard let self, let client, self.inSynthetic, self.synDeferred, self.synDeferSerial == serial else { return }
-                // Hết hạn trước khi hỏi lại: phím / click đang chờ hết hạn (sổ phím thôi báo) không làm lần sửa gửi ra sau nó.
-                if client.currentTime() - started > 1.5 {
-                    self.synGiveUp("phím ⌫ giả: phím của người dùng không tới — thôi theo dõi từ")
-                    return
-                }
-                if !client.keysQueued { self.synSync(client); return }
-                retry()
-            }
-        }
-        retry()
-    }
-
-    /// Bỏ lần sửa đang hoãn (không gửi gì — chỉ mất dấu). Đang gõ dở từ thì các chữ còn lại của từ đi nguyên văn; từ đã kết thúc
-    /// (dấu cách, dấu câu) thì từ sau gõ lại từ đầu như thường.
-    private func synGiveUp(_ why: String) {
-        log?(why)
-        let midWord = synIntended.last.map(Self.continuesWord) ?? false
-        engine.reset()
-        untracked = midWord
-        synReset()
-    }
-
-    /// Một phím ⌫ giả của bộ gõ vừa tới ứng dụng (InputController nhận ra nó): cập nhật chữ thật trong ô.
-    public func syntheticBackspaceArrived() {
-        guard inSynthetic, !synPending.isEmpty else { return }
-        if !synPending[0].started {
-            synScreen += synPending[0].prefix                // chữ gõ trước các ⌫ của lần sửa
-            synPending[0].started = true
-        }
-        if !synScreen.isEmpty { synScreen.unicodeScalars.removeLast() }
-        synPending[0].deletes -= 1
-        if synPending[0].deletes <= 0 {
-            synScreen += synPending[0].insert                // chữ giả nằm ngay sau ⌫ cuối của lần sửa
-            synPending.removeFirst()
-        }
-    }
-
-    /// Phần khác nhau giữa `old` và `new`, theo mã Unicode: ⌫ của Java / Qt / Emacs xoá một mã (Unicode tổ hợp: từng dấu một),
-    /// chữ dựng sẵn thì mỗi chữ một mã.
-    private static func synDiff(_ old: String, _ new: String) -> (deletes: Int, insert: String) {
-        let o = Array(old.unicodeScalars), n = Array(new.unicodeScalars)
-        var i = 0
-        while i < o.count, i < n.count, o[i] == n[i] { i += 1 }
-        var ins = String.UnicodeScalarView()
-        ins.append(contentsOf: n[i...])
-        return (o.count - i, String(ins))
-    }
-
     /// Lý do mất dấu của `lostTrack` là do ô không cho biết con trỏ thật (không phải ô đã đổi chữ / dời con trỏ).
-    private func blindReason(_ sel: (location: Int, length: Int)?, frozen: Bool) -> Bool {
-        // Ô không cho biết con trỏ (nil, {0,0}) hay con trỏ không nhích sau phím đi thẳng (SDL: vùng chọn cũ). Ô chậm (WebKit
-        // trả lời từ bộ đệm) cũng trông như vậy — cờ chỉ giữ tới khi ô báo con trỏ khác (xem `blindSel`), từ này gõ bằng phím ⌫
-        // giả vẫn đúng (không cần vị trí).
+    private func blindReason(_ sel: (location: Int, length: Int)?) -> Bool {
+        // Ô không cho biết con trỏ (nil, {0,0}). Ô chậm (WebKit trả lời từ bộ đệm) cũng trông như vậy — cờ chỉ giữ tới khi ô báo
+        // con trỏ khác (xem `blindSel`).
         guard let sel else { return true }
         let expected = anchor + engine.displayed.utf16.count
-        if sel.location == 0 && sel.length == 0 && expected > 0 { return true }
-        if frozen, let at = passedAt, sel.length == 0, sel.location == at { return true }
-        return false
+        return sel.location == 0 && sel.length == 0 && expected > 0
     }
 
     // MARK: - Ô web Chromium (Chrome, Electron)

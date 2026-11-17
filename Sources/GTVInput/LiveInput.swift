@@ -56,28 +56,6 @@ final class LiveInput {
         }
     }
 
-    /// Người dùng đã bấm phím đặc biệt / click / phím bổ trợ mà chưa tới bộ gõ (xem `PressLog.userKeysPending`); `since`: thời điểm
-    /// phím bộ gõ nhận gần nhất.
-    func userKeysPending(since: Double) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if timer == nil {
-            // Chỉ đường ⌫ giả hỏi (luôn đọc liên tục): chưa đọc thì bắt đầu — khoảng không đọc từ lúc tạo phím là lý do hoãn.
-            terminalUntil = max(terminalUntil, ProcessInfo.processInfo.systemUptime + 15)
-            startLocked()
-        }
-        sampleLocked()          // lần thử lại của lần sửa đang hoãn không đi qua KeyWatch: không dùng lần đọc cũ
-        let reason = _log.userKeysPendingReason(now: ProcessInfo.processInfo.systemUptime, since: since)
-        #if DEBUG
-        if reason != lastPendingReason, let reason { DebugLog.write("phím chưa tới: \(reason)") }
-        lastPendingReason = reason
-        #endif
-        return reason != nil
-    }
-    #if DEBUG
-    private var lastPendingReason: String?
-    #endif
-
     /// Bản sao sổ lúc này.
     var log: PressLog {
         lock.lock()

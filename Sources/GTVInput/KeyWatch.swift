@@ -40,21 +40,9 @@ final class KeyWatch {
     /// Click còn chờ trong sổ (theo `PressLog.Press.at`) mà bộ đếm đã công bố trước lúc phím tạo sau nó tới: lúc sổ lấy nó ra
     /// không tính là click mới công bố lần nữa.
     private var publishedPending: [Double] = []
-    /// Lần đọc ở phím trước trên đường ⌫ giả (`throughIME`): click ô Java / Qt không đưa cho bộ gõ — khoảng không đọc từ đó
-    /// (lâu không gõ) có thể có click mà bộ đếm chưa công bố.
-    private var lastRouteRead: Double?
     /// macOS 27: ô 0,5 s của click cuối đã công bố ở lần đọc trước (click thấy lần đầu ở lần đọc này mà có thể đã công bố
     /// trước đó thì không giải thích được lần công bố này).
     private var lastPublishedCell = -Double.infinity
-    /// Ô 0,5 s đang chạy lúc có khoảng không đọc (mốc chỉ nuốt các ô đã kết thúc) và vị trí con trỏ chuột lúc đó: lần công bố
-    /// của ô này mà chuột không dời đi thì là click trong khoảng hở (đã báo), không phải click sau phím đó.
-    private var unreadCell: (cell: Double, location: CGPoint)?
-    /// Vị trí con trỏ chuột ở phím trước / phím này (`caretUndisturbed`).
-    private var previousKeyLocation: CGPoint?
-    private var lastKeyLocation: CGPoint?
-    /// macOS 27: vừa mang chữ theo khi chuyển sang ô mù giữa từ — click chưa công bố (tại chỗ chuột đứng) có thể đã dời con trỏ:
-    /// phím sửa hoãn tới lúc ô 0,5 s của phím đó đã công bố mà không có click mới (`clickUnconfirmed`).
-    private var carryUntil: Double?
     private var checkTimer: DispatchSourceTimer?
     /// Lần đọc trạng thái lúc xử lý phím terminal gần nhất: `LiveInput` phải đọc liên tục từ đó tới phím sau.
     private var lastTerminalRead: Double?
@@ -124,9 +112,6 @@ final class KeyWatch {
     }
     #endif
 
-    /// Phím giả bộ gõ vừa gửi mà sẽ không tới bộ gõ (xem `KeyLedger.expectUnseen`).
-    func expectUnseen(_ n: Int) { ledger.expectUnseen(n) }
-
     /// Bộ gõ vừa gắn vào một ô nhập liệu, hoặc vừa có click: những gì xảy ra trước đó không còn liên quan.
     func rebase() {
         detectCounterMode()
@@ -137,10 +122,7 @@ final class KeyWatch {
         burstCarry = false
         clickCredit = []
         publishedPending = []
-        lastRouteRead = nil
         lastPublishedCell = -.infinity
-        unreadCell = nil
-        carryUntil = nil
         // macOS 27: click làm ô nhận focus có thể chỉ được công bố sau lúc này.
         pointer.rebase(Self.pointerCount(), at: ProcessInfo.processInfo.systemUptime,
                        quantum: counterMode == .coarse ? 0.5 : nil)
@@ -176,11 +158,8 @@ final class KeyWatch {
     /// Gọi với mọi keyDown bộ gõ nhận (cả ở chế độ E, ứng dụng loại trừ), trước khi xử lý phím: giữa phím trước
     /// mà bộ gõ thấy và phím này có phím / click nào bộ gõ không thấy không.
     /// `terminal`: ô nhập liệu của app terminal (chỉ ở đó các tín hiệu này được dùng: đọc trạng thái liên tục, hẹn kiểm tra).
-    /// `syntheticSince`: phím giả của chính bộ gõ, gửi lúc đó (vẫn vào sổ đếm, không được coi là lần nhấn của người dùng).
-    /// `readsContinuously`: phím trước đi đường LiveInput đọc liên tục lúc gõ (⌫ giả, ô mù — `keepTerminal`): khoảng không
-    /// đọc từ đó là có thể có click bộ gõ không thấy.
-    func observe(_ event: NSEvent, terminal: Bool, throughIME: Bool = false, readsContinuously: Bool = false,
-                 syntheticSince: Double? = nil) -> KeyGap {
+    /// `throughIME`: ô mà mọi phím đặc biệt (⌫, mũi tên, ⏎) đều qua bộ gõ (ô web Chromium) — chỉ click mới đi vòng.
+    func observe(_ event: NSEvent, terminal: Bool, throughIME: Bool = false) -> KeyGap {
         if !counterModeKnown {
             let before = counterMode
             detectCounterMode()
@@ -189,14 +168,11 @@ final class KeyWatch {
         readings += 1
         checkTimer?.cancel()
         checkTimer = nil
-        let synthetic = syntheticSince != nil
         let previousStamp = lastKeyAt
-        // Phím giả của bộ gõ được tạo ngay sau phím trước: không phải loạt phím dồn ra sau lúc ứng dụng treo — không đổi mốc.
-        if !synthetic { lastKeyAt = event.timestamp }
+        lastKeyAt = event.timestamp
         let live = LiveInput.shared
         live.endHID()                       // phím tới: InputController đã bỏ lần nhấn phím tắt đổi chế độ (nếu có)
         let previousRead = lastTerminalRead
-        let previousRouteRead = lastRouteRead
         if terminal { live.keepTerminal(for: 5) }
         let modifier = modifierPressed
         modifierPressed = false
@@ -207,9 +183,8 @@ final class KeyWatch {
         // trễ giao phím lớn nhất thì chắc là trước nó — trừ khi phím này nằm trong loạt phím dồn ra sau lúc ứng dụng treo
         // (cách phím trước dưới 5 ms: có thể đã được bấm từ trước đó). Lần nhấn đọc thấy chưa giữ ở một lần đọc sau phím này
         // thì chắc là sau nó. Còn lại thì chưa chắc: vẫn báo, giữ lại cho phím sau.
-        let burst = coarse && !synthetic && event.timestamp - previousStamp < 0.005
+        let burst = coarse && event.timestamp - previousStamp < 0.005
         var covered = true
-        var routeCovered = true
         var lostClicks = 0
         var read: Double?
         var order: (taken: [PressLog.Press], uncertain: Bool) = ([], false)
@@ -217,26 +192,15 @@ final class KeyWatch {
             // Đọc liên tục từ lần đọc ở phím terminal trước tới giờ thì mới biết chắc có gì xen giữa không (đã ngừng đọc vì lâu
             // không gõ thì lần đọc vừa rồi bắt đầu lại từ đầu).
             covered = previousRead.map { log.covered(since: $0) } ?? true
-            routeCovered = previousRouteRead.map { log.covered(since: $0) } ?? true
             lostClicks = log.takeLostClicks()
             read = log.lastSample
-            if let since = syntheticSince {
-                log.syntheticKeyArrived(event.keyCode, since: since, at: event.timestamp)
-            } else {
-                log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat,
-                                now: ProcessInfo.processInfo.systemUptime)
-            }
+            log.keyReceived(event.keyCode, at: event.timestamp, isRepeat: event.isARepeat,
+                            now: ProcessInfo.processInfo.systemUptime)
             if coarse {
                 order = log.order(keyAt: event.timestamp, maxDelivery: Self.maxDelivery, burst: burst, clicksOnly: throughIME)
             }
         }
         if terminal { lastTerminalRead = read }
-        // Phím sau tự xét (đường của nó có đọc liên tục không). Phím giả tới sau khoảng không đọc không xoá dấu vết của nó.
-        if !synthetic || routeCovered { lastRouteRead = read }
-        if !synthetic {
-            previousKeyLocation = lastKeyLocation
-            lastKeyLocation = Self.pointerLocation()
-        }
 
         let gap: KeyGap
         switch counterMode {
@@ -245,21 +209,7 @@ final class KeyWatch {
             // mỗi 0,5 s — biết muộn, nhưng vẫn hơn không.
             // Click lần đọc nút chuột đã thấy (đã báo ở phím này hay phím trước) thì lúc bộ đếm công bố không báo lần nữa — báo
             // hai lần là bỏ ngang một từ đang gõ sau click (dấu rời khỏi từ).
-            // Đường ⌫ giả: khoảng không đọc từ phím trước (lâu không gõ) — click ô Java / Qt trong khoảng đó bộ gõ không thấy, bộ
-            // đếm có thể chưa công bố: báo ngắt ngay (bỏ từ), không báo lại lúc bộ đếm công bố nó (mọi click trong khoảng hở đều
-            // trước lúc này).
-            let unread = readsContinuously && !synthetic && !routeCovered
             let takenClicks = order.taken.filter { $0.key == nil }
-            if unread {
-                // Mọi click đã thấy (lấy ra ở phím này hay còn chờ) đều trước lúc này: lần công bố của chúng không thành credit
-                // (credit thừa sẽ nuốt lần công bố của click không thấy sau này). Mốc chỉ nuốt các ô 0,5 s đã kết thúc: bộ đếm không
-                // tách được click trước / sau lúc này trong cùng ô — ô đang chạy xét lúc nó công bố (`unreadCell`).
-                let now = ProcessInfo.processInfo.systemUptime
-                pointer.rebase(Self.pointerCount(), at: now - 0.5, quantum: 0.5)
-                clickCredit = []
-                publishedPending = takenClicks.map(\.at) + live.withLog { log in log.pending.filter { $0.key == nil }.map(\.at) }
-                unreadCell = (Self.cell(now), Self.pointerLocation())
-            }
             // Bộ đếm công bố click theo ô 0,5 s; thời điểm click cuối đã công bố (làm tròn về đầu ô) cho biết chính xác ô nào đã
             // công bố. Đọc trước và sau bộ đếm (lần công bố có thể rơi vào giữa): "chắc đã công bố" theo lần đọc trước, "có thể
             // đã công bố" theo lần đọc sau. Click thấy được xảy ra trong (after − sai số thứ tự, at].
@@ -300,16 +250,9 @@ final class KeyWatch {
                 }
             }
             published -= min(published, explained)
-            if published > 0, let u = unreadCell, cellAfter == u.cell, previousCell < u.cell,
-               Self.distance(Self.pointerLocation(), u.location) <= 3 {
-                // Lần công bố của ô có khoảng không đọc, chuột không dời đi: click trong khoảng hở (đã báo ở phím đó).
-                published = 0
-            }
-            if let u = unreadCell, cellAfter >= u.cell { unreadCell = nil }
             // Còn lại là click bộ gõ không thấy (chạm trackpad, click rất nhanh): báo ngắt ở phím này. Click đó có thể xảy ra sau
             // lúc tạo phím này (ô của nó kết thúc sau): ghi như một click chờ ở cuối ô — phím sửa hoãn, phím tạo sau ô đó báo ngắt.
-            let createdAt = syntheticSince ?? event.timestamp      // phím giả: lúc gửi (phím thật xếp sau nó tạo sau lúc này)
-            if published > 0, cellAfter + 0.5 + 0.02 > createdAt {
+            if published > 0, cellAfter + 0.5 + 0.02 > event.timestamp {
                 let at = cellAfter + 0.5
                 live.withLog { $0.notePublishedClick(at: at, after: cellAfter) }
                 publishedPending.append(at)
@@ -320,7 +263,7 @@ final class KeyWatch {
             let carried = burst && burstCarry
             if shortcut {
                 gap = .interrupted
-            } else if (terminal && !covered) || unread || clicked || !order.taken.isEmpty || order.uncertain || carried {
+            } else if (terminal && !covered) || clicked || !order.taken.isEmpty || order.uncertain || carried {
                 // Khoảng không đọc (lâu không gõ nên đã ngừng đọc): không biết có gì xen giữa — như có phím đi vòng. Terminal
                 // cho đọc màn hình thì màn hình quyết định (từ đang gõ dở không mất vì dừng tay), terminal khác thì bỏ từ.
                 gap = .bypassed
@@ -332,7 +275,7 @@ final class KeyWatch {
             } else {
                 gap = .none
             }
-            if !synthetic { burstCarry = gap == .bypassed }
+            burstCarry = gap == .bypassed
             #if DEBUG
             if terminal {
                 let pending = live.log.pending.map { $0.key.map(String.init) ?? "click" }
@@ -340,7 +283,7 @@ final class KeyWatch {
             }
             #endif
         case .exact:
-            let exact = exactGap(event, modifier: modifier, keyModifier: keyModifier, quietChecks: terminal, synthetic: synthetic)
+            let exact = exactGap(event, modifier: modifier, keyModifier: keyModifier, quietChecks: terminal)
             gap = lostClicks > 0 ? .bypassed : exact        // click bỏ khỏi sổ mà chưa báo (sổ đầy)
         }
         return gap
@@ -353,42 +296,10 @@ final class KeyWatch {
 
     private static func cell(_ t: Double) -> Double { (t / 0.5).rounded(.down) * 0.5 }
 
-    private static func pointerLocation() -> CGPoint { CGEvent(source: nil)?.location ?? .zero }
-
-    private static func distance(_ a: CGPoint, _ b: CGPoint) -> Double { hypot(a.x - b.x, a.y - b.y) }
-
-    /// Từ phím trước tới phím này không có click nào có thể dời con trỏ mà sổ phím chưa báo: macOS 26 — sổ phím báo đủ; macOS 27
-    /// — click chưa công bố thì chỉ biết qua con trỏ chuột: không dời đi thì click (nếu có) rơi đúng chỗ cũ.
-    func caretUndisturbed() -> Bool {
-        guard counterMode == .coarse else { return true }
-        guard let a = previousKeyLocation, let b = lastKeyLocation,
-              Self.distance(a, b) <= 3, Self.distance(b, Self.pointerLocation()) <= 3 else { return false }
-        // Chuột không dời vẫn có thể có click tại chỗ chuột đứng (con trỏ chữ đã đi theo chữ gõ): phím sửa hoãn tới khi ô của
-        // phím này đã công bố.
-        carryUntil = Self.cell(lastKeyAt) + 0.5 + 0.03
-        return true
-    }
-
-    /// Còn click có thể chưa công bố trước lần sửa đầu sau khi mang chữ theo (xem `caretUndisturbed`): có click mới công bố thì
-    /// hoãn tới lúc lần sửa bỏ cuộc hay phím sau báo ngắt.
-    func clickUnconfirmed() -> Bool {
-        guard counterMode == .coarse, let until = carryUntil else { return false }
-        if pointer.differs(Self.pointerCount(), lastClickAt: Self.lastClickTime()) { return true }
-        if ProcessInfo.processInfo.systemUptime < until { return true }
-        carryUntil = nil
-        return false
-    }
-
-    /// macOS 26 (thời điểm click cập nhật ngay): có click tạo sau (hay quanh) lúc tạo phím gần nhất bộ gõ nhận — ứng dụng đang
-    /// giữ nó, hay đã xử lý, trước mọi phím giả gửi bây giờ (cả click lần đọc nút chuột không thấy: chạm để click trên trackpad).
-    func clickSinceLastKey() -> Bool {
-        counterMode == .exact && Self.lastClickTime() > lastKeyAt - 0.02
-    }
-
     /// Độ trễ lớn nhất từ lúc bấm tới lúc ứng dụng nhận phím (IME Lab: 1–60 ms), cộng một chu kỳ đọc trạng thái.
     private static let maxDelivery = 0.06 + LiveInput.interval
 
-    private func exactGap(_ event: NSEvent, modifier: Bool, keyModifier: Bool, quietChecks: Bool, synthetic: Bool = false) -> KeyGap {
+    private func exactGap(_ event: NSEvent, modifier: Bool, keyModifier: Bool, quietChecks: Bool) -> KeyGap {
         let since = Self.secondsSinceKeyDown()           // trước bộ đếm
         let count = Self.keyDownCount()
         let verdict = ledger.observe(KeyReading(keyDownCount: count, timestamp: event.timestamp, keyCode: event.keyCode,
@@ -404,8 +315,7 @@ final class KeyWatch {
             var take: [PressLog.Press] = []
             if var acc = accounted {
                 let ordered = log.pending.sorted { self.ledger.unwrapped($0.count) < self.ledger.unwrapped($1.count) }
-                // Phím giả tới: lần nhấn phím đặc biệt còn chờ có thể là trạng thái phím của phím giả kế tiếp — không coi là phím đi vòng.
-                for press in ordered where !synthetic && press.key != nil && self.ledger.unwrapped(press.count) <= acc {
+                for press in ordered where press.key != nil && self.ledger.unwrapped(press.count) <= acc {
                     take.append(press)
                     acc += 1
                 }
@@ -415,10 +325,8 @@ final class KeyWatch {
             }
             // Click đọc thấy trước lúc tạo phím này (phím thật): theo thứ tự thì ứng dụng đã xử lý nó trước phím này — cả khi sổ
             // phím chưa có mốc (click chờ không còn hết hạn theo đồng hồ).
-            if !synthetic {
-                for press in log.pending where press.key == nil && press.at + 0.02 < event.timestamp && !take.contains(press) {
-                    take.append(press)
-                }
+            for press in log.pending where press.key == nil && press.at + 0.02 < event.timestamp && !take.contains(press) {
+                take.append(press)
             }
             let taken = take.isEmpty ? [] : log.take { press in take.contains(press) }
             return (taken, log.pending.contains { $0.key == nil })

@@ -192,13 +192,6 @@ public struct KeyLedger {
 
     /// GTVInput thấy `n` phím đặc biệt được nhấn trước phím vừa đọc mà bộ gõ không nhận (`PressLog`): tính chúng là phím
     /// lỡ ngay (không cần chờ lúc yên tay), phần chưa được tính.
-    /// Bộ gõ vừa gửi `n` phím giả sẽ không tới bộ gõ (chữ gõ giả của `SyntheticKeys`): bộ đếm hệ thống sẽ tính chúng — coi
-    /// như đã thấy, không phải phím đi vòng.
-    public mutating func expectUnseen(_ n: Int) {
-        guard n > 0 else { return }
-        seen += Int64(n)
-    }
-
     public mutating func noteBypassed(_ n: Int) {
         guard let base, n > 0 else { return }
         let excess = unwrapped - seen - base - missedExact
@@ -704,22 +697,6 @@ public struct PressLog {
         return last + min(repeatInterval, 2) - 0.01 > r.at
     }
 
-    /// Phím giả của bộ gõ (⌫ gửi bằng CGEventPost lúc `since`) vừa tới: không phải phím người dùng. Bỏ mọi lần nhấn phím đó đọc
-    /// thấy từ lúc gửi (máy chậm thì trạng thái phím của phím giả cũng đọc được — để lại thì sổ phím coi là phím đi vòng bộ gõ).
-    /// ⌫ thật bấm trước lúc gửi đã tới bộ gõ trước phím giả (cùng hàng đợi) nên không bị bỏ nhầm. Không ghi vào danh sách phím đã
-    /// nhận (sẽ nuốt lần nhấn thật sau đó).
-    public mutating func syntheticKeyArrived(_ key: UInt16, since: Double, at stamp: Double) {
-        // Chỉ một lần nhấn, đọc thấy quanh lúc hệ thống xử lý chính phím giả này (từ lúc gửi tới ngay sau thời điểm của nó) —
-        // ⌫ thật bấm sau đó vẫn là phím chưa tới.
-        // (Phím giả gửi ở tầng HID: trạng thái HID cũng thấy nó — không dùng để phân biệt với ⌫ thật.)
-        func ours(_ p: Press) -> Bool { p.key == key && p.at >= since && p.after < stamp + 0.002 }
-        if let i = pending.firstIndex(where: ours) {
-            pending.remove(at: i)
-        } else if let i = forgotten.firstIndex(where: ours) {
-            forgotten.remove(at: i)
-        }
-    }
-
     /// Có phím người dùng bấm mà chưa tới bộ gõ — đang nằm trong hàng đợi của ứng dụng, trước mọi phím gửi bây giờ: lần nhấn
     /// phím đặc biệt / click đang chờ, phím đặc biệt đang giữ (lặp phím tạo thêm phím) hay vừa nhả mà các lần lặp chưa tới hết,
     /// phím bổ trợ nhấn sau phím vừa nhận lúc `since` (⌘V, ⌘A…), khoảng không đọc từ lúc tạo phím đó. Phím chờ hết chờ theo
@@ -818,7 +795,7 @@ public struct PressLog {
     /// (độ trễ giao phím lớn nhất) — trừ khi phím nằm trong loạt phím dồn ra sau lúc ứng dụng treo (`burst`: có thể đã được
     /// bấm từ trước đó). `uncertain`: còn lần nhấn có thể trước phím. Lần nhấn mà một lần đọc từ `stamp` trở đi vẫn thấy chưa
     /// giữ thì chắc là sau phím (dù `stamp` là lúc bấm hay lúc ứng dụng nhận phím): để lại cho phím sau, không báo.
-    /// `clicksOnly`: mọi phím đặc biệt đều qua bộ gõ (đường phím ⌫ giả) — lần nhấn phím chưa tới chỉ là phím sắp tới, không phải
+    /// `clicksOnly`: mọi phím đặc biệt đều qua bộ gõ (ô web Chromium) — lần nhấn phím chưa tới chỉ là phím sắp tới, không phải
     /// phím đi vòng; chỉ xét click.
     public mutating func order(keyAt stamp: Double, maxDelivery: Double, burst: Bool,
                                clicksOnly: Bool = false) -> (taken: [Press], uncertain: Bool) {

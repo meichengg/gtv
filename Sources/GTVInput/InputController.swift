@@ -23,8 +23,22 @@ private final class ClientAdapter: TextClient {
         client?.insertText(text, replacementRange: NSRange(location: location, length: length))
     }
 
+    /// Thuộc tính của phần chữ đang soạn (marked text): KHÔNG gạch chân. Bộ gõ đưa chuỗi thường thì InputMethodKit tự gắn
+    /// gạch chân mặc định; đưa chuỗi có thuộc tính thì ô nhập liệu vẽ theo đúng thuộc tính đó (Cocoa, WebKit, Chromium, Qt:
+    /// kiểu gạch chân 0 / màu trong suốt = không thấy gì). Ô tự vẽ gạch chân cứng trong mã của nó (Swing của JDK gốc, GTK…)
+    /// thì bộ gõ không can thiệp được.
+    private static let composingAttributes: [NSAttributedString.Key: Any] = [
+        .underlineStyle: 0,
+        .underlineColor: NSColor.clear,
+        .markedClauseSegment: 0,
+    ]
+
+    private static func composing(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: text.isEmpty ? nil : composingAttributes)
+    }
+
     func setMarkedText(_ text: String) {
-        client?.setMarkedText(text, selectionRange: NSRange(location: text.utf16.count, length: 0),
+        client?.setMarkedText(Self.composing(text), selectionRange: NSRange(location: text.utf16.count, length: 0),
                               replacementRange: notFound)
     }
 
@@ -39,7 +53,7 @@ private final class ClientAdapter: TextClient {
     }
 
     func replaceViaMarkedText(location: Int, length: Int, with text: String) {
-        client?.setMarkedText(text, selectionRange: NSRange(location: text.utf16.count, length: 0),
+        client?.setMarkedText(Self.composing(text), selectionRange: NSRange(location: text.utf16.count, length: 0),
                               replacementRange: NSRange(location: location, length: length))
         client?.insertText(text, replacementRange: notFound)
     }
@@ -69,30 +83,6 @@ private final class ClientAdapter: TextClient {
     func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
 
     func lateEditSafe() -> Bool { KeyWatch.shared.lateEditSafe() }
-    func caretUndisturbed() -> Bool { KeyWatch.shared.caretUndisturbed() }
-
-    /// Ô Java (AWT): trả lời "đã xử lý" không làm Java bỏ phím; marked text rỗng thì có (AWTView: fKeyEventsNeeded = NO) —
-    /// nhưng sau đó Java coi như đang có phần gõ dở rỗng và đưa các phím ⌫ giả vào đó thay vì xoá chữ (IME Lab 42187016328:
-    /// "Vieêệt"). Nên không giữ phím: phím đi thẳng, phím giả xoá luôn ký tự của nó.
-    var swallowsWithEmptyMark = false
-
-    func postKeys(deleting: Int, inserting: String) -> Bool {
-        SyntheticKeys.shared.post(deleting: deleting, inserting: inserting)
-    }
-    func postKeys(prefix: String, deleting: Int, inserting: String) -> Bool {
-        SyntheticKeys.shared.post(prefix: prefix, deleting: deleting, inserting: inserting)
-    }
-    var keysQueued: Bool {
-        let watch = KeyWatch.shared
-        return LiveInput.shared.userKeysPending(since: watch.lastKeyAt) || watch.clickUnconfirmed() || watch.clickSinceLastKey()
-    }
-    var keySwallowable: Bool { false }
-    func swallowKey() {
-        if swallowsWithEmptyMark {
-            client?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: notFound)
-        }
-    }
-    var canPostKeys: Bool { SyntheticKeys.shared.available }
 }
 
 /// Một controller cho mỗi ô nhập liệu.
@@ -130,16 +120,15 @@ final class GTVInputController: IMKInputController {
     private static let chromiumWebAttributes: Set<String> = [
         "NSUnderline", "NSUnderlineColor", "NSMarkedClauseSegment", "NSTextInputReplacementRangeAttributeName",
     ]
-    /// Ô của ứng dụng Java (AWT…): chỉ gõ được bằng marked text, xem `JavaDetector`. nil: chưa biết.
+    /// Ô của ứng dụng Java chạy JDK gốc (AWT bỏ qua vùng thay chữ): chỉ soạn được bằng marked text, xem `JavaDetector`.
+    /// Java chạy JetBrains Runtime nhận vùng thay chữ nên gõ trực tiếp như ô thường (false). nil: chưa biết.
     private var javaView: Bool?
     /// Đã xét lại loại ô theo bộ công cụ của ứng dụng chưa (SwiftTerm bản mới, xem `refineKind`) — một lần cho mỗi lần gắn.
     private var kindRefined = false
     /// Ô Java: chốt từ đang gạch chân sau một lúc không gõ (xem `scheduleJavaCommit`).
     private var javaCommit: DispatchWorkItem?
-    /// Phím trước đi đường phím ⌫ giả: mọi phím đặc biệt đều qua bộ gõ (sổ phím không coi phím chưa tới là phím đi vòng).
-    private var syntheticRoute = false
-    /// Phím trước đi đường LiveInput đọc liên tục lúc gõ (⌫ giả, ô mù): khoảng không đọc là ngắt (xem `KeyWatch.observe`).
-    private var readingRoute = false
+    /// Phím trước đi đường ô web Chromium: mọi phím đặc biệt đều qua bộ gõ (sổ phím không coi phím chưa tới là phím đi vòng).
+    private var webRoute = false
 
     // MARK: - Vòng đời
 
@@ -227,16 +216,16 @@ final class GTVInputController: IMKInputController {
         }
     }
 
-    /// Ô của ứng dụng Java (AWT, JavaFX, Compose Desktop): không khai báo thuộc tính marked text nào, trong tiến trình chạy
-    /// máy ảo Java. Hỏi một lần cho mỗi ô (ô tạm của InputMethodKit: hỏi lại ở phím sau).
+    /// Ô của ứng dụng Java chạy JDK gốc (AWT, Swing, JavaFX): không khai báo thuộc tính marked text nào, trong tiến trình chạy
+    /// máy ảo Java không nhận vùng thay chữ. Hỏi một lần cho mỗi ô (ô tạm của InputMethodKit: hỏi lại ở phím sau).
     private func isJavaView(_ client: Client) -> Bool {
         if let javaView { return javaView }
         if clientKind == nil { classify(client) }
         switch clientKind {
         case .terminalView?:
-            guard let java = JavaDetector.usesJVM(bundleID, wait: 0.05) else { return false }   // chưa biết: hỏi lại sau
-            javaView = java
-            return java
+            guard let runtime = JavaDetector.runtime(bundleID, wait: 0.05) else { return false }   // chưa biết: hỏi lại sau
+            javaView = runtime == .stock
+            return runtime == .stock
         case .textView?:
             javaView = false
             return false
@@ -300,6 +289,11 @@ final class GTVInputController: IMKInputController {
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, let client = sender as? Client else { return false }
+        // Bộ gõ khởi động lại khi ô nhập liệu đang mở (vd. sau khi cập nhật): không có activateServer cho ô đó.
+        if bundleID.isEmpty {
+            bundleID = client.bundleIdentifier() ?? ""
+            Modes.shared.clientSeen(client, bundleID: bundleID)
+        }
         let settings = Settings.shared
         let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
 
@@ -331,33 +325,6 @@ final class GTVInputController: IMKInputController {
             return false
         case .keyDown:
             hotkeyArmedAt = nil
-            switch SyntheticKeys.shared.match(event) {
-            case let m? where m.kind == .edit:
-                // Phím giả của chính bộ gõ: để ứng dụng xử lý (ghi vào sổ phím cho khớp bộ đếm của hệ thống, trừ phím chữ giả đã
-                // báo trước). ⌫ giả tới ứng dụng đúng lúc này: Session cập nhật chữ thật trong ô.
-                if !m.unseenAlready {
-                    let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID),
-                                                      throughIME: true, readsContinuously: true, syntheticSince: m.stamp)
-                    // Click / phím tắt bộ gõ không thấy, lộ ra lúc phím giả tới (sổ phím đã dùng nó): phím thật kế tiếp không
-                    // còn thấy — báo luôn cho Session.
-                    if gap == .interrupted || gap == .bypassed { session.inputInterrupted() }
-                }
-                if event.keyCode == 51 { session.syntheticBackspaceArrived() }
-                return false
-            case .some:
-                break                         // phím thật gửi lại sau phím giả: xử lý như thường
-            case nil:
-                if SyntheticKeys.shared.inFlight, javaView == true, adapter.keySwallowable {
-                    // Phím thật tới trước phím giả của lần sửa trước: giữ lại, gửi lại sau chúng (đúng thứ tự gõ).
-                    _ = KeyWatch.shared.observe(event, terminal: false)
-                    adapter.client = client
-                    adapter.swallowsWithEmptyMark = true
-                    adapter.swallowKey()
-                    adapter.client = nil
-                    SyntheticKeys.shared.repost(event)
-                    return true
-                }
-            }
         default:                             // click chuột: con trỏ có thể đã đổi chỗ
             commit(client)
             session.fieldChanged()
@@ -391,7 +358,7 @@ final class GTVInputController: IMKInputController {
 
         // Sổ phím: mọi keyDown bộ gõ nhận đều phải vào sổ, kể cả khi phím đi thẳng ngay dưới đây.
         let gap = KeyWatch.shared.observe(event, terminal: Settings.knownTerminals.contains(bundleID),
-                                          throughIME: syntheticRoute, readsContinuously: readingRoute)
+                                          throughIME: webRoute)
 
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {
@@ -432,54 +399,32 @@ final class GTVInputController: IMKInputController {
                 earlyCommit = false
             }
         } else if !forceMarked {
-            // Ứng dụng bỏ qua cách thay chữ trực tiếp: Java (AWT), Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, terminal
-            // SwiftTerm / xterm.dart — gõ bằng phím ⌫ giả (không gạch chân) nếu có quyền Trợ năng, không thì marked text.
+            // Ứng dụng bỏ qua cách thay chữ trực tiếp (Java chạy JDK gốc, Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, terminal
+            // SwiftTerm / xterm.dart): soạn từ bằng marked text của InputMethodKit — bộ gõ gửi kèm thuộc tính không gạch chân
+            // (`ClientAdapter.setMarkedText`).
             forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
                 || isJavaView(client)
         }
-        // Phím ⌫ giả chỉ ở nơi đã biết mọi phím (thật và ⌫ giả) đi qua bộ gõ: Java (AWT, IME Lab), Qt 5, GTK, winit, LibreOffice.
-        // Emacs, MacVim, terminal Flutter / SwiftTerm vẫn gõ bằng gạch chân (⌫ có thể không qua bộ gõ). Lựa chọn gạch chân của
-        // người dùng (từng ứng dụng, mọi ứng dụng, terminal) thì giữ nguyên. Chưa có quyền Trợ năng: gạch chân như trước (xin quyền
-        // trong menu — không bật hộp thoại của hệ thống giữa lúc đang gõ).
-        let syntheticToolkit = javaView == true
-            || (toolkit.markedOnly && !AppToolkit.isMarkedEditor(bundleID) && !toolkit.flutterTerminal)
-        var synthetic = false
-        if forceMarked, syntheticToolkit, !settings.alwaysMarked, !settings.useMarked(for: bundleID), terminal == nil,
-           !Settings.knownTerminals.contains(bundleID), SyntheticKeys.shared.available {
-            synthetic = true
-            forceMarked = false
-        }
-        if synthetic || (session.blindLatched && SyntheticKeys.shared.available && terminal == nil) {
-            // Đọc liên tục nút chuột / phím đặc biệt trong lúc gõ (như terminal): click giữa từ mà bộ gõ không thấy thì phím ⌫
-            // giả của lần sửa sau sẽ xoá ở chỗ mới — macOS 27 chỉ công bố bộ đếm click mỗi 0,5 s; phím đặc biệt đã bấm mà chưa
-            // tới bộ gõ thì hoãn phím sửa (`keysQueued`). Đọc lâu hơn terminal: phím đầu tiên sau lúc thôi đọc có khoảng không đọc
-            // (ứng dụng giao chậm thì lần sửa của nó phải hoãn tới phím sau).
-            LiveInput.shared.keepTerminal(for: 15)
-        }
-        adapter.swallowsWithEmptyMark = javaView == true
         if clientKind == nil { classify(client) }
         // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
         let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in
             s.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f && !(0xF700...0xF8FF).contains($0.value) } ? s : nil
         } : nil
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
+        let web = chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: toolkit.qt, terminal: terminal, repeatDelay: repeatDelay,
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),
                                      combinedCommit: toolkit.combinedCommit,
                                      clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
-                                     keyText: keyText, web: chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil,
-                                     synthetic: synthetic)
-        if javaView == true, !synthetic { scheduleJavaCommit(client) }
-        // Đường phím giả và ô web Chromium: mọi phím đặc biệt (⌫, mũi tên, ⏎) đều qua bộ gõ.
-        readingRoute = synthetic || (session.blindLatched && SyntheticKeys.shared.available && terminal == nil)
-        syntheticRoute = readingRoute || (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil)
-        if readingRoute { LiveInput.shared.keepTerminal(for: 15) }     // cả phím vừa chuyển sang ô mù
+                                     keyText: keyText, web: web)
+        if javaView == true { scheduleJavaCommit(client) }
+        // Ô web Chromium: mọi phím đặc biệt (⌫, mũi tên, ⏎) đều qua bộ gõ.
+        webRoute = web
         #if DEBUG
-        let route = synthetic ? "phím giả" : (chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil) ? "web" : terminal != nil ? "terminal"
-            : forceMarked ? "gạch chân" : "trực tiếp"
-        // Đường phím giả không hỏi ứng dụng (Java trả lời qua luồng sự kiện của nó — hỏi ở mỗi phím làm app chậm, có lúc đứng).
-        let where_ = synthetic ? "" : " sel=\(client.selectedRange()) len=\(client.length())"
+        let route = web ? "web" : terminal != nil ? "terminal" : forceMarked ? "soạn (marked)" : "trực tiếp"
+        // Ô Java trả lời qua luồng sự kiện của nó — hỏi ở mỗi phím làm app chậm: không hỏi.
+        let where_ = javaView == true ? "" : " sel=\(client.selectedRange()) len=\(client.length())"
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng")\(where_)")
         #endif
         return handled

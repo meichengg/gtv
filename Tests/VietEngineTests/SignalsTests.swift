@@ -569,7 +569,7 @@ final class SignalsTests: XCTestCase {
     }
 
     /// Review 08dd0de (vòng 4): click chờ không bị bỏ theo đồng hồ (8 s) mà không báo; phím giả khớp lần nhấn của nó dù HID thấy.
-    func testPressLogClicksKeptAndSyntheticMatch() {
+    func testPressLogClicksKept() {
         var p = PressLog()
         var t = 1.0
         p.sample(at: t, held: [], button: false, flags: 0, physical: [], physicalButton: false)
@@ -586,22 +586,6 @@ final class SignalsTests: XCTestCase {
         XCTAssertEqual(p.pending.filter { $0.key == nil }.count, 64)
         XCTAssertEqual(p.takeLostClicks(), 1)
         XCTAssertEqual(p.takeLostClicks(), 0)
-        // ⌫ giả gửi ở tầng HID nên trạng thái HID cũng thấy nó (IME Lab): vẫn khớp được.
-        var q = PressLog()
-        var u = 10.0
-        q.sample(at: u, held: [], button: false, flags: 0, physical: [], physicalButton: false)
-        let sent = u + 0.001
-        u += 0.008; q.sample(at: u, held: [51], button: false, flags: 0, physical: [51], physicalButton: false)
-        q.syntheticKeyArrived(51, since: sent, at: sent)
-        XCTAssertTrue(q.pending.isEmpty)
-        // ⌫ giả (chỉ ở trạng thái phiên) thì có.
-        var r = PressLog()
-        var v = 20.0
-        r.sample(at: v, held: [], button: false, flags: 0, physical: [], physicalButton: false)
-        let sent2 = v + 0.001
-        v += 0.008; r.sample(at: v, held: [51], button: false, flags: 0, physical: [], physicalButton: false)
-        r.syntheticKeyArrived(51, since: sent2, at: sent2)
-        XCTAssertTrue(r.pending.isEmpty)
     }
 
     /// Review aafb2f6 (vòng 5): macOS 27 — click chắc chắn trước phím (sai số thứ tự) được lấy ra ngay, không báo hai lần; lần

@@ -54,9 +54,6 @@ enum AppToolkit {
 
     static func isQt(_ bundleID: String) -> Bool { profile(bundleID).qt }
 
-    /// Emacs, MacVim: gạch chân theo bundle ID (phím ⌫ giả chưa kiểm chứng ở đó — ⌫ có thể không qua bộ gõ).
-    static func isMarkedEditor(_ bundleID: String) -> Bool { markedBundleIDs.contains(bundleID) }
-
     /// Hồ sơ của ứng dụng; lần đầu thì bắt đầu kiểm tra ở luồng nền và tạm coi như ứng dụng thường.
     static func profile(_ bundleID: String) -> Profile {
         if let known = cache[bundleID] { return known }

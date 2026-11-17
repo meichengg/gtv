@@ -46,8 +46,7 @@ if [ -n "${DEVELOPER_ID:-}" ]; then
     sign --preserve-metadata=entitlements "$IME"
     sign --preserve-metadata=entitlements build/GTV.app
 elif [ -n "${SELF_SIGN_IDENTITY:-}" ]; then
-    # Chứng chỉ ký mã riêng của fork (GitHub secret GTV_SIGN_P12, tự ký): chữ ký cố định giữa các bản build — quyền Trợ năng
-    # của bộ gõ (phím ⌫ giả cho Java, Qt 5, GTK…) không mất sau mỗi lần cập nhật như với chữ ký ad-hoc. Không hardened
+    # Chứng chỉ ký mã riêng của fork (GitHub secret GTV_SIGN_P12, tự ký): chữ ký cố định giữa các bản build. Không hardened
     # runtime (không Team ID: library validation sẽ không cho nạp Sparkle), không timestamp.
     ssign() { codesign --force --sign "$SELF_SIGN_IDENTITY" ${SELF_SIGN_KEYCHAIN:+--keychain "$SELF_SIGN_KEYCHAIN"} --timestamp=none "$@"; }
     IME=build/GTV.app/Contents/Resources/GTVInput.app

@@ -75,7 +75,7 @@ jobs:
           xcodebuild -project GTV.xcodeproj -scheme GTV -derivedDataPath build/dd test \
             | grep -E "Executed|error:|TEST (SUCCEEDED|FAILED)|BUILD (SUCCEEDED|FAILED)"
 
-      # Chứng chỉ ký mã riêng của fork: chữ ký cố định giữa các bản (quyền Trợ năng của bộ gõ không mất khi cập nhật).
+      # Chứng chỉ ký mã riêng của fork: chữ ký cố định giữa các bản.
       - name: Import code signing certificate
         env:
           P12: ${{ secrets.GTV_SIGN_P12 }}
