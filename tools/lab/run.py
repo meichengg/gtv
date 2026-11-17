@@ -585,8 +585,9 @@ fetch('/ready', {method: 'POST', body: '1'});
         self.server.shutdown()
 
 
-def run_app_suite(app):
-    """Bài gõ trong ô của ứng dụng thường. `app`: "field" (Cocoa) hoặc "swing" (Java)."""
+def run_app_suite(app, only=None, tag=None):
+    """Bài gõ trong ô của ứng dụng thường. `app`: "field" (Cocoa), "blind", "swing" (Java, JDK gốc), "swingjbr" (JetBrains
+    Runtime). `only`: chỉ chạy các bài có tên trong đó; `tag`: hậu tố cho file log (lượt đo cách gắn thuộc tính)."""
     out_file = L / f"{app}.txt"
     ready = pathlib.Path(str(out_file) + ".ready")
     out_file.unlink(missing_ok=True)
@@ -636,6 +637,9 @@ def run_app_suite(app):
             time.sleep(2)
             clear_field(out_file, web)
         shot(f"{app}-opened")
+        if only:
+            tests = [t for t in tests if t[0] in only]
+        pathlib.Path(str(out_file) + ".attrs").unlink(missing_ok=True)
         for name, method, keys, expect, ms in tests:
             r = {"terminal": app, "style": "-", "test": name, "expect": expect}
             try:
@@ -653,7 +657,8 @@ def run_app_suite(app):
                 time.sleep(0.8)
                 got = read_text(out_file)
                 underline = used_underline(app, out_file, name)
-                r.update({"final": got, "pass": got == expect and not underline, "shot": shot(f"{app}-{name}")})
+                r.update({"final": got, "pass": got == expect and not underline,
+                          "shot": shot(f"{app}{'-' + tag if tag else ''}-{name}")})
                 if underline:
                     r["underline"] = underline
                 r.update(ime_seen(mark, None if app.startswith("swing") else bid))
@@ -668,11 +673,16 @@ def run_app_suite(app):
             results += run_race(bid, out_file, ready)
     finally:
         ev = pathlib.Path(str(out_file) + ".events")
+        suffix = f"-{tag}" if tag else ""
         if ev.exists():
-            shutil.copy(ev, OUT / "logs" / f"{app}-events.log")
+            shutil.copy(ev, OUT / "logs" / f"{app}{suffix}-events.log")
         at = pathlib.Path(str(out_file) + ".attrs")
         if at.exists():
-            shutil.copy(at, OUT / "logs" / f"{app}-attrs.log")
+            shutil.copy(at, OUT / "logs" / f"{app}{suffix}-attrs.log")
+            # Ô nhận phần đang soạn kèm thuộc tính gì (gộp các dòng giống nhau, bỏ vị trí).
+            seen = sorted({re.sub(r"\[\d+,\d+\] ", "", l) for l in at.read_text(encoding="utf-8", errors="replace").splitlines() if l})
+            for r in results:
+                r["info"] = "ô nhận: " + " | ".join(seen)[:300]
         if proc:
             proc.terminate()
         elif app in ("chrome", "chromeslow"):
@@ -772,47 +782,34 @@ def run_modes():
 
 
 def run_hotkey_modes(term, check, checked):
-    """Lỗi người dùng gặp: đổi V/E bằng phím tắt ⌘⇧ của GTV, đổi ứng dụng rồi quay lại — chế độ tự nhảy về chế độ cũ.
-    Nguyên nhân: GTV đổi chế độ bằng TISSelectInputSource từ tiến trình bộ gõ, ô đang gõ không được báo; lần sau ô đó được kích
-    hoạt lại nó phát lại chế độ cũ của nó (setValue). Bản sửa: đổi qua ô đang gõ (IMKTextInput.selectMode).
-    Chạy hai lượt: "ctl" tắt bản sửa (labNoClientSelect, bản Debug) để thấy ô phát lại chế độ cũ; "fix" bật bản sửa — chế độ phải
-    giữ nguyên VÀ không còn lần phát lại nào (dòng "giữ chế độ" trong log: lần GTV phải chọn lại chế độ của nó)."""
-    d = "com.gtv.inputmethod.GTV"
+    """Lỗi người dùng gặp ở bản gốc: đổi V/E bằng phím tắt ⌘⇧ của GTV, đổi ứng dụng rồi quay lại — chế độ tự nhảy. Đổi bằng ⌘⇧
+    thật rồi đổi qua lại các ứng dụng: chế độ phải giữ nguyên, và không ô nào phát lại chế độ cũ (dòng "giữ chế độ" trong log:
+    lần GTV phải chọn lại chế độ của nó).
+    (Lab 44067817184 đã thử đổi chế độ qua `IMKTextInput.selectMode` kèm TISSelectInputSource: hai đường chọn chồng nhau làm hệ
+    thống báo lại chế độ cũ ngay sau phím tắt, đổi sang tiếng Anh không ăn — bỏ. Chỉ TISSelectInputSource: 0 lần phát lại.)"""
     apps = ["/System/Applications/TextEdit.app", term[1], "/System/Library/CoreServices/Finder.app", term[1]]
     out = []
-    for arm in ("ctl", "fix"):
-        sh(["defaults", "write", d, "labNoClientSelect", "-bool", "YES" if arm == "ctl" else "NO"])
-        sh(["notifyutil", "-p", "com.gtv.lab.reload"])
-        sh(["open", "-a", term[1]])
-        time.sleep(1.5)
-        mark = log_mark()
-        for i in range(2):
-            for target in ("en", "vi"):
-                for _ in range(3):
-                    if current_source().endswith("." + target):
-                        break
-                    sh([DRV, "-", "20", "{TOGGLE}"])
-                    time.sleep(0.4)
-                check(f"hotkey-{arm}-{target}-{i + 1}", target)
-                for app in apps:
-                    sh(["open", "-a", app])
-                    check(f"hotkey-{arm}-{target}-{i + 1}-to-{pathlib.Path(app).stem}", target)
-        log = log_since(mark)
-        replays = log.count("giữ chế độ")
-        (OUT / "logs" / f"modes-hotkey-{arm}.log").write_text(
-            "\n".join(l for l in log.splitlines() if re.search(r"setValue|bộ gõ đổi|giữ chế độ|chế độ ->|toggle|activateServer", l)))
-        if arm == "ctl":
-            # Lượt đối chứng chỉ để thấy lỗi: không chấm, ghi lại lần nào chế độ nhảy.
-            for r in checked:
-                if r["test"].startswith("hotkey-ctl-"):
-                    r["info"] = "đối chứng: " + ("NHẢY chế độ" if r["final"] != r["expect"] else "giữ")
-                    r["expect"], r["pass"] = None, True
-        out.append({"terminal": "modes", "style": "-", "test": f"hotkey-{arm}-replays",
-                    "expect": "0" if arm == "fix" else None, "final": str(replays), "pass": arm == "ctl" or replays == 0,
-                    "info": "số lần ô phát lại chế độ cũ"})
-        print("modes", f"hotkey-{arm}-replays", replays, flush=True)
-    sh(["defaults", "delete", d, "labNoClientSelect"])
-    sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+    sh(["open", "-a", term[1]])
+    time.sleep(1.5)
+    mark = log_mark()
+    for i in range(2):
+        for target in ("en", "vi"):
+            for _ in range(3):
+                if current_source().endswith("." + target):
+                    break
+                sh([DRV, "-", "20", "{TOGGLE}"])
+                time.sleep(0.4)
+            check(f"hotkey-{target}-{i + 1}", target)
+            for app in apps:
+                sh(["open", "-a", app])
+                check(f"hotkey-{target}-{i + 1}-to-{pathlib.Path(app).stem}", target)
+    log = log_since(mark)
+    replays = log.count("giữ chế độ")
+    (OUT / "logs" / "modes-hotkey.log").write_text(
+        "\n".join(l for l in log.splitlines() if re.search(r"setValue|bộ gõ đổi|giữ chế độ|chế độ ->|toggle|activateServer", l)))
+    out.append({"terminal": "modes", "style": "-", "test": "hotkey-replays", "expect": "0", "final": str(replays),
+                "pass": replays == 0, "info": "số lần ô phát lại chế độ cũ"})
+    print("modes", "hotkey-replays", replays, flush=True)
     return out
 
 
@@ -911,6 +908,26 @@ def main():
             for r in part:
                 r["terminal"] = r.get("terminal", app) + suffix
             results += part
+
+    # Đo: bộ gõ gắn thuộc tính kiểu nào cho phần đang soạn thì ô nhận được gì (bản Debug, `labComposing`). "plain" = chuỗi thường.
+    d = "com.gtv.inputmethod.GTV"
+    for recipe in os.environ.get("COMPOSE_RECIPES", "").split():
+        if recipe == "plain":
+            sh(["defaults", "delete", d, "labComposing"])
+        else:
+            sh(["defaults", "write", d, "labComposing", "-string", recipe])
+        sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+        time.sleep(0.4)
+        for app in os.environ.get("COMPOSE_APPS", "blind swing").split():
+            try:
+                part = run_app_suite(app, only={"vni-punct"}, tag=recipe)
+            except Exception as e:  # noqa: BLE001
+                part = [{"terminal": app, "test": "-", "error": str(e)}]
+            for r in part:
+                r["terminal"] = f"{r.get('terminal', app)}@{recipe}"
+            results += part
+    sh(["defaults", "delete", d, "labComposing"])
+    sh(["notifyutil", "-p", "com.gtv.lab.reload"])
 
     if os.environ.get("MODES_TEST", "1") == "1":
         for counter_mode in counter_modes:

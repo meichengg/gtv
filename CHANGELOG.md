@@ -12,24 +12,19 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   phím giả; đoán sai là hoãn mãi lần sửa — `d9a38ng` ra nguyên văn (Burp Suite). Nay GTV không gửi một sự kiện phím nào: mọi
   chữ tới ứng dụng qua đúng giao tiếp của bộ gõ (`insertText`, `setMarkedText`). Không còn mục xin quyền Trợ năng trong menu;
   quyền đã cấp cho GTV có thể gỡ (Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Trợ năng).
-- Phần chữ đang soạn (marked text) luôn gửi kèm thuộc tính **không gạch chân** (kiểu gạch chân 0, màu trong suốt) thay vì để
-  InputMethodKit gắn gạch chân mặc định. Ô vẽ theo thuộc tính bộ gõ đưa thì không còn gạch chân; ô tự vẽ gạch chân cứng cho
-  mọi chữ đang soạn (Swing của JDK gốc, GTK) thì vẫn hiện gạch chân của chính ứng dụng.
+- Các ứng dụng đó (Java chạy JDK gốc như Burp Suite / Ghidra, Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, ô tự vẽ không cho
+  biết con trỏ) trở lại cách của 1.12: soạn từ đang gõ bằng marked text của InputMethodKit — cách duy nhất các bộ công cụ
+  này cho bộ gõ sửa chữ đã gõ. Trong lúc gõ một từ, ứng dụng tự vẽ gạch chân cho phần đang soạn (bộ gõ không tắt được: macOS
+  chuyển phần đang soạn cho ô kèm kiểu tô sáng của hệ thống, không phải thuộc tính bộ gõ đưa — đo ở IME Lab).
 - Menu: *Dùng gạch chân cho …* / *Gạch chân khi gõ trong …* / *Luôn dùng gạch chân* đổi tên thành *Soạn từng từ trong …* /
-  *Luôn soạn từng từ* (cài đặt cũ giữ nguyên): các mục này bật marked text, nay không còn kèm gạch chân.
+  *Luôn soạn từng từ* (cài đặt cũ giữ nguyên).
 - Java chạy JetBrains Runtime (IntelliJ, Android Studio, ứng dụng Compose Desktop…): gõ thẳng như ô thường, không soạn —
   AWT của JetBrains Runtime chọn đúng vùng cần thay trước khi chèn (`CInputMethod.selectRange`). GTV nhận ra bằng tên hàm đó
-  trong `libawt_lwawt.dylib` của bộ Java mà ứng dụng đang chạy. Java chạy JDK gốc (Burp Suite, Ghidra…: AWT bỏ vùng thay chữ)
-  soạn bằng marked text như 1.12.
+  trong `libawt_lwawt.dylib` của bộ Java mà ứng dụng đang chạy.
 
 ### Sửa lỗi
-- **Chế độ V/E tự nhảy khi đổi ứng dụng.** GTV đổi chế độ bằng `TISSelectInputSource` gọi từ tiến trình bộ gõ: hệ thống đổi
-  nhưng ô đang gõ (mỗi ô tự nhớ chế độ của nó) không được báo. Lần sau ô đó được kích hoạt lại — đổi ứng dụng rồi quay về,
-  đổi cửa sổ — nó chọn lại chế độ cũ cho cả hệ thống và báo cho bộ gõ, GTV đổi theo. Nay GTV đổi chế độ qua chính ô đang gõ
-  (`IMKTextInput.selectMode`, API của InputMethodKit) nên ô nhớ đúng chế độ mới; chế độ đổi bởi thứ khác (menu bộ gõ,
-  ⌃Space, `im-select`…) cũng được báo lại cho ô đang gõ.
 - Bộ gõ khởi động lại lúc một ô nhập liệu đang mở (vd. sau khi cập nhật): ô đó chưa áp dụng cài đặt riêng của ứng dụng (loại
-  trừ, gạch chân, terminal) cho tới khi đổi sang ứng dụng khác. (Từ bản gốc 1.11.2.)
+  trừ, soạn từng từ, terminal) cho tới khi đổi sang ứng dụng khác. (Từ bản gốc 1.11.2.)
 
 ### Đồng bộ với bản gốc
 - Ghép bản gốc S0nnyHoang/gtv 1.11.2. Chế độ terminal của bản gốc (gửi DEL + chữ mới) đã có ở đây từ 1.12 với phần nhận biết

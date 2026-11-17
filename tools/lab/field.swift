@@ -71,7 +71,7 @@ final class BlindView: NSView, NSTextInputClient {
                     let color = attrs[.underlineColor] as? NSColor
                     let clear = (color?.usingColorSpace(.deviceRGB)?.alphaComponent ?? 1) == 0
                     if let style, style != 0, !clear { underline = true }
-                    note += " [\(range.location),\(range.length)] keys=\(attrs.keys.map(\.rawValue).sorted()) style=\(style.map(String.init) ?? "-") clear=\(clear)"
+                    note += " [\(range.location),\(range.length)] keys=\(attrs.keys.map(\.rawValue).sorted()) style=\(style.map(String.init) ?? "-") clear=\(clear) color=\(color.map { "\($0)" } ?? "-")"
                 }
             }
             if let h = FileHandle(forWritingAtPath: out.path + ".attrs") ?? { FileManager.default.createFile(atPath: out.path + ".attrs", contents: nil); return FileHandle(forWritingAtPath: out.path + ".attrs") }() {

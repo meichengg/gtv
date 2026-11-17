@@ -23,18 +23,26 @@ private final class ClientAdapter: TextClient {
         client?.insertText(text, replacementRange: NSRange(location: location, length: length))
     }
 
-    /// Thuộc tính của phần chữ đang soạn (marked text): KHÔNG gạch chân. Bộ gõ đưa chuỗi thường thì InputMethodKit tự gắn
-    /// gạch chân mặc định; đưa chuỗi có thuộc tính thì ô nhập liệu vẽ theo đúng thuộc tính đó (Cocoa, WebKit, Chromium, Qt:
-    /// kiểu gạch chân 0 / màu trong suốt = không thấy gì). Ô tự vẽ gạch chân cứng trong mã của nó (Swing của JDK gốc, GTK…)
-    /// thì bộ gõ không can thiệp được.
-    private static let composingAttributes: [NSAttributedString.Key: Any] = [
-        .underlineStyle: 0,
-        .underlineColor: NSColor.clear,
-        .markedClauseSegment: 0,
-    ]
-
-    private static func composing(_ text: String) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: text.isEmpty ? nil : composingAttributes)
+    /// Phần chữ đang soạn (marked text) gửi cho ô nhập liệu. Bộ gõ đưa chuỗi thường thì InputMethodKit tự gắn gạch chân mặc
+    /// định. Đưa chuỗi có thuộc tính "không gạch chân" (kiểu 0, màu trong suốt) thì macOS KHÔNG chuyển nguyên thuộc tính đó cho
+    /// ô: ô vẫn nhận NSUnderline = 2 kèm màu thường (IME Lab 44067817184, ô không khai báo thuộc tính nào) — phần đang soạn đi qua
+    /// kiểu tô sáng của TSM chứ không phải thuộc tính của bộ gõ. Bản Debug thử được các cách gắn khác (`labComposing`) để đo ô
+    /// thật sự nhận gì.
+    private static func composing(_ text: String) -> Any {
+        #if DEBUG
+        if !text.isEmpty, let recipe = UserDefaults.standard.string(forKey: "labComposing") {
+            switch recipe {
+            case "zero":
+                return NSAttributedString(string: text, attributes: [.underlineStyle: 0, .underlineColor: NSColor.clear,
+                                                                     .markedClauseSegment: 0])
+            case "none": return NSAttributedString(string: text)
+            case "clause": return NSAttributedString(string: text, attributes: [.markedClauseSegment: 0])
+            case "color": return NSAttributedString(string: text, attributes: [.underlineStyle: 1, .underlineColor: NSColor.clear])
+            default: break
+            }
+        }
+        #endif
+        return text
     }
 
     func setMarkedText(_ text: String) {
@@ -123,6 +131,8 @@ final class GTVInputController: IMKInputController {
     /// Ô của ứng dụng Java chạy JDK gốc (AWT bỏ qua vùng thay chữ): chỉ soạn được bằng marked text, xem `JavaDetector`.
     /// Java chạy JetBrains Runtime nhận vùng thay chữ nên gõ trực tiếp như ô thường (false). nil: chưa biết.
     private var javaView: Bool?
+    /// Ô Java chạy JetBrains Runtime: gõ trực tiếp (xem `commitComposition`).
+    private var directJava = false
     /// Đã xét lại loại ô theo bộ công cụ của ứng dụng chưa (SwiftTerm bản mới, xem `refineKind`) — một lần cho mỗi lần gắn.
     private var kindRefined = false
     /// Ô Java: chốt từ đang gạch chân sau một lúc không gõ (xem `scheduleJavaCommit`).
@@ -143,6 +153,7 @@ final class GTVInputController: IMKInputController {
         clientKind = nil
         kindRefined = false
         javaView = nil
+        directJava = false
         javaCommit?.cancel()
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
@@ -225,6 +236,7 @@ final class GTVInputController: IMKInputController {
         case .terminalView?:
             guard let runtime = JavaDetector.runtime(bundleID, wait: 0.05) else { return false }   // chưa biết: hỏi lại sau
             javaView = runtime == .stock
+            directJava = runtime == .replacing
             return runtime == .stock
         case .textView?:
             javaView = false
@@ -253,6 +265,10 @@ final class GTVInputController: IMKInputController {
     /// từ đang gõ nếu nó vẫn nằm nguyên trước con trỏ, xem `Session.commitRequested`.
     override func commitComposition(_ sender: Any!) {
         DebugLog.write("commitComposition \(bundleID)")
+        // Java: AWTView gọi abandonInput sau MỌI lần chèn chữ, kể cả chữ của phím đi thẳng — trước khi chữ đó vào văn bản. Ô
+        // gõ trực tiếp (JetBrains Runtime) không có gì đang soạn: bỏ từ ở đây thì từ không bao giờ đủ dài để thêm dấu (IME Lab
+        // 44067817184: mọi phím "đi thẳng"). Mỗi lần sửa vẫn đối chiếu lại với màn hình (`Session.lostTrack`, `replace`).
+        if directJava { return }
         let saved = adapter.client
         adapter.client = sender as? Client
         session.commitRequested(adapter.client == nil ? nil : adapter)
@@ -290,10 +306,7 @@ final class GTVInputController: IMKInputController {
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         guard let event, let client = sender as? Client else { return false }
         // Bộ gõ khởi động lại khi ô nhập liệu đang mở (vd. sau khi cập nhật): không có activateServer cho ô đó.
-        if bundleID.isEmpty {
-            bundleID = client.bundleIdentifier() ?? ""
-            Modes.shared.clientSeen(client, bundleID: bundleID)
-        }
+        if bundleID.isEmpty { bundleID = client.bundleIdentifier() ?? "" }
         let settings = Settings.shared
         let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
 
@@ -400,8 +413,7 @@ final class GTVInputController: IMKInputController {
             }
         } else if !forceMarked {
             // Ứng dụng bỏ qua cách thay chữ trực tiếp (Java chạy JDK gốc, Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, terminal
-            // SwiftTerm / xterm.dart): soạn từ bằng marked text của InputMethodKit — bộ gõ gửi kèm thuộc tính không gạch chân
-            // (`ClientAdapter.setMarkedText`).
+            // SwiftTerm / xterm.dart): soạn từ bằng marked text của InputMethodKit.
             forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
                 || isJavaView(client)
         }

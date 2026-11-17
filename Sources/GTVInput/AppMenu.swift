@@ -132,7 +132,7 @@ enum AppMenu {
         menu.addItem(.separator())
         if !appBundleID.isEmpty {
             let terminal = Settings.knownTerminals.contains(appBundleID)
-            // Soạn từng từ = marked text của InputMethodKit, gửi kèm thuộc tính không gạch chân (xem `ClientAdapter`).
+            // Soạn từng từ = marked text của InputMethodKit (ứng dụng vẽ gạch chân cho từ đang soạn).
             let i = item("Soạn từng từ trong \(appName(appBundleID))",
                          Tag.markedApp.rawValue, s.useMarked(for: appBundleID) && !s.alwaysMarked)
             i.toolTip = terminal
