@@ -123,6 +123,11 @@ JAVA_DIRECT_TESTS = APP_TESTS + [
 # Ô Java soạn từng từ (JDK gốc, không có trợ thủ): đổi ô bằng chương trình thì Java tự chốt từ đang soạn.
 JAVA_COMPOSE_TESTS = APP_TESTS + [
     ("java-focus", "vni", "tie61ng{FOCUS:title}d9a38ng ca61p{WAIT1300}", "tiếng|đẳng cấp", 45),
+    # ⌥⌫ bấm ngay sau từ đang soạn: AWT nuốt chính phím đó (như mũi tên) — chỉ ghi lại; nhưng các từ gõ SAU đó vẫn phải ra
+    # đúng dấu (người dùng báo: "ấn ⌥⌫ xong không gõ dấu được nữa").
+    ("vni-optbs-now", "vni", "tie61ng vie65t{OPTBS}d9a38ng ca61p ", None, 45),
+    ("vni-optbs-twice", "vni", "tie61ng vie65t{OPTBS}{OPTBS}d9a38ng ca61p tuye65t ", None, 45),
+    ("vni-after-optbs", "vni", "d9o61i ", "đối ", 45),
 ]
 # Gõ ngay khi cửa sổ vừa được kích hoạt (như TinyCast: ⌘Space rồi gõ liền): phím đầu có thể tới trước lời gọi setValue mà
 # InputMethodKit gửi sau mỗi lần gắn bộ gõ — lỗi cũ: "d9a38ng" ra "d9ẳng".
