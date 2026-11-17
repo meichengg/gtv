@@ -99,7 +99,7 @@ APP_TESTS = [
     ("vni-arrow-fast", "vni", "vie65t{LEFT}x ", None, 45),
     ("vni-enter", "vni", "vie65t{RET}nam ", "việt\nnam ", 45),
     ("vni-punct", "vni", "d9a38ng, vie65t.", "đẳng, việt.", 45),
-    # ⌫ bấm ngay sau phím sửa (3 ms): phím ⌫ giả của lần sửa có thể tới ứng dụng sau ⌫ thật.
+    # ⌫ bấm ngay sau phím dấu (3 ms).
     ("vni-bs-burst", "vni", "ho5{BS}a d9{BS}e ", "ha e ", 3),
 ]
 # Gõ ngay khi cửa sổ vừa được kích hoạt (như TinyCast: ⌘Space rồi gõ liền): phím đầu có thể tới trước lời gọi setValue mà
@@ -427,6 +427,28 @@ def find_java():
     return shutil.which("java")
 
 
+def find_jbr():
+    """JetBrains Runtime (bản SDK mới nhất, chạy thẳng file .java): AWT của nó nhận vùng thay chữ của bộ gõ — IntelliJ, Android
+    Studio, ứng dụng Compose Desktop. Tải một lần vào /tmp/l/jbr."""
+    home = L / "jbr"
+    found = sorted(home.glob("*/Contents/Home/bin/java"))
+    if found:
+        return str(found[0])
+    r = sh(["curl", "-sfL", "https://api.github.com/repos/JetBrains/JetBrainsRuntime/releases/latest"], timeout=60)
+    arch = "aarch64" if os.uname().machine == "arm64" else "x64"
+    m = re.search(rf"https://cache-redirector\.jetbrains\.com/intellij-jbr/jbrsdk-[0-9.]+-osx-{arch}-b[0-9.]+\.tar\.gz", r.stdout)
+    if not m:
+        return None
+    home.mkdir(parents=True, exist_ok=True)
+    tar = home / "jbr.tar.gz"
+    if sh(["curl", "-sfL", "--retry", "5", "--retry-all-errors", m.group(0), "-o", str(tar)], timeout=600).returncode:
+        return None
+    sh(["tar", "-xzf", str(tar), "-C", str(home)], timeout=300)
+    tar.unlink(missing_ok=True)
+    found = sorted(home.glob("*/Contents/Home/bin/java"))
+    return str(found[0]) if found else None
+
+
 def wait_file(p, timeout=20):
     for _ in range(int(timeout * 20)):
         if p.exists():
@@ -458,11 +480,14 @@ def ime_trace(mark):
 
 
 def used_underline(app, out_file, name):
-    """Bộ gõ có dùng chữ gạch chân (marked text) trong bài không — người dùng muốn không bao giờ có. Swing: InputMethodEvent có
-    phần chữ chưa chốt (text dài hơn số ký tự đã chốt) sau dòng "=== <bài>". Ô --blind: file <file>.marked."""
+    """Ô có vẽ gạch chân cho chữ đang gõ trong bài không — người dùng muốn không bao giờ có. Bộ gõ soạn từ bằng marked text của
+    InputMethodKit kèm thuộc tính "không gạch chân"; ô vẽ gạch chân hay không là do nó nhận được gì:
+    - Swing: InputMethodEvent có phần chữ chưa chốt mang INPUT_METHOD_HIGHLIGHT (hl=1) sau dòng "=== <bài>" — AWT của JDK gốc
+      luôn gắn; JetBrains Runtime thì bộ gõ thay chữ trực tiếp, không có phần đang soạn.
+    - Ô --blind: file <file>.marked (phần đang soạn tới ô là chuỗi thường hay có kiểu gạch chân nhìn thấy được)."""
     if app == "blind":
-        return "marked text" if pathlib.Path(str(out_file) + ".marked").exists() else ""
-    if app != "swing":
+        return "gạch chân" if pathlib.Path(str(out_file) + ".marked").exists() else ""
+    if not app.startswith("swing"):
         return ""
     ev = pathlib.Path(str(out_file) + ".events")
     if not ev.exists():
@@ -473,8 +498,8 @@ def used_underline(app, out_file, name):
     except ValueError:
         return ""
     for l in lines[start + 1:]:
-        m = re.match(r"IM committed=(\d+) text=(.*)$", l)
-        if m and len(m.group(2)) > int(m.group(1)):
+        m = re.match(r"IM committed=(\d+) hl=(\d) text=(.*)$", l)
+        if m and len(m.group(3)) > int(m.group(1)) and m.group(2) == "1":
             return l
     return ""
 
@@ -591,11 +616,12 @@ def run_app_suite(app):
                 f"http://127.0.0.1:{web.port}/{query}"])
             bid, pid = CHROME_ID, None
         else:
-            java = find_java()
+            java = find_jbr() if app == "swingjbr" else find_java()
             if not java:
-                return [{"terminal": app, "test": "-", "error": "không có JDK 11+"}]
+                return [{"terminal": app, "test": "-", "error": "không có JetBrains Runtime" if app == "swingjbr" else "không có JDK 11+"}]
+            print(app, "java:", java, sh([java, "-version"]).stderr.strip().replace("\n", " | "), flush=True)
             proc = subprocess.Popen([java, str(HERE / "SwingField.java"), str(out_file)],
-                                    stdout=open(OUT / "logs" / "swing.log", "w"), stderr=subprocess.STDOUT)
+                                    stdout=open(OUT / "logs" / f"{app}.log", "w"), stderr=subprocess.STDOUT)
             bid, pid = "-", proc.pid
         if not wait_file(ready, 60):
             shot(f"{app}-not-ready")
@@ -619,7 +645,7 @@ def run_app_suite(app):
                 ensure_mode(bid, "vi")
                 clear_field(out_file, web)
                 mark = log_mark()
-                if app == "swing":
+                if app.startswith("swing"):
                     append_events(out_file, f"=== {name}")
                 marked_flag = pathlib.Path(str(out_file) + ".marked")
                 marked_flag.unlink(missing_ok=True)
@@ -630,7 +656,7 @@ def run_app_suite(app):
                 r.update({"final": got, "pass": got == expect and not underline, "shot": shot(f"{app}-{name}")})
                 if underline:
                     r["underline"] = underline
-                r.update(ime_seen(mark, None if app == "swing" else bid))
+                r.update(ime_seen(mark, None if app.startswith("swing") else bid))
                 if got != expect:
                     r["trace"] = ime_trace(mark)
             except Exception as e:  # noqa: BLE001
@@ -644,6 +670,9 @@ def run_app_suite(app):
         ev = pathlib.Path(str(out_file) + ".events")
         if ev.exists():
             shutil.copy(ev, OUT / "logs" / f"{app}-events.log")
+        at = pathlib.Path(str(out_file) + ".attrs")
+        if at.exists():
+            shutil.copy(at, OUT / "logs" / f"{app}-attrs.log")
         if proc:
             proc.terminate()
         elif app in ("chrome", "chromeslow"):
@@ -737,7 +766,53 @@ def run_modes():
         for target in ("vi", "en"):
             sh([DRV, "-", "20", "{TAPSHIFT}{IS:abc}{WAIT1000}{TAPSHIFT}{IS:" + target + "}"])
             check(f"user-abc-then-{target}-{i + 1}", target)
+    out += run_hotkey_modes(term, check, out)
     sh(["pkill", "-x", "TextEdit"])
+    return out
+
+
+def run_hotkey_modes(term, check, checked):
+    """Lỗi người dùng gặp: đổi V/E bằng phím tắt ⌘⇧ của GTV, đổi ứng dụng rồi quay lại — chế độ tự nhảy về chế độ cũ.
+    Nguyên nhân: GTV đổi chế độ bằng TISSelectInputSource từ tiến trình bộ gõ, ô đang gõ không được báo; lần sau ô đó được kích
+    hoạt lại nó phát lại chế độ cũ của nó (setValue). Bản sửa: đổi qua ô đang gõ (IMKTextInput.selectMode).
+    Chạy hai lượt: "ctl" tắt bản sửa (labNoClientSelect, bản Debug) để thấy ô phát lại chế độ cũ; "fix" bật bản sửa — chế độ phải
+    giữ nguyên VÀ không còn lần phát lại nào (dòng "giữ chế độ" trong log: lần GTV phải chọn lại chế độ của nó)."""
+    d = "com.gtv.inputmethod.GTV"
+    apps = ["/System/Applications/TextEdit.app", term[1], "/System/Library/CoreServices/Finder.app", term[1]]
+    out = []
+    for arm in ("ctl", "fix"):
+        sh(["defaults", "write", d, "labNoClientSelect", "-bool", "YES" if arm == "ctl" else "NO"])
+        sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+        sh(["open", "-a", term[1]])
+        time.sleep(1.5)
+        mark = log_mark()
+        for i in range(2):
+            for target in ("en", "vi"):
+                for _ in range(3):
+                    if current_source().endswith("." + target):
+                        break
+                    sh([DRV, "-", "20", "{TOGGLE}"])
+                    time.sleep(0.4)
+                check(f"hotkey-{arm}-{target}-{i + 1}", target)
+                for app in apps:
+                    sh(["open", "-a", app])
+                    check(f"hotkey-{arm}-{target}-{i + 1}-to-{pathlib.Path(app).stem}", target)
+        log = log_since(mark)
+        replays = log.count("giữ chế độ")
+        (OUT / "logs" / f"modes-hotkey-{arm}.log").write_text(
+            "\n".join(l for l in log.splitlines() if re.search(r"setValue|bộ gõ đổi|giữ chế độ|chế độ ->|toggle|activateServer", l)))
+        if arm == "ctl":
+            # Lượt đối chứng chỉ để thấy lỗi: không chấm, ghi lại lần nào chế độ nhảy.
+            for r in checked:
+                if r["test"].startswith("hotkey-ctl-"):
+                    r["info"] = "đối chứng: " + ("NHẢY chế độ" if r["final"] != r["expect"] else "giữ")
+                    r["expect"], r["pass"] = None, True
+        out.append({"terminal": "modes", "style": "-", "test": f"hotkey-{arm}-replays",
+                    "expect": "0" if arm == "fix" else None, "final": str(replays), "pass": arm == "ctl" or replays == 0,
+                    "info": "số lần ô phát lại chế độ cũ"})
+        print("modes", f"hotkey-{arm}-replays", replays, flush=True)
+    sh(["defaults", "delete", d, "labNoClientSelect"])
+    sh(["notifyutil", "-p", "com.gtv.lab.reload"])
     return out
 
 
@@ -824,7 +899,7 @@ def main():
         finally:
             close_terminal(key)
 
-    # Ứng dụng thường cũng chạy từng chế độ bộ đếm: đường ⌫ giả / ô web trên macOS 27 khác hẳn macOS 26.
+    # Ứng dụng thường cũng chạy từng chế độ bộ đếm: ô web trên macOS 27 khác macOS 26.
     for counter_mode in counter_modes:
         suffix = set_counter_mode(counter_mode)
         for app in os.environ.get("APPS", "field blind swing chrome").split():
@@ -853,7 +928,12 @@ def main():
     for r in results:
         ok = "lỗi" if "error" in r else ("✅" if r.get("pass") else "❌")
         split = f"{r.get('edits_split', '')}/{r.get('edits', '')}" if "edits" in r else ""
-        note = r.get("error", "") or ("mong đợi: " + r["expect"] if not r.get("pass") and r.get("expect") is not None else "")
+        note = r.get("error", "") or ("mong đợi: " + r["expect"] if not r.get("pass") and r.get("expect") is not None
+                                      and r.get("final") != r["expect"] else "")
+        if r.get("underline"):
+            note = (note + "; " if note else "") + "ô vẽ gạch chân"
+        if r.get("info"):
+            note = (note + "; " if note else "") + r["info"]
         rows.append(f"| {r['terminal']} | {r.get('style', '')} | {r['test']} | {ok} | `{r.get('final', '')}` | {split} | {note} |")
     md = "\n".join(rows)
     (OUT / "summary.md").write_text(md + "\n")

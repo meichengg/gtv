@@ -64,7 +64,9 @@ public class SwingField {
                     StringBuilder b = new StringBuilder();
                     java.text.AttributedCharacterIterator it = e.getText();
                     if (it != null) for (char c = it.first(); c != java.text.CharacterIterator.DONE; c = it.next()) b.append(c);
-                    append(events, "IM committed=" + e.getCommittedCharacterCount() + " text=" + b);
+                    // Swing chỉ vẽ gạch chân cho phần đang soạn khi nó mang INPUT_METHOD_HIGHLIGHT (AWT của JDK gốc luôn gắn).
+                    boolean hl = it != null && it.getAllAttributeKeys().contains(java.awt.font.TextAttribute.INPUT_METHOD_HIGHLIGHT);
+                    append(events, "IM committed=" + e.getCommittedCharacterCount() + " hl=" + (hl ? 1 : 0) + " text=" + b);
                 }
                 @Override public void caretPositionChanged(java.awt.event.InputMethodEvent e) { }
             });

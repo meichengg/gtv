@@ -25,8 +25,10 @@ Tài liệu kỹ thuật chi tiết (kiến trúc, lý do thiết kế, giải t
 - vim / nvim, vi-mode của shell: ở normal mode các phím là lệnh — để chế độ tiếng Anh khi gõ lệnh (⌘⇧), hoặc dùng plugin tự đổi bộ gõ như im-select.nvim với `com.gtv.inputmethod.GTV.en` / `com.gtv.inputmethod.GTV.vi`
 - Chế độ gạch chân cho ứng dụng nào muốn (mặc định không bật cho ứng dụng nào); bật/tắt cho từng ứng dụng trong menu. Chỉ phần còn có thể thêm dấu mới bị gạch chân: phụ âm đầu từ và từ không phải tiếng Việt (`ls`, `brew`, `git status`…) tới ứng dụng ngay khi gõ
 - Chrome và ứng dụng Electron (VS Code, Slack, Discord, Claude, Zalo, Notion…): gõ thẳng, không gạch chân, kể cả khi trang chậm hay gõ rất nhanh — Chromium chỉ cho bộ gõ thấy một bản sao văn bản cập nhật sau khi trang xử lý xong phím, nên GTV tự giữ vị trí của chuỗi đang gõ liền và chỉ dùng bản sao để nhận ra trang chậm, chữ bị đổi bởi thứ khác, hay con trỏ đã dời
-- Ứng dụng bỏ qua cách thay chữ trực tiếp — Java (Burp Suite, IntelliJ không chạy JBR, Ghidra…), Qt 5 (VLC, KeePassXC, Wireshark…), GTK (CherryTree, GIMP, Inkscape…), winit (egui, iced, Alacritty…), LibreOffice: GTV gõ thẳng như ô thường rồi sửa dấu bằng phím ⌫ + chữ mới gửi vào ô — **không gạch chân**. Cần quyền Trợ năng (menu bộ gõ → *Gõ không gạch chân trong Java, Qt 5, GTK…: cấp quyền Trợ năng…*, cấp một lần, giữ qua các lần cập nhật); chưa cấp thì gõ bằng gạch chân. Ứng dụng chậm (phím thật tới trước phím sửa) vẫn ra đúng: mọi phím ứng dụng xử lý đều đi qua bộ gõ theo đúng thứ tự, GTV dựng lại chữ thật trong ô và sửa đúng phần lệch. Emacs, MacVim, terminal SwiftTerm / xterm.dart nhúng: gõ bằng gạch chân
-- Ứng dụng GTV chưa biết, có ô tự vẽ không cho biết vị trí con trỏ: GTV nhận ra ở phím sửa đầu tiên rồi gõ bằng phím ⌫ giả như trên (chưa có quyền Trợ năng thì gạch chân), không đoán vị trí nên không xoá nhầm
+- GTV là bộ gõ InputMethodKit thuần: mọi chữ tới ứng dụng qua đúng giao tiếp của bộ gõ. **Không gửi phím giả** (CGEventPost), không event tap, không cần quyền Trợ năng
+- Ứng dụng Java chạy JetBrains Runtime (IntelliJ, Android Studio, ứng dụng Compose Desktop…): gõ thẳng, không gạch chân — AWT của JetBrains Runtime nhận vùng thay chữ của bộ gõ
+- Ứng dụng bỏ qua cách thay chữ trực tiếp — Java chạy JDK gốc (Burp Suite, Ghidra…: AWT bỏ vùng thay chữ), Qt 5 (VLC, KeePassXC, Wireshark…), GTK (CherryTree, GIMP, Inkscape…), winit (egui, iced, Alacritty…), LibreOffice, Emacs, MacVim, terminal SwiftTerm / xterm.dart nhúng: GTV soạn từ đang gõ bằng *marked text* của InputMethodKit (cách duy nhất các bộ công cụ này cho bộ gõ sửa chữ), gửi kèm thuộc tính **không gạch chân**. Ô nào vẽ theo thuộc tính bộ gõ đưa thì không có gạch chân; ô tự vẽ gạch chân cứng trong mã của nó cho mọi chữ đang soạn (Swing của JDK gốc, GTK) thì vẫn hiện gạch chân của chính ứng dụng trong lúc gõ một từ
+- Ứng dụng GTV chưa biết, có ô tự vẽ không cho biết vị trí con trỏ: GTV nhận ra ở phím sửa đầu tiên, từ sau soạn bằng marked text (không kèm gạch chân) — không đoán vị trí nên không xoá nhầm
 - Không bộ gõ nào của macOS gõ được ở chỗ ứng dụng không chuyển phím cho bộ gõ (trò chơi SDL, màn hình máy từ xa của Jump Desktop…): màn hình RDP của Royal TSX (dùng bộ gõ tiếng Việt bên Windows — Windows 10/11 có sẵn "Vietnamese Telex" — hoặc Windows App của Microsoft ở chế độ Unicode, ⌃⌘U), ô tìm nhanh trong danh sách file của Nimble Commander (bấm vào ô hiện truy vấn ở đầu bảng rồi gõ)
 
 ## Chạy như một app riêng
@@ -54,8 +56,7 @@ khiến macOS gỡ bộ gõ khỏi danh sách và hỏi lại người dùng).
 ## Hiệu năng
 
 - Chỉ một tiến trình chạy ngầm: bộ nhớ thực dùng ~12 MB, không tốn CPU khi rảnh (không timer, không
-  event tap, không theo dõi phím nền). Quyền Trợ năng chỉ dùng để gửi phím sửa dấu vào Java / Qt 5 / GTK…; không cấp thì
-  mọi thứ khác vẫn chạy như cũ
+  event tap, không theo dõi phím nền, không gửi phím giả, không cần quyền Trợ năng)
 - Phím thường không cần thêm dấu được trả lại cho ứng dụng xử lý như bình thường; GTV chỉ can thiệp khi thật sự cần đổi chữ
 - Ở chế độ E, phím đi thẳng qua mà không xử lý gì thêm
 

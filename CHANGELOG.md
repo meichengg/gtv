@@ -4,6 +4,35 @@ Mỗi phiên bản là một mục `## <phiên bản> — <ngày>`. Nội dung c
 note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớp `MARKETING_VERSION` trong
 `project.yml`.
 
+## 1.14 — 2026-11-17
+
+### Thay đổi
+- **Bộ gõ InputMethodKit thuần — bỏ hẳn phím ⌫ giả.** Từ 1.13, ở Java / Qt 5 / GTK / winit / LibreOffice và các ô tự vẽ, GTV
+  để phím đi thẳng rồi gửi phím ⌫ + chữ mới bằng `CGEventPost` (cần quyền Trợ năng). Cách đó phải đoán thứ tự giữa phím thật và
+  phím giả; đoán sai là hoãn mãi lần sửa — `d9a38ng` ra nguyên văn (Burp Suite). Nay GTV không gửi một sự kiện phím nào: mọi
+  chữ tới ứng dụng qua đúng giao tiếp của bộ gõ (`insertText`, `setMarkedText`). Không còn mục xin quyền Trợ năng trong menu;
+  quyền đã cấp cho GTV có thể gỡ (Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Trợ năng).
+- Phần chữ đang soạn (marked text) luôn gửi kèm thuộc tính **không gạch chân** (kiểu gạch chân 0, màu trong suốt) thay vì để
+  InputMethodKit gắn gạch chân mặc định. Ô vẽ theo thuộc tính bộ gõ đưa thì không còn gạch chân; ô tự vẽ gạch chân cứng cho
+  mọi chữ đang soạn (Swing của JDK gốc, GTK) thì vẫn hiện gạch chân của chính ứng dụng.
+- Java chạy JetBrains Runtime (IntelliJ, Android Studio, ứng dụng Compose Desktop…): gõ thẳng như ô thường, không soạn —
+  AWT của JetBrains Runtime chọn đúng vùng cần thay trước khi chèn (`CInputMethod.selectRange`). GTV nhận ra bằng tên hàm đó
+  trong `libawt_lwawt.dylib` của bộ Java mà ứng dụng đang chạy. Java chạy JDK gốc (Burp Suite, Ghidra…: AWT bỏ vùng thay chữ)
+  soạn bằng marked text như 1.12.
+
+### Sửa lỗi
+- **Chế độ V/E tự nhảy khi đổi ứng dụng.** GTV đổi chế độ bằng `TISSelectInputSource` gọi từ tiến trình bộ gõ: hệ thống đổi
+  nhưng ô đang gõ (mỗi ô tự nhớ chế độ của nó) không được báo. Lần sau ô đó được kích hoạt lại — đổi ứng dụng rồi quay về,
+  đổi cửa sổ — nó chọn lại chế độ cũ cho cả hệ thống và báo cho bộ gõ, GTV đổi theo. Nay GTV đổi chế độ qua chính ô đang gõ
+  (`IMKTextInput.selectMode`, API của InputMethodKit) nên ô nhớ đúng chế độ mới; chế độ đổi bởi thứ khác (menu bộ gõ,
+  ⌃Space, `im-select`…) cũng được báo lại cho ô đang gõ.
+- Bộ gõ khởi động lại lúc một ô nhập liệu đang mở (vd. sau khi cập nhật): ô đó chưa áp dụng cài đặt riêng của ứng dụng (loại
+  trừ, gạch chân, terminal) cho tới khi đổi sang ứng dụng khác. (Từ bản gốc 1.11.2.)
+
+### Đồng bộ với bản gốc
+- Ghép bản gốc S0nnyHoang/gtv 1.11.2. Chế độ terminal của bản gốc (gửi DEL + chữ mới) đã có ở đây từ 1.12 với phần nhận biết
+  phím / click đi vòng bộ gõ, nên giữ cách của bản này.
+
 ## 1.13.1 — 2026-11-08
 
 ### Sửa lỗi

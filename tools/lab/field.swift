@@ -60,7 +60,25 @@ final class BlindView: NSView, NSTextInputClient {
     }
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         marked = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
-        if !marked.isEmpty { try? "1".write(toFile: out.path + ".marked", atomically: true, encoding: .utf8) }   // lab: có gạch chân
+        // Lab: phần chữ đang soạn tới ô kèm thuộc tính gì — bộ gõ gửi "không gạch chân" (kiểu 0, màu trong suốt). Chuỗi thường,
+        // hay có kiểu gạch chân khác 0 mà màu không trong suốt, là ô sẽ vẽ gạch chân: ghi <file>.marked.
+        if !marked.isEmpty {
+            var underline = !(string is NSAttributedString)
+            var note = string is NSAttributedString ? "attributed" : "plain"
+            if let a = string as? NSAttributedString {
+                a.enumerateAttributes(in: NSRange(location: 0, length: a.length)) { attrs, range, _ in
+                    let style = (attrs[.underlineStyle] as? NSNumber)?.intValue
+                    let color = attrs[.underlineColor] as? NSColor
+                    let clear = (color?.usingColorSpace(.deviceRGB)?.alphaComponent ?? 1) == 0
+                    if let style, style != 0, !clear { underline = true }
+                    note += " [\(range.location),\(range.length)] keys=\(attrs.keys.map(\.rawValue).sorted()) style=\(style.map(String.init) ?? "-") clear=\(clear)"
+                }
+            }
+            if let h = FileHandle(forWritingAtPath: out.path + ".attrs") ?? { FileManager.default.createFile(atPath: out.path + ".attrs", contents: nil); return FileHandle(forWritingAtPath: out.path + ".attrs") }() {
+                h.seekToEndOfFile(); h.write((note + "\n").data(using: .utf8)!); try? h.close()
+            }
+            if underline { try? "1".write(toFile: out.path + ".marked", atomically: true, encoding: .utf8) }
+        }
         needsDisplay = true
     }
     func unmarkText() { marked = "" }
