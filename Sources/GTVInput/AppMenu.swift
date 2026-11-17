@@ -132,16 +132,16 @@ enum AppMenu {
         menu.addItem(.separator())
         if !appBundleID.isEmpty {
             let terminal = Settings.knownTerminals.contains(appBundleID)
-            let i = item(terminal ? "Gạch chân khi gõ trong \(appName(appBundleID))"
-                                  : "Dùng gạch chân cho \(appName(appBundleID))",
+            // Soạn từng từ = marked text của InputMethodKit, gửi kèm thuộc tính không gạch chân (xem `ClientAdapter`).
+            let i = item("Soạn từng từ trong \(appName(appBundleID))",
                          Tag.markedApp.rawValue, s.useMarked(for: appBundleID) && !s.alwaysMarked)
-            if terminal {
-                i.toolTip = "Mặc định GTV gõ thẳng xuống shell, không gạch chân. Bật nếu terminal này gõ sai."
-            }
+            i.toolTip = terminal
+                ? "Mặc định GTV gõ thẳng xuống shell. Bật nếu terminal này gõ sai: từ đang gõ chỉ tới shell khi gõ xong."
+                : "Mặc định GTV thay chữ trực tiếp. Bật nếu ứng dụng này gõ sai dấu: từ đang gõ được soạn rồi mới chốt."
             i.representedObject = appBundleID
             menu.addItem(i)
         }
-        add("Luôn dùng gạch chân (tương thích tối đa)", .markedAlways, s.alwaysMarked)
+        add("Luôn soạn từng từ (tương thích tối đa)", .markedAlways, s.alwaysMarked)
 
         menu.addItem(.separator())
         // Mục đăng nhập dùng SMAppService (macOS 13+), do GTV.app trong Applications đăng ký.

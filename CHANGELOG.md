@@ -15,6 +15,8 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
 - Phần chữ đang soạn (marked text) luôn gửi kèm thuộc tính **không gạch chân** (kiểu gạch chân 0, màu trong suốt) thay vì để
   InputMethodKit gắn gạch chân mặc định. Ô vẽ theo thuộc tính bộ gõ đưa thì không còn gạch chân; ô tự vẽ gạch chân cứng cho
   mọi chữ đang soạn (Swing của JDK gốc, GTK) thì vẫn hiện gạch chân của chính ứng dụng.
+- Menu: *Dùng gạch chân cho …* / *Gạch chân khi gõ trong …* / *Luôn dùng gạch chân* đổi tên thành *Soạn từng từ trong …* /
+  *Luôn soạn từng từ* (cài đặt cũ giữ nguyên): các mục này bật marked text, nay không còn kèm gạch chân.
 - Java chạy JetBrains Runtime (IntelliJ, Android Studio, ứng dụng Compose Desktop…): gõ thẳng như ô thường, không soạn —
   AWT của JetBrains Runtime chọn đúng vùng cần thay trước khi chèn (`CInputMethod.selectRange`). GTV nhận ra bằng tên hàm đó
   trong `libawt_lwawt.dylib` của bộ Java mà ứng dụng đang chạy. Java chạy JDK gốc (Burp Suite, Ghidra…: AWT bỏ vùng thay chữ)
