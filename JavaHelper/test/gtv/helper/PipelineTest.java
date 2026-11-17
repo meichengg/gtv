@@ -44,7 +44,7 @@ public final class PipelineTest {
         JTextField field = new JTextField();
         // Agent gắn Bridge trên một luồng riêng rồi qua luồng sự kiện: đợi tới khi file trạng thái có mặt.
         File state = new File(System.getProperty("user.home"),
-                              "Library/Caches/com.gtv.inputmethod.GTV/java/" + ProcessHandle.current().pid());
+                              "Library/GTV/state/" + ProcessHandle.current().pid());
         for (int i = 0; i < 100 && !state.exists(); i++) Thread.sleep(50);
         check("file trạng thái có mặt", state.exists(), true);
         EventQueue.invokeAndWait(() -> { });

@@ -28,7 +28,7 @@ public enum JavaWire {
     }
 
     /// Điều trợ thủ báo cho GTV: `GTVJ1 <D|C|N> <số lần đổi focus> <giây khởi động tiến trình>` (bản ghi 64 byte ASCII trong
-    /// ~/Library/Caches/com.gtv.inputmethod.GTV/java/<pid>).
+    /// ~/Library/GTV/state/<pid>).
     public struct State: Equatable, Sendable {
         public var focus: Focus
         /// Số lần ô giữ focus đổi — kể cả giữa hai ô trong cùng cửa sổ, việc bộ gõ không tự thấy.

@@ -11,8 +11,9 @@ import VietEngine
 ///
 /// Trợ thủ báo sự có mặt của nó qua một file nhỏ theo pid (`JavaWire.State`); GTV đọc file đó ở mỗi phím gõ vào ô Java.
 enum JavaHelper {
+    /// Cạnh file .jar, không trong Library/Caches (công cụ dọn bộ đệm xoá nó thì GTV tưởng trợ thủ không có mặt).
     private static let stateDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Caches/com.gtv.inputmethod.GTV/java").path
+        .appendingPathComponent("Library/GTV/state").path
 
     /// Nơi đặt file .jar để tham số JVM của ứng dụng trỏ tới: đường dẫn không đổi qua các lần cập nhật GTV và không có dấu
     /// cách (file tham số JVM và JAVA_TOOL_OPTIONS tách tham số theo dấu cách).

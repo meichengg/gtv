@@ -26,6 +26,8 @@ defaults delete com.gtv.inputmethod.GTV 2>/dev/null || true
 defaults delete com.gtv.GTV 2>/dev/null || true
 rm -rf "$HOME/Library/Caches/com.gtv.inputmethod.GTV" "$HOME/Library/Caches/com.gtv.GTV" \
        "$HOME/Library/HTTPStorages/com.gtv.inputmethod.GTV" "$HOME/Library/HTTPStorages/com.gtv.GTV"
+# File trạng thái của trợ thủ Java (mỗi tiến trình Java một file nhỏ; trợ thủ tự tạo lại khi cần).
+[ -d "$HOME/Library/GTV/state" ] && find "$HOME/Library/GTV/state" -type f -maxdepth 1 -delete
 # Trợ thủ Java (~/Library/GTV/gtv-java-helper.jar): KHÔNG xoá — ứng dụng Java nào còn dòng -javaagent trỏ tới nó trong tham số
 # JVM sẽ không khởi động được nếu file mất.
 JAR="$HOME/Library/GTV/gtv-java-helper.jar"

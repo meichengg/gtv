@@ -6,7 +6,8 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Điều trợ thủ báo cho bộ gõ GTV (một tiến trình khác), qua một file nhỏ:
- * {@code ~/Library/Caches/com.gtv.inputmethod.GTV/java/<pid>}, một bản ghi 64 byte ASCII ghi đè tại chỗ:
+ * {@code ~/Library/GTV/state/<pid>}, một bản ghi 64 byte ASCII ghi đè tại chỗ (không để trong Library/Caches: công cụ dọn
+ * bộ đệm xoá nó thì bộ gõ tưởng trợ thủ không có mặt):
  *
  * <pre>  GTVJ1 &lt;D|C|N&gt; &lt;số lần đổi focus&gt; &lt;giây khởi động tiến trình&gt;</pre>
  *
@@ -22,12 +23,11 @@ final class StateFile {
 
     void open() {
         try {
-            File dir = new File(System.getProperty("user.home"), "Library/Caches/com.gtv.inputmethod.GTV/java");
+            File dir = new File(System.getProperty("user.home"), "Library/GTV/state");
             dir.mkdirs();
             sweep(dir);
             path = new File(dir, Long.toString(ProcessHandle.current().pid()));
-            file = new RandomAccessFile(path, "rw");
-            file.setLength(SIZE);
+            create();
             final File mine = path;
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
                 @Override public void run() { mine.delete(); }
@@ -37,9 +37,20 @@ final class StateFile {
         }
     }
 
+    private void create() throws java.io.IOException {
+        path.getParentFile().mkdirs();
+        file = new RandomAccessFile(path, "rw");
+        file.setLength(SIZE);
+    }
+
     void write(char kind, int serial) {
-        if (file == null) return;
+        if (path == null) return;
         try {
+            // File bị xoá từ bên ngoài (gỡ rồi cài lại GTV, dọn thư mục): tạo lại, không thì bộ gõ không còn thấy trợ thủ.
+            if (file == null || !path.exists()) {
+                if (file != null) file.close();
+                create();
+            }
             file.seek(0);
             file.write(record(kind, serial, startSeconds()));
         } catch (Throwable e) {
