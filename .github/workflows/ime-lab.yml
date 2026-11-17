@@ -135,7 +135,11 @@ jobs:
       - name: Build + package GTV.app (Release)
         run: |
           set -o pipefail
-          xcodebuild -project GTV.xcodeproj -scheme GTV -configuration Release -derivedDataPath build/dd-release build \
+          # Số build theo giờ build, như build.sh: appcast ghi số build dạng YYYYMMDD.HHMMSS, nên bản để nguyên số build
+          # "1.14" cài lên máy thật sẽ bị Sparkle coi là cũ hơn bản đã phát hành và rủ cập nhật ngược.
+          read -r STAMP BUILD_NUMBER < <(date -u '+%s %Y%m%d.%H%M%S')
+          xcodebuild -project GTV.xcodeproj -scheme GTV -configuration Release -derivedDataPath build/dd-release \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" GTV_BUILD_STAMP="$STAMP" build \
             | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
           ditto -c -k --sequesterRsrc --keepParent build/dd-release/Build/Products/Release/GTV.app "$RUNNER_TEMP/GTV-release.zip"
 
