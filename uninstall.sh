@@ -26,4 +26,12 @@ defaults delete com.gtv.inputmethod.GTV 2>/dev/null || true
 defaults delete com.gtv.GTV 2>/dev/null || true
 rm -rf "$HOME/Library/Caches/com.gtv.inputmethod.GTV" "$HOME/Library/Caches/com.gtv.GTV" \
        "$HOME/Library/HTTPStorages/com.gtv.inputmethod.GTV" "$HOME/Library/HTTPStorages/com.gtv.GTV"
+# Trợ thủ Java (~/Library/GTV/gtv-java-helper.jar): KHÔNG xoá — ứng dụng Java nào còn dòng -javaagent trỏ tới nó trong tham số
+# JVM sẽ không khởi động được nếu file mất.
+JAR="$HOME/Library/GTV/gtv-java-helper.jar"
+if [ -f "$JAR" ]; then
+    echo "Còn giữ $JAR (trợ thủ Java của GTV)."
+    echo "Nếu bạn đã thêm dòng  -javaagent:$JAR  vào tham số JVM của ứng dụng Java nào (Burp Suite: user.vmoptions,"
+    echo "Ghidra: support/launch.properties…), hãy xoá dòng đó TRƯỚC rồi mới xoá file này — không thì ứng dụng đó không mở được."
+fi
 echo "Đã gỡ GTV. Nếu GTV vẫn còn trong danh sách bộ gõ, hãy đăng xuất rồi đăng nhập lại."

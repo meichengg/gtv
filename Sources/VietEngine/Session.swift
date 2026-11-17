@@ -202,6 +202,12 @@ public final class Session {
     /// Ghi log chẩn đoán (bản Debug của bộ gõ gắn vào DebugLog).
     public var log: ((String) -> Void)?
 
+    /// Ô luôn báo đúng con trỏ và chữ tại lúc hỏi (ô Java gõ trực tiếp: mỗi câu hỏi đi qua luồng sự kiện của Java, sau mọi
+    /// phím và lần sửa trước đó). Con trỏ ở chỗ khác chỗ bộ gõ nghĩ thì đơn giản là nó đã bị dời — vd. focus sang ô khác trong
+    /// cùng cửa sổ Java (cả cửa sổ là một ô với bộ gõ, không có lần gắn lại nào): đọc lại từ ở chỗ mới, không suy ra "ô không
+    /// cho biết con trỏ" hay "ô chưa xử lý xong phím" như với ô có bộ đệm chậm.
+    public var cursorReliable = false
+
     public func reset() {
         resetWeb()
         engine.reset()
@@ -405,7 +411,7 @@ public final class Session {
     private func lostTrack(_ sel: (location: Int, length: Int)?) -> String? {
         guard let sel else { return "ô không còn cho biết vị trí con trỏ" }
         let expected = anchor + engine.displayed.utf16.count
-        if sel.location == expected { return nil }
+        if sel.location == expected || cursorReliable { return nil }
         if sel.location == 0, sel.length == 0, expected > 0 {     // (⌘A chọn từ 0 thì là dời con trỏ thật: đọc lại)
             return "ô báo con trỏ ở đầu văn bản"
         }

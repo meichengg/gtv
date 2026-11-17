@@ -12,10 +12,19 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   phím giả; đoán sai là hoãn mãi lần sửa — `d9a38ng` ra nguyên văn (Burp Suite). Nay GTV không gửi một sự kiện phím nào: mọi
   chữ tới ứng dụng qua đúng giao tiếp của bộ gõ (`insertText`, `setMarkedText`). Không còn mục xin quyền Trợ năng trong menu;
   quyền đã cấp cho GTV có thể gỡ (Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Trợ năng).
-- Các ứng dụng đó (Java chạy JDK gốc như Burp Suite / Ghidra, Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, ô tự vẽ không cho
+- Các ứng dụng đó (Java chạy JDK gốc như Burp Suite / Ghidra khi chưa nạp trợ thủ Java — xem dưới —, Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, ô tự vẽ không cho
   biết con trỏ) trở lại cách của 1.12: soạn từ đang gõ bằng marked text của InputMethodKit — cách duy nhất các bộ công cụ
   này cho bộ gõ sửa chữ đã gõ. Trong lúc gõ một từ, ứng dụng tự vẽ gạch chân cho phần đang soạn (bộ gõ không tắt được: macOS
   chuyển phần đang soạn cho ô kèm kiểu tô sáng của hệ thống, không phải thuộc tính bộ gõ đưa — đo ở IME Lab).
+- **Java chạy JDK gốc: gõ thẳng qua trợ thủ Java.** Soạn từng từ trong Burp Suite rất khó chịu: ô đổi tên tab gạch chân từ
+  đang soạn, ô soạn request để con trỏ ở đầu từ, và AWT bỏ qua phím tắt / mũi tên / ⌥⌫ bấm ngay sau từ. GTV nay kèm
+  `gtv-java-helper.jar` (mã nguồn: `JavaHelper/`): nạp nó vào máy ảo của ứng dụng bằng một dòng
+  `-javaagent:~/Library/GTV/gtv-java-helper.jar` trong tham số JVM (Burp Suite: `user.vmoptions`; Ghidra: `VMARGS` trong
+  `support/launch.properties`) thì AWT nhận vùng cần thay của bộ gõ như JetBrains Runtime — GTV thay chữ trực tiếp, không còn
+  gì "đang soạn". Trợ thủ chỉ đọc vùng cần thay GTV ghi ở đầu chuỗi gửi, chọn đúng vùng đó trong ô văn bản rồi cho ô chèn
+  chữ; chữ của bộ gõ khác đi qua nguyên vẹn. Menu GTV có mục *Gõ thẳng trong … (Java)…* khi đang ở ứng dụng Java chưa có trợ
+  thủ (chép sẵn dòng cấu hình). IME Lab (JDK 25, Swing): 21/21 bài, kể cả gõ cách nhau 3 ms, ⌥⌫ rồi gõ tiếp, mũi tên / ⌘A
+  ngay sau từ, và đổi sang ô khác trong cùng cửa sổ — không một sự kiện soạn nào.
 - Menu: *Dùng gạch chân cho …* / *Gạch chân khi gõ trong …* / *Luôn dùng gạch chân* đổi tên thành *Soạn từng từ trong …* /
   *Luôn soạn từng từ* (cài đặt cũ giữ nguyên).
 - Java chạy JetBrains Runtime (IntelliJ, Android Studio, ứng dụng Compose Desktop…): gõ thẳng như ô thường, không soạn,
@@ -23,10 +32,26 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   bằng tên hàm đó trong `libawt_lwawt.dylib` của bộ Java mà ứng dụng đang chạy.
 
 ### Lưu ý
+- Lần ra lỗi chỉ gặp trên máy thật: `defaults write com.gtv.inputmethod.GTV trace -bool true` bật nhật ký sự kiện
+  `~/Library/Logs/GTV-trace.log` (tối đa 1 MB) — gắn / rời ô, đường gõ của từng phím (chỉ ghi loại phím: chữ / số / cách…,
+  không bao giờ ghi chữ đã gõ), mỗi lần đổi chế độ kèm lý do. Tắt: `defaults delete com.gtv.inputmethod.GTV trace`.
+- Java chạy JDK gốc không có trợ thủ: đổi sang ô khác bằng chương trình (không click) trong lúc một từ còn đang soạn thì Java
+  không báo cho bộ gõ — từ đó có thể bị chép sang ô mới.
+- Gỡ GTV (`uninstall.sh`) không xoá `~/Library/GTV/gtv-java-helper.jar`: ứng dụng Java còn dòng `-javaagent` trỏ tới nó sẽ
+  không khởi động được nếu file mất. Xoá dòng đó trước rồi mới xoá file.
 - Ô tự vẽ không cho biết con trỏ mà GTV chưa biết (không còn phím ⌫ giả để sửa): từ đầu tiên sau khi ô nhận focus / sau
   click ra nguyên văn, các từ sau được soạn bằng marked text.
 
 ### Sửa lỗi
+- **Gõ ra số / chữ không dấu như đang ở tiếng Anh** sau ⌘Tab, ⌥⌫ hay lúc gõ nhanh, tới lần đổi ứng dụng kế tiếp mới hết
+  (macOS 27, Burp Suite): máy đã thật sự nhảy sang English (GTV). Ngay sau khi bộ gõ được gắn vào một ô, macOS có thể chọn
+  lại chế độ nó nhớ cho ô / cửa sổ đó; GTV giữ chế độ của mình trừ khi người dùng "có thao tác" — mà thao tác tính cả ⌘ ⌥ ⇧,
+  Tab, ⌫, mũi tên và click, đúng những thứ người dùng bấm quanh lúc đổi ứng dụng. Nay chỉ phím macOS dùng để đổi bộ gõ mới
+  tính (⌃ của ⌃Space, 🌐 / fn, Caps Lock); click chỉ tính ở chỗ không phải vừa kích hoạt. Lời báo chế độ đầu tiên sau mỗi lần
+  gắn không bao giờ là người dùng chọn, kể cả khi ứng dụng bận và nó tới muộn hơn 0,6 s.
+- Java chạy JetBrains Runtime: focus sang một ô trống khác trong cùng cửa sổ mà không click (bộ gõ không được gắn lại) thì từ
+  đầu tiên ở ô mới ra nguyên văn (`d9a38ng`), các từ sau bị soạn từng từ — GTV tưởng ô không cho biết con trỏ. Ô Java gõ trực
+  tiếp luôn báo đúng con trỏ: nay GTV đọc lại từ ở chỗ mới.
 - Chế độ V/E có lúc lệch với biểu tượng rồi "tự nhảy" ở lần đổi ứng dụng kế tiếp, sau khi đổi chế độ bằng menu bộ gõ,
   ⌃Space / 🌐 hay công cụ chọn bộ gõ (không phải phím tắt ⌘⇧ của GTV): thông báo đổi bộ gõ của hệ thống có lúc tới khi GTV
   đọc bộ gõ hiện tại vẫn còn ra chế độ cũ, và GTV coi đó là người dùng vừa chọn lại chế độ cũ. Nay GTV chờ một nhịp (80 ms)

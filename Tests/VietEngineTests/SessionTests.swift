@@ -1832,6 +1832,46 @@ final class SessionTests: XCTestCase {
         XCTAssertFalse(f.session.blindLatched)
     }
 
+    /// Cửa sổ Java gõ trực tiếp (JetBrains Runtime, hay JDK gốc có trợ thủ): focus sang một ô trống khác mà bộ gõ không được
+    /// gắn lại. Ô báo đúng con trỏ (0): từ mới bắt đầu ở đó — không phải "ô không cho biết con trỏ" (IME Lab 44115545997:
+    /// JetBrains Runtime ra "d9a38ng" nguyên văn ở ô mới, rồi soạn từng từ).
+    func testReliableCursorJumpToEmptyFieldStartsNewWord() {
+        let f = Field()
+        f.options.method = .vni
+        f.session.cursorReliable = true
+        f.type("tie61ng")
+        XCTAssertEqual(f.text, "tiếng")
+        f.units = []                      // ô khác, trống
+        f.sel = (0, 0)
+        f.type("d9a38ng ca61p ")
+        XCTAssertEqual(f.text, "đẳng cấp ")
+        XCTAssertFalse(f.session.blindLatched)
+    }
+
+    /// Sang một ô đã có chữ, con trỏ ở cuối: gõ tiếp như thường, chữ cũ của ô giữ nguyên.
+    func testReliableCursorJumpToFilledFieldKeepsItsText() {
+        let f = Field()
+        f.options.method = .vni
+        f.session.cursorReliable = true
+        f.type("tie61ng")
+        f.units = Array("GET /a ".utf16)
+        f.sel = (7, 0)
+        f.type("d9a38ng ")
+        XCTAssertEqual(f.text, "GET /a đẳng ")
+    }
+
+    /// Ô thường (không có cờ): con trỏ nhảy về 0 giữa từ vẫn bị coi là ô chưa cho biết con trỏ thật — các chữ còn lại của từ đi
+    /// nguyên văn, như trước.
+    func testCursorJumpToZeroLeavesWordRawWithoutReliableCursor() {
+        let f = Field()
+        f.options.method = .vni
+        f.type("tie61ng")
+        f.units = []
+        f.sel = (0, 0)
+        f.type("d9a38ng ")
+        XCTAssertEqual(f.text, "d9a38ng ")
+    }
+
     /// Ô mù khi chưa có quyền gửi phím (Trợ năng): từ đầu tiên lộ ra là ô mù đi nguyên văn phần còn lại, các từ sau gạch chân
     /// (không đi nguyên văn mãi).
     func testBlindViewWithoutPermissionFallsBackToMarked() {

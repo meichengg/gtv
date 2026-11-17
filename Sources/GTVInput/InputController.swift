@@ -481,6 +481,7 @@ final class GTVInputController: IMKInputController {
             }
         }
         helperRoute = adapter.javaHelper
+        session.cursorReliable = directJava || helperRoute
         if clientKind == nil { classify(client) }
         // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
         let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in
