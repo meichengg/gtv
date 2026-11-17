@@ -498,7 +498,7 @@ def used_underline(app, out_file, name):
     except ValueError:
         return ""
     for l in lines[start + 1:]:
-        m = re.match(r"IM committed=(\d+) hl=(\d) text=(.*)$", l)
+        m = re.search(r"IM committed=(\d+) hl=(\d) text=(.*)$", l)
         if m and len(m.group(3)) > int(m.group(1)) and m.group(2) == "1":
             return l
     return ""

@@ -61,7 +61,7 @@ final class Modes {
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
             object: nil, queue: .main) { [weak self] _ in
-            self?.systemInputSourceChanged()
+            self?.sourceChangeNotified()
         }
         // Màn hình khoá luôn chuyển sang ABC để gõ mật khẩu, và macOS thường không trả lại bộ gõ bên
         // thứ ba khi mở khoá: tự chọn lại GTV.
@@ -146,6 +146,26 @@ final class Modes {
         return (info["CGSSessionScreenIsLocked"] as? Bool) ?? false
     }
 
+
+    /// Lần xử lý thông báo đổi bộ gõ đang hẹn (xem `sourceChangeNotified`).
+    private var sourceCheck: DispatchWorkItem?
+    /// Chờ bấy nhiêu giây sau thông báo đổi bộ gõ rồi mới đọc bộ gõ hiện tại.
+    private static let sourceSettle: TimeInterval = 0.08
+
+    /// Thông báo đổi bộ gõ của hệ thống. Không đọc bộ gõ hiện tại ngay trong lúc nhận: khi bộ gõ do tiến trình khác chọn (menu bộ
+    /// gõ, ⌃Space, công cụ chọn bộ gõ), lần đọc ngay lúc đó có lúc còn ra bộ gõ CŨ — IME Lab 44072909915: ô báo `setValue .en`,
+    /// 10 ms sau thông báo tới mà đọc ra `.vi`, GTV coi đó là người dùng chọn lại tiếng Việt (hệ thống thì ở tiếng Anh; lệch
+    /// tới lần đổi ứng dụng kế tiếp thì chế độ "tự nhảy"). Một lần đổi cũng thường báo nhiều lần. Nên chờ một nhịp rồi xử lý
+    /// một lần, theo trạng thái đã yên.
+    private func sourceChangeNotified() {
+        sourceCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.sourceCheck = nil
+            self?.systemInputSourceChanged()
+        }
+        sourceCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.sourceSettle, execute: work)
+    }
 
     private func systemInputSourceChanged() {
         // Phím gõ ở bộ gõ khác / phím đổi bộ gõ không tới GTV: đặt lại sổ phím — trừ khi đây chỉ là lần GTV tự chọn lại chế độ
