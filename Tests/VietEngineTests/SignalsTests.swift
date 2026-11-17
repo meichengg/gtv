@@ -172,6 +172,28 @@ private struct Checks {
 }
 
 final class SignalsTests: XCTestCase {
+    /// Chỉ ⌃, fn / 🌐 và Caps Lock là phím đổi bộ gõ; ⌘ ⌥ ⇧ thì không (⌘Tab, ⌥⌫, chữ hoa…).
+    func testSourceKeyPressesOnlyCountInputSwitchingKeys() {
+        var p = PressLog()
+        p.sample(at: 1.000, held: [], button: false, flags: 0)
+        p.sample(at: 1.008, held: [], button: false, flags: 0x100000)   // ⌘
+        p.sample(at: 1.016, held: [], button: false, flags: 0x120000)   // thêm ⇧
+        p.sample(at: 1.024, held: [], button: false, flags: 0x080000)   // ⌥ (đã nhả ⌘⇧)
+        p.sample(at: 1.032, held: [], button: false, flags: 0)
+        XCTAssertTrue(p.flagsPressed(from: 1.0, to: 1.035))
+        XCTAssertFalse(p.sourceKeyPressed(from: 1.0, to: 1.035))
+        p.sample(at: 1.040, held: [], button: false, flags: 0x040000)   // ⌃
+        XCTAssertTrue(p.sourceKeyPressed(from: 1.035, to: 1.045))
+        p.sample(at: 1.048, held: [], button: false, flags: 0)
+        XCTAssertFalse(p.sourceKeyPressed(from: 1.045, to: 1.05))       // nhả thì không tính
+        p.sample(at: 1.056, held: [], button: false, flags: 0x800000)   // fn / 🌐
+        XCTAssertTrue(p.sourceKeyPressed(from: 1.05, to: 1.06))
+        p.sample(at: 1.064, held: [], button: false, flags: 0x010000)   // nhả fn, bật caps lock
+        p.sample(at: 1.072, held: [], button: false, flags: 0)          // tắt caps lock: cũng là một lần bấm
+        XCTAssertTrue(p.sourceKeyPressed(from: 1.07, to: 1.08))
+        XCTAssertFalse(p.sourceKeyPressed(from: 1.08, to: 2))
+    }
+
     // MARK: - Sổ phím
 
     private func reading(_ count: UInt32, at t: Double, code: UInt16 = 0, repeat isRepeat: Bool = false) -> KeyReading {

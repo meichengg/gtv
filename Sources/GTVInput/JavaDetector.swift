@@ -93,8 +93,8 @@ enum JavaDetector {
         waited.remove(p)
         switch check.result {
         case .none: break
-        case .stock: DebugLog.write("tiến trình \(p.pid) chạy Java (JDK gốc): ô không khai báo thuộc tính văn bản soạn bằng marked text")
-        case .replacing: DebugLog.write("tiến trình \(p.pid) chạy Java (JetBrains Runtime): gõ trực tiếp")
+        case .stock: DebugLog.event("tiến trình \(p.pid) chạy Java (JDK gốc): ô không khai báo thuộc tính văn bản soạn bằng marked text")
+        case .replacing: DebugLog.event("tiến trình \(p.pid) chạy Java (JetBrains Runtime): gõ trực tiếp")
         }
         return check.result
     }

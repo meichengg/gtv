@@ -488,6 +488,12 @@ public struct PressLog {
     public private(set) var flagChanges: [FlagChange] = []
     /// Các lần nhấn thêm phím bổ trợ (⌘ ⌃ ⌥ ⇧ fn, caps lock) gần đây — nhả thì không tính.
     public private(set) var flagPresses: [Double] = []
+    /// Trong đó, các lần nhấn phím mà macOS dùng để đổi bộ gõ: ⌃ (⌃Space, ⌃⌥Space), fn / 🌐, và Caps Lock (bật hay tắt đều là
+    /// một lần bấm). ⌘ ⌥ ⇧ thì người dùng bấm suốt lúc làm việc (⌘Tab, ⌥⌫, chữ hoa…) mà không hề chọn bộ gõ.
+    public private(set) var sourceKeyPresses: [Double] = []
+    /// Cờ của WindowServer (CGEventFlags): caps lock, ⌃, fn.
+    public static let capsLockFlag: UInt64 = 1 << 16
+    public static let sourceKeyFlags: UInt64 = (1 << 18) | (1 << 23)
     /// Đọc liên tục (không hở quá `maxGap`) từ lúc này tới lần đọc cuối; nil: chưa đọc.
     public private(set) var coveredSince: Double?
     public private(set) var lastSample: Double?
@@ -652,6 +658,7 @@ public struct PressLog {
         if let old = flags, old != f {
             flagChanges.append(FlagChange(after: last, at: t, keys: (old ^ f).nonzeroBitCount))
             if f & ~old != 0 { flagPresses.append(t) }
+            if (f & ~old) & Self.sourceKeyFlags != 0 || (f ^ old) & Self.capsLockFlag != 0 { sourceKeyPresses.append(t) }
         }
         flags = f
         // keyDown đã nhận mà chưa thấy lần nhấn: lần nhấn thấy sau này bắt đầu sau lần đọc này — không thể là của nó.
@@ -829,6 +836,11 @@ public struct PressLog {
         flagPresses.contains { $0 >= from && $0 <= to }
     }
 
+    /// Có lần nhấn phím đổi bộ gõ (⌃, fn / 🌐, Caps Lock) nào trong [from, to] không.
+    public func sourceKeyPressed(from: Double, to: Double) -> Bool {
+        sourceKeyPresses.contains { $0 >= from && $0 <= to }
+    }
+
     /// Đã đọc liên tục từ trước `t` tới lần đọc cuối.
     public func covered(since t: Double) -> Bool {
         guard let from = coveredSince else { return false }
@@ -846,6 +858,8 @@ public struct PressLog {
             releases.removeFirst(releases.count - 64)
         }
         flagPresses.removeAll { $0 < t && stamp > $0 + Self.orderSlack }
+        sourceKeyPresses.removeAll { $0 < t }
+        if sourceKeyPresses.count > 64 { sourceKeyPresses.removeFirst(sourceKeyPresses.count - 64) }
         if flagPresses.count > 64 {
             unresolvedAt = max(unresolvedAt ?? -.infinity, flagPresses[flagPresses.count - 65])
             flagPresses.removeFirst(flagPresses.count - 64)

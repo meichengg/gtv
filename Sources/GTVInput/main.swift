@@ -6,7 +6,7 @@ let connectionName = Bundle.main.infoDictionary?["InputMethodConnectionName"] as
     ?? "com.gtv.inputmethod.GTV_Connection"
 let server = IMKServer(name: connectionName, bundleIdentifier: Bundle.main.bundleIdentifier)
 
-DebugLog.write("khởi động")
+DebugLog.event("khởi động, phiên bản \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?")")
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)   // không hiện trên Dock

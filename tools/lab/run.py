@@ -806,7 +806,7 @@ def run_modes():
             break
         time.sleep(0.1)
     time.sleep(1.5)
-    sh([DRV, "-", "20", "{TAPSHIFT}{IS:en}"])
+    sh([DRV, "-", "20", "{TAPCTRL}{IS:en}"])
     check("start-en", "en")
     for app in ["/System/Applications/TextEdit.app", "/System/Library/CoreServices/Finder.app", term[1]]:
         sh(["open", "-a", app]); check("switch-" + pathlib.Path(app).stem, "en")
@@ -814,22 +814,33 @@ def run_modes():
     # chính "vi" -> GTV giữ "en"
     sh([DRV, "-", "20", "{SECURE:on}{IS:abc}{WAIT800}{SECURE:off}{IS:vi}"]); check("password-return-keeps-en", "en")
     # Người dùng tự chọn ABC rồi tự chọn "Tiếng Việt (GTV)" trong menu bộ gõ -> theo
-    sh([DRV, "-", "20", "{TAPSHIFT}{IS:abc}{WAIT1000}{TAPSHIFT}{IS:vi}"]); check("user-abc-then-vi", "vi")
+    sh([DRV, "-", "20", "{TAPCTRL}{IS:abc}{WAIT1000}{TAPCTRL}{IS:vi}"]); check("user-abc-then-vi", "vi")
     # Chiều ngược lại: đang "vi", từ ABC chọn "English (GTV)" -> theo
-    sh([DRV, "-", "20", "{TAPSHIFT}{IS:abc}{WAIT1000}{TAPSHIFT}{IS:en}"]); check("user-abc-then-en", "en")
+    sh([DRV, "-", "20", "{TAPCTRL}{IS:abc}{WAIT1000}{TAPCTRL}{IS:en}"]); check("user-abc-then-en", "en")
     # Người dùng tự đổi (không đổi ứng dụng): theo
     time.sleep(1.0)
-    sh([DRV, "-", "20", "{TAPSHIFT}{IS:vi}"]); check("user-switch-to-vi", "vi")
+    sh([DRV, "-", "20", "{TAPCTRL}{IS:vi}"]); check("user-switch-to-vi", "vi")
     for app in ["/System/Applications/TextEdit.app", term[1]]:
         sh(["open", "-a", app]); check("switch-vi-" + pathlib.Path(app).stem, "vi")
     # Đổi ứng dụng rồi 0,3 s sau người dùng chọn "English (GTV)" (⌃Space, 🌐…) -> theo, không bị đảo lại
     sh(["open", "-a", "/System/Applications/TextEdit.app"]); time.sleep(0.3)
-    sh([DRV, "-", "20", "{TAPSHIFT}{IS:en}"]); check("user-switch-right-after-app-switch", "en")
+    sh([DRV, "-", "20", "{TAPCTRL}{IS:en}"]); check("user-switch-right-after-app-switch", "en")
+    # Lỗi người dùng gặp (macOS 27, Burp): vừa đổi ứng dụng xong bấm ⇧ / ⌘ / ⌥ (gõ chữ hoa, ⌘V, ⌥⌫…) đúng lúc hệ thống chọn
+    # lại chế độ nó nhớ cho ứng dụng đó — GTV coi là người dùng chọn, gõ ra số / không dấu. Phím đó không phải thao tác chọn
+    # bộ gõ: GTV phải giữ chế độ.
+    time.sleep(1.0)
+    sh([DRV, "-", "20", "{TAPCTRL}{IS:vi}"]); check("back-to-vi", "vi")
+    sh(["open", "-a", term[1]]); time.sleep(0.3)
+    sh([DRV, "-", "20", "{TAPSHIFT}{IS:en}"]); check("shift-after-app-switch-keeps-vi", "vi")
+    sh(["open", "-a", "/System/Applications/TextEdit.app"]); time.sleep(0.3)
+    sh([DRV, "-", "20", "{TAB}{IS:en}"]); check("tab-after-app-switch-keeps-vi", "vi")
+    time.sleep(1.0)
+    sh([DRV, "-", "20", "{TAPCTRL}{IS:en}"]); check("back-to-en", "en")
     # Từ ABC chọn lại một chế độ của GTV, lặp nhiều lần: macOS gắn GTV vào ô rồi mới báo chế độ người dùng chọn — GTV không
     # được chọn đè chế độ cũ, lời báo cho lần GTV tự chọn không phải người dùng chọn (lab 42055281996, có lúc mới gặp).
     for i in range(int(os.environ.get("MODES_REPEAT", "3"))):
         for target in ("vi", "en"):
-            sh([DRV, "-", "20", "{TAPSHIFT}{IS:abc}{WAIT1000}{TAPSHIFT}{IS:" + target + "}"])
+            sh([DRV, "-", "20", "{TAPCTRL}{IS:abc}{WAIT1000}{TAPCTRL}{IS:" + target + "}"])
             check(f"user-abc-then-{target}-{i + 1}", target)
     out += run_hotkey_modes(term, check, out)
     sh(["pkill", "-x", "TextEdit"])

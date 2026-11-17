@@ -40,7 +40,7 @@ enum JavaHelper {
     static func installJar() {
         guard let bundled = Bundle.main.url(forResource: "gtv-java-helper", withExtension: "jar"),
               let data = try? Data(contentsOf: bundled) else {
-            DebugLog.write("trợ thủ Java: gói bộ gõ không có gtv-java-helper.jar")
+            DebugLog.event("trợ thủ Java: gói bộ gõ không có gtv-java-helper.jar")
             return
         }
         let fm = FileManager.default
@@ -51,12 +51,12 @@ enum JavaHelper {
             try data.write(to: temp)
             if rename(temp.path, jarURL.path) != 0 {
                 try? fm.removeItem(at: temp)
-                DebugLog.write("trợ thủ Java: không đặt được \(jarURL.path) (errno \(errno))")
+                DebugLog.event("trợ thủ Java: không đặt được \(jarURL.path) (errno \(errno))")
                 return
             }
-            DebugLog.write("trợ thủ Java: đã đặt \(jarURL.path)")
+            DebugLog.event("trợ thủ Java: đã đặt \(jarURL.path)")
         } catch {
-            DebugLog.write("trợ thủ Java: không chép được: \(error.localizedDescription)")
+            DebugLog.event("trợ thủ Java: không chép được: \(error.localizedDescription)")
         }
     }
 

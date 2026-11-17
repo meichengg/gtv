@@ -2,7 +2,7 @@
 //   driver <bundleID mong đợi> <ms giữa 2 phím> <chuỗi>
 // Phím đặc biệt: {BS} {RET} {TAB} {ESC} {LEFT} {RIGHT} {UP} {DOWN} {CA} {CE} {CU} {CX} {CQ}=Ctrl+\ {CMDN} {OPTBS}
 // Lệnh: {WAIT<ms>}  {IS:vi} {IS:en} {IS:abc} (chọn input source)  {MS:<ms>} (đổi khoảng cách giữa 2 phím)
-//       {TOGGLE} (nhấn-nhả ⌘⇧)  {TAPSHIFT} (nhấn-nhả Shift: thao tác của người dùng trước khi chọn bộ gõ)
+//       {TOGGLE} (nhấn-nhả ⌘⇧)  {TAPCTRL} (nhấn-nhả ⌃: người dùng đổi bộ gõ, như ⌃Space)  {TAPSHIFT} (nhấn-nhả ⇧: không phải thao tác chọn bộ gõ)
 //       {SECURE:on} {SECURE:off} (bật/tắt secure input như ô mật khẩu; tự tắt khi driver thoát)
 // Dừng ngay (mã 3) nếu ứng dụng phía trước không phải <bundleID> ("-" = không kiểm tra).
 import Carbon
@@ -139,10 +139,15 @@ func toggleHotkey() {
 }
 
 /// Nhấn rồi nhả Shift (phím bổ trợ, không gõ ra chữ): như người dùng vừa thao tác.
-func tapShift() {
+func tapShift() { tapModifier(56, .maskShift) }
+
+/// Nhấn-nhả ⌃ như lúc người dùng đổi bộ gõ bằng ⌃Space (GTV chỉ coi ⌃, 🌐, Caps Lock là thao tác chọn bộ gõ).
+func tapControl() { tapModifier(59, .maskControl) }
+
+func tapModifier(_ code: CGKeyCode, _ mask: CGEventFlags) {
     check()
-    for (down, flags) in [(true, CGEventFlags.maskShift), (false, CGEventFlags())] {
-        guard let e = CGEvent(keyboardEventSource: source, virtualKey: 56, keyDown: down) else { continue }
+    for (down, flags) in [(true, mask), (false, CGEventFlags())] {
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
         e.type = .flagsChanged
         e.flags = flags
         e.post(tap: tapLocation)
@@ -164,6 +169,7 @@ while let c = s.first {
         if name.hasPrefix("IS:") { selectInputSource(String(name.dropFirst(3))); continue }
         if name == "TOGGLE" { toggleHotkey(); continue }
         if name == "TAPSHIFT" { tapShift(); continue }
+        if name == "TAPCTRL" { tapControl(); continue }
         if name == "SECURE:on" { _ = EnableSecureEventInput(); usleep(100_000); continue }
         if name == "SECURE:off" { _ = DisableSecureEventInput(); usleep(100_000); continue }
         guard let (k, f, t) = special[name] else { print("phím lạ: \(name)"); exit(2) }

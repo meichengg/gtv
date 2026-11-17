@@ -195,7 +195,7 @@ final class GTVInputController: IMKInputController {
         // IME Lab: thuộc tính marked text ô nhập liệu nhận — phân biệt view terminal với ô văn bản thường (NSTextView).
         DebugLog.write("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-")\(chromiumWeb ? " web" : "") attrs=[\(Self.markedTextAttributes(client).joined(separator: ","))] sel=\(client.selectedRange()) len=\(client.length())")
         #else
-        DebugLog.write("activateServer \(bundleID)")
+        DebugLog.event("activateServer \(bundleID) kind=\(clientKind.map { "\($0)" } ?? "-")\(chromiumWeb ? " web" : "")")
         #endif
         Modes.shared.clientActivated(client, bundleID: bundleID)
         _ = AppToolkit.profile(bundleID)   // kiểm tra trước ở luồng nền, có kết quả trước khi cần
@@ -287,7 +287,7 @@ final class GTVInputController: IMKInputController {
         guard let state = JavaDetector.helper(bundleID) else { return false }
         if let last = javaFocus, last != state.serial {
             // Con trỏ sang ô khác trong cùng cửa sổ Java (bộ gõ không được gắn lại): từ đang gõ thuộc về ô cũ.
-            DebugLog.write("Java: ô giữ focus đổi (\(last) → \(state.serial)) — bắt đầu từ mới")
+            DebugLog.event("Java: ô giữ focus đổi (\(last) → \(state.serial)) — bắt đầu từ mới")
             javaCommit?.cancel()
             session.reset()
             session.fieldChanged()
@@ -305,7 +305,7 @@ final class GTVInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
-        DebugLog.write("deactivateServer \(bundleID)")
+        DebugLog.event("deactivateServer \(bundleID)")
         javaCommit?.cancel()
         commit(sender)
         LiveInput.shared.endTerminal()      // rời ô: không cần đọc trạng thái phím cho nó nữa (pin)
@@ -314,7 +314,7 @@ final class GTVInputController: IMKInputController {
     /// Ứng dụng (hay InputMethodKit) muốn chốt — không phải lúc mất focus (đó là `deactivateServer`). Gõ trực tiếp thì giữ
     /// từ đang gõ nếu nó vẫn nằm nguyên trước con trỏ, xem `Session.commitRequested`.
     override func commitComposition(_ sender: Any!) {
-        DebugLog.write("commitComposition \(bundleID)")
+        DebugLog.event("commitComposition \(bundleID)")
         // Java: AWTView gọi abandonInput sau MỌI lần chèn chữ, kể cả chữ của phím đi thẳng — trước khi chữ đó vào văn bản. Ô
         // gõ trực tiếp (JetBrains Runtime) không có gì đang soạn: bỏ từ ở đây thì từ không bao giờ đủ dài để thêm dấu (IME Lab
         // 44067817184: mọi phím "đi thẳng"). Mỗi lần sửa vẫn đối chiếu lại với màn hình (`Session.lostTrack`, `replace`).
@@ -337,7 +337,7 @@ final class GTVInputController: IMKInputController {
         let wasVietnamese = Modes.shared.vietnamese
         Modes.shared.modeSelected(mode)
         let changed = Modes.shared.vietnamese != wasVietnamese
-        DebugLog.write("setValue \(mode) \(bundleID): \(changed ? "đổi chế độ" : "chế độ không đổi, giữ từ đang gõ")")
+        DebugLog.event("setValue \(mode) \(bundleID): \(changed ? "đổi chế độ" : "chế độ không đổi, giữ từ đang gõ")")
         guard changed else { return }
         commit(sender)
         KeyWatch.shared.rebase()             // phím đổi chế độ (🌐, ⌃Space…) không tới bộ gõ
@@ -376,6 +376,7 @@ final class GTVInputController: IMKInputController {
                     // Phím tắt như ⌘⇧Z được ứng dụng xử lý trước, bộ gõ không thấy phím Z:
                     // hỏi hệ thống xem có phím/click nào xen vào không.
                     if let armed = hotkeyArmedAt, Hotkey.isCleanTap(since: armed) {
+                        DebugLog.event("phím tắt đổi Anh/Việt (\(bundleID))")
                         commit(client)
                         // Chọn chế độ ngoài lúc đang xử lý sự kiện phím.
                         DispatchQueue.main.async { Modes.shared.toggle() }
@@ -425,7 +426,11 @@ final class GTVInputController: IMKInputController {
 
         // Chế độ tiếng Anh, hoặc ứng dụng loại trừ: phím đi thẳng.
         guard Modes.shared.vietnamese, !settings.excludedApps.contains(bundleID) else {
+            #if DEBUG
             DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID): chế độ E, đi thẳng")
+            #else
+            DebugLog.event("phím \(Self.keyClass(event, flags)) \(bundleID): chế độ E, đi thẳng")
+            #endif
             commit(client)
             return false
         }
@@ -492,14 +497,28 @@ final class GTVInputController: IMKInputController {
         if javaView == true, !helperRoute { scheduleJavaCommit(client) }
         // Ô web Chromium: mọi phím đặc biệt (⌫, mũi tên, ⏎) đều qua bộ gõ.
         webRoute = web
-        #if DEBUG
         let route = web ? "web" : terminal != nil ? "terminal" : forceMarked ? "soạn (marked)"
             : helperRoute ? "trực tiếp (trợ thủ Java)" : "trực tiếp"
+        #if DEBUG
         // Ô Java trả lời qua luồng sự kiện của nó — hỏi ở mỗi phím làm app chậm: không hỏi.
         let where_ = javaView == true ? "" : " sel=\(client.selectedRange()) len=\(client.length())"
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng")\(where_)")
+        #else
+        DebugLog.event("phím \(Self.keyClass(event, flags)) \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng")")
         #endif
         return handled
+    }
+
+    /// Loại phím cho nhật ký sự kiện — không bao giờ ghi chính ký tự người dùng gõ.
+    private static func keyClass(_ event: NSEvent, _ flags: NSEvent.ModifierFlags) -> String {
+        if !flags.isDisjoint(with: [.command, .control, .option]) { return "phím tắt" }
+        if event.keyCode == 51 { return "⌫" }
+        guard let ch = event.characters?.unicodeScalars.first, event.characters?.unicodeScalars.count == 1 else { return "khác" }
+        if ch == " " { return "cách" }
+        if CharacterSet.letters.contains(ch) { return "chữ" }
+        if CharacterSet.decimalDigits.contains(ch) { return "số" }
+        if ch.value < 0x20 || ch.value == 0x7f || (0xF700...0xF8FF).contains(ch.value) { return "khác" }
+        return "dấu"
     }
 
     // MARK: - Menu trong biểu tượng bộ gõ của macOS
