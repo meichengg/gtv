@@ -193,6 +193,8 @@ jobs:
 
       - name: Run lab
         if: env.MODE == 'full'
+        env:
+          GH_TOKEN: ${{ github.token }}     # tra bản JetBrains Runtime mới nhất qua API của GitHub
         run: python3 tools/lab/run.py
 
       # Sau cùng: bước dò đổi input source từ tiến trình khác (TISSelectInputSource), làm Terminal.app có lúc thôi gửi
