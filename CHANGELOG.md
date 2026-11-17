@@ -18,11 +18,19 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   chuyển phần đang soạn cho ô kèm kiểu tô sáng của hệ thống, không phải thuộc tính bộ gõ đưa — đo ở IME Lab).
 - Menu: *Dùng gạch chân cho …* / *Gạch chân khi gõ trong …* / *Luôn dùng gạch chân* đổi tên thành *Soạn từng từ trong …* /
   *Luôn soạn từng từ* (cài đặt cũ giữ nguyên).
-- Java chạy JetBrains Runtime (IntelliJ, Android Studio, ứng dụng Compose Desktop…): gõ thẳng như ô thường, không soạn —
-  AWT của JetBrains Runtime chọn đúng vùng cần thay trước khi chèn (`CInputMethod.selectRange`). GTV nhận ra bằng tên hàm đó
-  trong `libawt_lwawt.dylib` của bộ Java mà ứng dụng đang chạy.
+- Java chạy JetBrains Runtime (IntelliJ, Android Studio, ứng dụng Compose Desktop…): gõ thẳng như ô thường, không soạn,
+  không gạch chân — AWT của JetBrains Runtime chọn đúng vùng cần thay trước khi chèn (`CInputMethod.selectRange`). GTV nhận ra
+  bằng tên hàm đó trong `libawt_lwawt.dylib` của bộ Java mà ứng dụng đang chạy.
+
+### Lưu ý
+- Ô tự vẽ không cho biết con trỏ mà GTV chưa biết (không còn phím ⌫ giả để sửa): từ đầu tiên sau khi ô nhận focus / sau
+  click ra nguyên văn, các từ sau được soạn bằng marked text.
 
 ### Sửa lỗi
+- Chế độ V/E có lúc lệch với biểu tượng rồi "tự nhảy" ở lần đổi ứng dụng kế tiếp, sau khi đổi chế độ bằng menu bộ gõ,
+  ⌃Space / 🌐 hay công cụ chọn bộ gõ (không phải phím tắt ⌘⇧ của GTV): thông báo đổi bộ gõ của hệ thống có lúc tới khi GTV
+  đọc bộ gõ hiện tại vẫn còn ra chế độ cũ, và GTV coi đó là người dùng vừa chọn lại chế độ cũ. Nay GTV chờ một nhịp (80 ms)
+  sau thông báo rồi mới đọc, một lần cho cả loạt thông báo của cùng một lần đổi.
 - Bộ gõ khởi động lại lúc một ô nhập liệu đang mở (vd. sau khi cập nhật): ô đó chưa áp dụng cài đặt riêng của ứng dụng (loại
   trừ, soạn từng từ, terminal) cho tới khi đổi sang ứng dụng khác. (Từ bản gốc 1.11.2.)
 
