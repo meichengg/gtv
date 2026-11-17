@@ -109,21 +109,26 @@ final class Modes {
     /// khoá" (thấy khi gập máy rồi mở lại), nên nếu còn khoá thì kiểm tra lại mỗi 0,5 giây, tối đa
     /// 2 phút (đủ thời gian nhập mật khẩu).
     private func resume(_ reason: String) {
-        let locked = Self.isScreenLocked
+        let locked = Self.lockScreenShowing
         DebugLog.event("tiếp tục (\(reason)), màn hình khoá=\(locked), gtvInUse=\(gtvInUse), hiện tại=\(InputSources.currentID ?? "-")")
         if locked {
-            let startPolling = unlockDeadline == nil
-            unlockDeadline = Date().addingTimeInterval(120)
-            if startPolling { pollUnlock() }
+            awaitUnlock(for: 120)
             return
         }
         unlockDeadline = nil
         unlocked()
     }
 
+    /// Màn hình đang khoá: kiểm tra lại mỗi 0,5 giây, ít nhất `seconds` giây nữa, rồi khôi phục GTV khi hết khoá.
+    private func awaitUnlock(for seconds: TimeInterval) {
+        let startPolling = unlockDeadline == nil
+        unlockDeadline = max(unlockDeadline ?? .distantPast, Date().addingTimeInterval(seconds))
+        if startPolling { pollUnlock() }
+    }
+
     private func pollUnlock() {
         guard let deadline = unlockDeadline else { return }
-        if !Self.isScreenLocked {
+        if !Self.lockScreenShowing {
             unlockDeadline = nil
             DebugLog.event("màn hình đã hết khoá")
             unlocked()
@@ -142,7 +147,7 @@ final class Modes {
     }
 
     private func restoreGTV() {
-        guard gtvInUse, !suspended, !Self.isScreenLocked, !InputSources.isGTVSelected else { return }
+        guard gtvInUse, !suspended, !Self.lockScreenShowing, !InputSources.isGTVSelected else { return }
         DebugLog.event("khôi phục GTV (\(vietnamese ? "vi" : "en")), đang ở \(InputSources.currentID ?? "-")")
         select(vietnamese ? InputSources.vietnameseID : InputSources.englishID)
     }
@@ -150,6 +155,11 @@ final class Modes {
     private static var isScreenLocked: Bool {
         guard let info = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
         return (info["CGSSessionScreenIsLocked"] as? Bool) ?? false
+    }
+
+    /// Màn hình khoá đang hiện: cờ của phiên, hoặc cửa sổ đăng nhập đang ở trước (cờ có lúc tắt / bật lệch với màn hình thật).
+    private static var lockScreenShowing: Bool {
+        isScreenLocked || NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.loginwindow"
     }
 
 
@@ -182,6 +192,12 @@ final class Modes {
         DebugLog.event("bộ gõ đổi -> \(InputSources.currentID ?? "-"), front=\(front), tạm dừng=\(suspended)")
         let wasGTV = lastSourceIsGTV
         lastSourceIsGTV = InputSources.isGTVSelected
+        if !suspended, !lastSourceIsGTV, front == "com.apple.loginwindow" || Self.isScreenLocked {
+            // Màn hình khoá đã chuyển sang ABC mà thông báo khoá chưa tới — hoặc không bao giờ tới (máy macOS 27 của người dùng:
+            // mở khoá xong máy ở lại ABC). Tự coi là đang khoá và tự chờ mở khoá (tối đa 12 giờ), không trông vào thông báo.
+            suspend("màn hình khoá, chưa có thông báo")
+            awaitUnlock(for: 12 * 3600)
+        }
         if wasGTV && !lastSourceIsGTV {
             leftGTVBySystem = suspended || front == "com.apple.loginwindow" || Self.isScreenLocked
                 || IsSecureEventInputEnabled() || appSwitchedBySystem
@@ -196,6 +212,13 @@ final class Modes {
                 // Người dùng tự chọn bộ gõ khác? Chỉ tin sau 3 giây không có khoá/ngủ.
                 let work = DispatchWorkItem { [weak self] in
                     guard let self, !self.suspended, !InputSources.isGTVSelected else { return }
+                    if Self.lockScreenShowing {
+                        // Lần đổi sang ABC tới trước khi màn hình kịp báo khoá, và thông báo khoá không tới: không phải người
+                        // dùng rời GTV.
+                        self.suspend("màn hình khoá sau khi rời GTV, chưa có thông báo")
+                        self.awaitUnlock(for: 12 * 3600)
+                        return
+                    }
                     self.gtvInUse = false
                     DebugLog.event("ghi nhận: người dùng đã rời GTV")
                 }
