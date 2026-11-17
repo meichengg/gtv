@@ -84,6 +84,7 @@ public final class HelperTest {
             readOnly(c, kind);
         }
         stateRecord();
+        focusKinds();
     }
 
     private static void wireFormat() {
@@ -190,10 +191,31 @@ public final class HelperTest {
     }
 
     private static void stateRecord() {
-        byte[] r = StateFile.record(true, 42, 1794900000L);
+        byte[] r = StateFile.record('D', 42, 1794900000L);
         check("bản ghi: 64 byte", r.length, 64);
         check("bản ghi: nội dung", new String(r, StandardCharsets.US_ASCII).trim(), "GTVJ1 D 42 1794900000");
         check("bản ghi: xuống dòng cuối", r[63], (byte) '\n');
-        check("bản ghi: ô khác", new String(StateFile.record(false, 0, 0), StandardCharsets.US_ASCII).trim(), "GTVJ1 C 0 0");
+        check("bản ghi: ô khác", new String(StateFile.record('C', 0, 0), StandardCharsets.US_ASCII).trim(), "GTVJ1 C 0 0");
+    }
+
+    private static void focusKinds() {
+        JTextArea editable = new JTextArea();
+        JTextArea readOnly = new JTextArea();
+        readOnly.setEditable(false);
+        check("loại ô: ô văn bản sửa được", Bridge.kind(editable), 'D');
+        check("loại ô: ô một dòng", Bridge.kind(new JTextField()), 'D');
+        check("loại ô: ô văn bản chỉ đọc", Bridge.kind(readOnly), 'N');
+        check("loại ô: không ô nào", Bridge.kind(null), 'N');
+        check("loại ô: bảng", Bridge.kind(new javax.swing.JTable()), 'N');
+        check("loại ô: cây", Bridge.kind(new javax.swing.JTree()), 'N');
+        check("loại ô: danh sách", Bridge.kind(new javax.swing.JList<String>()), 'N');
+        check("loại ô: nút", Bridge.kind(new javax.swing.JButton("x")), 'N');
+        check("loại ô: tab", Bridge.kind(new javax.swing.JTabbedPane()), 'N');
+        check("loại ô: ô tự vẽ", Bridge.kind(new javax.swing.JComponent() { }), 'C');
+        check("loại ô: ô tự vẽ có hỗ trợ bộ gõ", Bridge.kind(new javax.swing.JComponent() {
+            @Override public java.awt.im.InputMethodRequests getInputMethodRequests() {
+                return new JTextArea().getInputMethodRequests();
+            }
+        }), 'C');
     }
 }

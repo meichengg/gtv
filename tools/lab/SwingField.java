@@ -96,6 +96,9 @@ public class SwingField {
                     append(events, "AWT im id=" + m.getID() + " committed=" + m.getCommittedCharacterCount());
                 }
             }, java.awt.AWTEvent.KEY_EVENT_MASK | java.awt.AWTEvent.INPUT_METHOD_EVENT_MASK);
+            // Một nút (ô không nhận chữ, như bảng / cây của Burp): phím gõ lúc nó giữ focus là lệnh, không phải chữ.
+            javax.swing.JButton button = new javax.swing.JButton("nút");
+            frame.add(button, java.awt.BorderLayout.SOUTH);
             frame.add(title, java.awt.BorderLayout.NORTH);
             frame.add(new JScrollPane(area), java.awt.BorderLayout.CENTER);
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -121,7 +124,7 @@ public class SwingField {
                     try {
                         String which = new String(Files.readAllBytes(focus), StandardCharsets.UTF_8).trim();
                         Files.deleteIfExists(focus);
-                        ("title".equals(which) ? title : area).requestFocusInWindow();
+                        ("title".equals(which) ? title : "button".equals(which) ? button : area).requestFocusInWindow();
                         append(events, "FOCUS " + which);
                     } catch (Exception ex) { ex.printStackTrace(); }
                 }

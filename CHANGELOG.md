@@ -22,7 +22,8 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   `-javaagent:~/Library/GTV/gtv-java-helper.jar` trong tham số JVM (Burp Suite: `user.vmoptions`; Ghidra: `VMARGS` trong
   `support/launch.properties`) thì AWT nhận vùng cần thay của bộ gõ như JetBrains Runtime — GTV thay chữ trực tiếp, không còn
   gì "đang soạn". Trợ thủ chỉ đọc vùng cần thay GTV ghi ở đầu chuỗi gửi, chọn đúng vùng đó trong ô văn bản rồi cho ô chèn
-  chữ; chữ của bộ gõ khác đi qua nguyên vẹn. Menu GTV có mục *Gõ thẳng trong … (Java)…* khi đang ở ứng dụng Java chưa có trợ
+  chữ; chữ của bộ gõ khác đi qua nguyên vẹn. Trợ thủ cũng báo cho GTV ô nào đang giữ focus trong cửa sổ Java: sang ô khác
+  thì GTV bắt đầu từ mới, và ở ô không nhận chữ (bảng, cây, nút, ô chỉ đọc) phím đi thẳng tới ứng dụng. Menu GTV có mục *Gõ thẳng trong … (Java)…* khi đang ở ứng dụng Java chưa có trợ
   thủ (chép sẵn dòng cấu hình). IME Lab (JDK 25, Swing): 21/21 bài, kể cả gõ cách nhau 3 ms, ⌥⌫ rồi gõ tiếp, mũi tên / ⌘A
   ngay sau từ, và đổi sang ô khác trong cùng cửa sổ — không một sự kiện soạn nào.
 - Menu: *Dùng gạch chân cho …* / *Gạch chân khi gõ trong …* / *Luôn dùng gạch chân* đổi tên thành *Soạn từng từ trong …* /

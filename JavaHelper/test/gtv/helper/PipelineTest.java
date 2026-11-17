@@ -50,7 +50,7 @@ public final class PipelineTest {
         EventQueue.invokeAndWait(() -> { });
         String record = new String(Files.readAllBytes(state.toPath()), StandardCharsets.US_ASCII);
         check("file trạng thái dài 64 byte", record.length(), 64);
-        check("chưa ô nào giữ focus: soạn từng từ", record.startsWith("GTVJ1 C 0 "), true);
+        check("chưa ô nào giữ focus: phím đi thẳng", record.startsWith("GTVJ1 N 0 "), true);
         long start = Long.parseLong(record.trim().split(" ")[3]);
         long now = System.currentTimeMillis() / 1000;
         check("giờ khởi động tiến trình hợp lý", start > now - 600 && start <= now + 5, true);

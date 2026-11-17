@@ -120,6 +120,11 @@ JAVA_DIRECT_TESTS = APP_TESTS + [
     ("java-focus-back", "vni", "{FOCUS:title}tuye65t{FOCUS:area}d9o61i ", "đối |tuyệt", 45),
     ("java-title-fast", "vni", "{FOCUS:title}d9a38ng ca61p tuye65t d9o61i", "|đẳng cấp tuyệt đối", 3),
 ]
+# Có trợ thủ: focus ở một nút (ô không nhận chữ, như bảng / cây của Burp) thì phím đi thẳng — không có gì được soạn; quay
+# lại ô văn bản thì gõ tiếp như thường.
+JAVA_HELPER_TESTS = JAVA_DIRECT_TESTS + [
+    ("java-focus-button", "vni", "tie61ng{FOCUS:button}d9a38ng{FOCUS:area} ca61p ", "tiếng cấp |", 45),
+]
 # Ô Java soạn từng từ (JDK gốc, không có trợ thủ): đổi ô bằng chương trình thì Java tự chốt từ đang soạn.
 JAVA_COMPOSE_TESTS = APP_TESTS + [
     ("java-focus", "vni", "tie61ng{FOCUS:title}d9a38ng ca61p{WAIT1300}", "tiếng|đẳng cấp", 45),
@@ -665,7 +670,7 @@ def run_app_suite(app, only=None, tag=None):
                 return [{"terminal": app, "test": "-", "error": "không có JetBrains Runtime" if app == "swingjbr" else "không có JDK 11+"}]
             print(app, "java:", java, sh([java, "-version"]).stderr.strip().replace("\n", " | "), flush=True)
             cmd = [java]
-            tests = JAVA_COMPOSE_TESTS if app == "swing" else JAVA_DIRECT_TESTS
+            tests = JAVA_COMPOSE_TESTS if app == "swing" else JAVA_HELPER_TESTS if app == "swinghelper" else JAVA_DIRECT_TESTS
             if app == "swinghelper":
                 # Bản trợ thủ đi kèm chính bộ gõ đang thử (cũng là thử việc đóng gói).
                 jar = IM / "Contents/Resources/gtv-java-helper.jar"

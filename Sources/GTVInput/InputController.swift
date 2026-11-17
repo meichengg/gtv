@@ -274,17 +274,17 @@ final class GTVInputController: IMKInputController {
         }
     }
 
-    /// Ô Java (JDK gốc): trong máy ảo có trợ thủ GTV và ô đang giữ focus là ô văn bản sửa được — thay chữ trực tiếp qua trợ thủ.
+    /// Ô Java (JDK gốc): loại ô đang giữ focus theo trợ thủ GTV trong máy ảo (`JavaWire.Focus`); nil: máy ảo không có trợ thủ.
     /// Hỏi vị trí con trỏ trước khi đọc trạng thái: câu trả lời đi qua luồng sự kiện của Java, nên khi nó về thì mọi lần đổi
     /// focus xảy ra trước phím này đã được trợ thủ ghi lại.
-    private func javaHelperDirect() -> Bool {
+    private func javaHelperFocus() -> JavaWire.Focus? {
         guard JavaDetector.helper(bundleID) != nil else {      // không có trợ thủ: khỏi hỏi ô
             javaFocus = nil
-            return false
+            return nil
         }
         adapter.remembersSelection = true
         _ = adapter.selectedRange()
-        guard let state = JavaDetector.helper(bundleID) else { return false }
+        guard let state = JavaDetector.helper(bundleID) else { return nil }
         if let last = javaFocus, last != state.serial {
             // Con trỏ sang ô khác trong cùng cửa sổ Java (bộ gõ không được gắn lại): từ đang gõ thuộc về ô cũ.
             DebugLog.event("Java: ô giữ focus đổi (\(last) → \(state.serial)) — bắt đầu từ mới")
@@ -293,7 +293,7 @@ final class GTVInputController: IMKInputController {
             session.fieldChanged()
         }
         javaFocus = state.serial
-        return state.direct
+        return state.focus
     }
 
     /// Terminal mà view terminal luôn báo con trỏ ở 0 (`Settings.cursorlessTerminals`): báo vị trí khác 0 là đang gõ trong
@@ -476,8 +476,19 @@ final class GTVInputController: IMKInputController {
             forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
             if !forceMarked, isJavaView(client) {
                 // Java chạy JDK gốc: có trợ thủ GTV trong máy ảo thì thay chữ trực tiếp qua nó, không thì soạn từng từ.
-                adapter.javaHelper = javaHelperDirect()
-                forceMarked = !adapter.javaHelper
+                switch javaHelperFocus() {
+                case .direct?:
+                    adapter.javaHelper = true
+                case JavaWire.Focus.none?:
+                    // Ô đang giữ focus không nhận chữ (bảng, cây, nút, ô chỉ đọc): phím là lệnh của ứng dụng. Soạn từ ở đó chỉ
+                    // làm AWT nuốt phím và hiện cửa sổ soạn nổi.
+                    session.reset()
+                    helperRoute = false
+                    DebugLog.event("phím \(Self.keyClass(event, flags)) \(bundleID) [Java: ô không nhận chữ]: đi thẳng")
+                    return false
+                default:
+                    forceMarked = true
+                }
             }
         }
         helperRoute = adapter.javaHelper

@@ -26,8 +26,9 @@ final class JavaWireTests: XCTestCase {
 
     func testStateRecord() {
         let record = Array("GTVJ1 D 42 1794900000".utf8) + [UInt8](repeating: 0x20, count: 42) + [0x0a]
-        XCTAssertEqual(JavaWire.state(record), JavaWire.State(direct: true, serial: 42, start: 1_794_900_000))
-        XCTAssertEqual(JavaWire.state(Array("GTVJ1 C 0 0\n".utf8)), JavaWire.State(direct: false, serial: 0, start: 0))
+        XCTAssertEqual(JavaWire.state(record), JavaWire.State(focus: .direct, serial: 42, start: 1_794_900_000))
+        XCTAssertEqual(JavaWire.state(Array("GTVJ1 C 0 0\n".utf8)), JavaWire.State(focus: .compose, serial: 0, start: 0))
+        XCTAssertEqual(JavaWire.state(Array("GTVJ1 N 7 5\n".utf8)), JavaWire.State(focus: JavaWire.Focus.none, serial: 7, start: 5))
     }
 
     func testStateRecordRejectsGarbage() {

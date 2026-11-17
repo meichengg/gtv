@@ -14,6 +14,21 @@ import java.beans.PropertyChangeListener;
 import java.text.AttributedCharacterIterator;
 import java.text.AttributedString;
 import java.text.CharacterIterator;
+import java.awt.Window;
+import javax.swing.AbstractButton;
+import javax.swing.JComboBox;
+import javax.swing.JList;
+import javax.swing.JMenuBar;
+import javax.swing.JRootPane;
+import javax.swing.JScrollBar;
+import javax.swing.JScrollPane;
+import javax.swing.JSlider;
+import javax.swing.JSplitPane;
+import javax.swing.JTabbedPane;
+import javax.swing.JTable;
+import javax.swing.JToolBar;
+import javax.swing.JTree;
+import javax.swing.table.JTableHeader;
 import javax.swing.text.JTextComponent;
 
 /**
@@ -31,7 +46,7 @@ import javax.swing.text.JTextComponent;
  *
  * <p>Sự kiện của bộ gõ khác (không mang phần đầu của GTV) đi qua nguyên vẹn.
  *
- * <p>{@link StateFile} cho GTV biết trợ thủ có mặt và ô đang giữ focus có phải ô văn bản sửa được không.
+ * <p>{@link StateFile} cho GTV biết trợ thủ có mặt và ô đang giữ focus là loại gì ({@link #kind}).
  */
 public final class Bridge implements AWTEventListener, PropertyChangeListener, Runnable {
     private static Bridge installed;
@@ -82,7 +97,27 @@ public final class Bridge implements AWTEventListener, PropertyChangeListener, R
     }
 
     private void publish() {
-        state.write(editableText(focus), serial);
+        state.write(kind(focus), serial);
+    }
+
+    /**
+     * Ô đang giữ focus là loại gì với bộ gõ:
+     * D — ô văn bản Swing / AWT đang cho sửa: thay chữ trực tiếp;
+     * N — không nhận chữ (bảng, cây, danh sách, nút, tab, ô văn bản chỉ đọc, không ô nào): phím ở đó là lệnh của ứng dụng,
+     *     bộ gõ để phím đi thẳng — soạn từ ở đó chỉ làm AWT nuốt phím và hiện cửa sổ soạn nổi;
+     * C — còn lại (ô tự vẽ của ứng dụng): bộ gõ soạn từng từ như khi không có trợ thủ.
+     */
+    static char kind(Object c) {
+        if (editableText(c)) return 'D';
+        if (c == null || c instanceof JTextComponent || c instanceof TextComponent) return 'N';
+        if (c instanceof Component && ((Component) c).getInputMethodRequests() != null) return 'C';
+        if (c instanceof JTable || c instanceof JTree || c instanceof JList || c instanceof AbstractButton
+                || c instanceof JTabbedPane || c instanceof JRootPane || c instanceof Window || c instanceof JComboBox
+                || c instanceof JScrollBar || c instanceof JSlider || c instanceof JMenuBar || c instanceof JSplitPane
+                || c instanceof JToolBar || c instanceof JTableHeader || c instanceof JScrollPane) {
+            return 'N';
+        }
+        return 'C';
     }
 
     /** Ô văn bản Swing / AWT đang cho sửa: thay chữ trực tiếp được. */

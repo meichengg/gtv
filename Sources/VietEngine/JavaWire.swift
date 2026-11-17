@@ -17,18 +17,27 @@ public enum JavaWire {
         return "\(mark)\(max(0, location))\(mark)\(max(0, length))\(mark)\(text)"
     }
 
-    /// Điều trợ thủ báo cho GTV: `GTVJ1 <D|C> <số lần đổi focus> <giây khởi động tiến trình>` (bản ghi 64 byte ASCII trong
+    /// Ô đang giữ focus trong cửa sổ Java là loại gì với bộ gõ.
+    public enum Focus: Equatable, Sendable {
+        /// Ô văn bản Swing / AWT sửa được: thay chữ trực tiếp qua trợ thủ.
+        case direct
+        /// Ô tự vẽ của ứng dụng: soạn từng từ như khi không có trợ thủ.
+        case compose
+        /// Không nhận chữ (bảng, cây, nút, tab, ô văn bản chỉ đọc, không ô nào): phím là lệnh của ứng dụng — để đi thẳng.
+        case none
+    }
+
+    /// Điều trợ thủ báo cho GTV: `GTVJ1 <D|C|N> <số lần đổi focus> <giây khởi động tiến trình>` (bản ghi 64 byte ASCII trong
     /// ~/Library/Caches/com.gtv.inputmethod.GTV/java/<pid>).
     public struct State: Equatable, Sendable {
-        /// Ô đang giữ focus là ô văn bản Swing / AWT sửa được: thay chữ trực tiếp qua trợ thủ.
-        public var direct: Bool
+        public var focus: Focus
         /// Số lần ô giữ focus đổi — kể cả giữa hai ô trong cùng cửa sổ, việc bộ gõ không tự thấy.
         public var serial: Int
         /// Thời điểm tiến trình Java khởi động (giây); 0: không rõ.
         public var start: Int
 
-        public init(direct: Bool, serial: Int, start: Int) {
-            self.direct = direct
+        public init(focus: Focus, serial: Int, start: Int) {
+            self.focus = focus
             self.serial = serial
             self.start = start
         }
@@ -36,8 +45,14 @@ public enum JavaWire {
 
     public static func state<S: Sequence>(_ record: S) -> State? where S.Element == UInt8 {
         let fields = String(decoding: Array(record), as: UTF8.self).split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\0" })
-        guard fields.count >= 4, fields[0] == "GTVJ1", fields[1] == "D" || fields[1] == "C",
-              let serial = Int(fields[2]), let start = Int(fields[3]) else { return nil }
-        return State(direct: fields[1] == "D", serial: serial, start: start)
+        guard fields.count >= 4, fields[0] == "GTVJ1", let serial = Int(fields[2]), let start = Int(fields[3]) else { return nil }
+        let focus: Focus
+        switch fields[1] {
+        case "D": focus = .direct
+        case "C": focus = .compose
+        case "N": focus = .none
+        default: return nil
+        }
+        return State(focus: focus, serial: serial, start: start)
     }
 }
