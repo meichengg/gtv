@@ -466,7 +466,10 @@ def find_jbr():
     found = sorted(home.glob("*/Contents/Home/bin/java"))
     if found:
         return str(found[0])
-    r = sh(["curl", "-sfL", "https://api.github.com/repos/JetBrains/JetBrainsRuntime/releases/latest"], timeout=60)
+    # API của GitHub giới hạn số lần gọi không kèm token theo địa chỉ IP (máy CI dùng chung IP: hay bị từ chối).
+    auth = ["-H", f"Authorization: Bearer {os.environ['GH_TOKEN']}"] if os.environ.get("GH_TOKEN") else []
+    r = sh(["curl", "-sfL", "--retry", "3", *auth,
+            "https://api.github.com/repos/JetBrains/JetBrainsRuntime/releases/latest"], timeout=90)
     arch = "aarch64" if os.uname().machine == "arm64" else "x64"
     m = re.search(rf"https://cache-redirector\.jetbrains\.com/intellij-jbr/jbrsdk-[0-9.]+-osx-{arch}-b[0-9.]+\.tar\.gz", r.stdout)
     if not m:
