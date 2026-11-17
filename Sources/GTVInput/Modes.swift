@@ -8,6 +8,11 @@ import InputMethodKit
 /// `selectMode` trên ô nhập liệu đang dùng (API chính thức của InputMethodKit): bộ gõ không bị gỡ ra
 /// hay gắn lại, nên chuyển tức thì, không nháy cửa sổ, và ⌘⇧ luôn do bộ gõ bắt được.
 ///
+/// Vì sao phải qua ô nhập liệu (xem `select`): mỗi ô (TSMDocument của ứng dụng) tự nhớ chế độ của nó. Chỉ gọi
+/// `TISSelectInputSource` từ tiến trình bộ gõ thì hệ thống đổi chế độ nhưng ô đang gõ KHÔNG được báo; lần sau ô đó được kích
+/// hoạt lại (đổi ứng dụng rồi quay về, đổi cửa sổ) nó chọn lại chế độ cũ của nó cho cả hệ thống và báo cho bộ gõ — chế độ V/E
+/// "tự nhảy" (log IME Lab 42201459167: hệ thống đang ở .vi, Terminal được kích hoạt lại liền báo `setValue .en`).
+///
 /// Ứng dụng loại trừ: khi GTV được gắn vào ô nhập liệu của ứng dụng trong danh sách thì chuyển sang
 /// tiếng Anh; khi sang ứng dụng khác thì khôi phục tiếng Việt nếu trước đó đang gõ tiếng Việt.
 final class Modes {
@@ -18,6 +23,8 @@ final class Modes {
     private var restoreVietnamese = false
     private weak var client: AnyObject?
     private var clientBundleID = ""
+    /// Chế độ mà ô đang gắn biết (nó tự báo qua `setValue`, hay bộ gõ đã báo cho nó — `tellClient`). nil: chưa biết.
+    private var clientMode: String?
     /// GTV có đang được chọn không, bỏ qua lần đổi sang ABC do màn hình khoá (để khôi phục khi mở khoá).
     private var gtvInUse = InputSources.isGTVSelected
     /// Máy đang khoá màn hình hoặc đang ngủ: không coi các lần đổi bộ gõ lúc này là do người dùng.
@@ -226,12 +233,41 @@ final class Modes {
     }
 
     /// Chọn chế độ của GTV (ghi lại để thông báo đổi bộ gõ do chính lần chọn này gây ra không bị coi là người dùng đổi).
+    /// Đổi qua ô nhập liệu đang gắn (`IMKTextInput.selectMode`): chính ứng dụng đó đổi chế độ nên ô của nó nhớ đúng chế độ mới,
+    /// không còn chế độ cũ để "phát lại". `TISSelectInputSource` vẫn gọi kèm: khi không có ô nào (hay ô đã đóng) thì đây là
+    /// đường duy nhất, và biểu tượng V/E trên thanh menu đổi ngay.
     private func select(_ id: String) {
         let now = Self.now
         selfSelected.removeAll { now - $0.at >= 1 }
         selfSelected.append((id, now))
         LiveInput.shared.keep(for: 1.5)                       // xem `ownSelection`
+        tellClient(id)
         InputSources.selectMode(id)
+    }
+
+    /// Báo chế độ `id` cho ô nhập liệu đang gắn, nếu ô đó chưa biết (chưa tự báo `id`, bộ gõ chưa báo `id` cho nó).
+    private func tellClient(_ id: String) {
+        guard clientMode != id, let client = client as? IMKTextInput else { return }
+        #if DEBUG
+        // IME Lab: lượt đối chứng — đổi chế độ như trước (chỉ TISSelectInputSource), để thấy ô phát lại chế độ cũ.
+        UserDefaults.standard.synchronize()
+        if UserDefaults.standard.bool(forKey: "labNoClientSelect") { return }
+        #endif
+        clientMode = id
+        client.selectMode(id)
+    }
+
+    /// Chế độ hệ thống vừa đổi mà không qua ô đang gắn (menu bộ gõ, ⌃Space, công cụ chọn bộ gõ như `im-select`…) và GTV đã
+    /// theo: báo cho ô đó, không thì lần kích hoạt sau nó phát lại chế độ cũ. Lời báo dội lại không phải người dùng chọn
+    /// (`ownSelection`). Chỉ gọi lúc chế độ thật sự đổi — không gọi ở mỗi lần gắn vào ô.
+    private func syncClient() {
+        let id = vietnamese ? InputSources.vietnameseID : InputSources.englishID
+        guard InputSources.currentID == id, clientMode != id, client != nil else { return }
+        let now = Self.now
+        selfSelected.removeAll { now - $0.at >= 1 }
+        selfSelected.append((id, now))
+        LiveInput.shared.keep(for: 1.5)
+        tellClient(id)
     }
 
     /// Hệ thống báo chế độ `id` mà chính GTV vừa chọn (`select`, trong 1 giây — thường tới 2 lần: setValue và thông báo
@@ -311,6 +347,8 @@ final class Modes {
         let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
         if !isExcluded(currentApp(front: front)) { restoreVietnamese = false }   // người dùng đã chọn: không khôi phục đè lên
         set(on, updateSystem: false)
+        // Hệ thống đã ở `on`; ô đang gắn có thể chưa biết (lần đổi không qua nó). Chạy sau, ngoài lúc macOS đang báo sự kiện.
+        DispatchQueue.main.async { [self] in syncClient() }
     }
 
     private func isExcluded(_ bundleID: String) -> Bool {
@@ -321,6 +359,7 @@ final class Modes {
     func clientActivated(_ client: Client, bundleID: String) {
         self.client = client
         clientBundleID = bundleID
+        clientMode = nil
         activatedAt = Self.now
         LiveInput.shared.keep(for: Self.activationWindow + 0.5)   // xem `userInput(since:)`
         if isExcluded(bundleID) {
@@ -343,6 +382,14 @@ final class Modes {
         if lastSourceIsGTV || parentSelected { syncSystemMode() }
     }
 
+    /// Bộ gõ nhận phím của một ô chưa từng được gắn (bộ gõ khởi động lại khi ô đang mở): nhớ ô để đổi chế độ qua nó.
+    func clientSeen(_ client: Client, bundleID: String) {
+        guard self.client == nil else { return }
+        self.client = client
+        clientBundleID = bundleID
+        clientMode = nil
+    }
+
     /// Khi chuyển ứng dụng, macOS có lúc chọn bộ gõ GTV "cha" thay vì một chế độ (biểu tượng không
     /// còn cho biết V hay E), hoặc chọn chế độ khác với trạng thái của GTV: chọn lại cho khớp.
     /// Chạy sau, ngoài lúc macOS đang báo sự kiện cho bộ gõ.
@@ -357,6 +404,7 @@ final class Modes {
 
     /// macOS báo đổi chế độ (menu bộ gõ, phím 🌐, Ctrl+Space, hoặc do chính GTV gọi `selectMode`).
     func modeSelected(_ modeID: String) {
+        clientMode = modeID                                   // ô đang gắn vừa tự báo chế độ nó đang giữ
         if ownSelection(modeID) {
             ownSelectionArrived(modeID, from: "setValue")
             return
