@@ -18,7 +18,9 @@
 		4B50A1F27D84C95639A8055C /* icon-vi.tiff in Resources */ = {isa = PBXBuildFile; fileRef = B2D83E35B63F7EE1F11CC695 /* icon-vi.tiff */; };
 		5310F1969D3E40E701E7A2AC /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 651D73CBF80DB9EFE28F6BF4 /* main.swift */; };
 		53227346BE7555757824037E /* Hotkey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42EBC293736E90A638F492AF /* Hotkey.swift */; };
+		53231721D75349BD346B3B45 /* JavaHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5FA6E566D772D44163306F7 /* JavaHelper.swift */; };
 		557B554D6C768A575EA2306E /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1AE3EDD526CDDC080D9AA1EF /* InfoPlist.strings */; };
+		59562F7FCFFC064ECA9A5B8C /* JavaWireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B00FE665B91F1FC71BDCAE6 /* JavaWireTests.swift */; };
 		5EE3E1435ED4BAAEA7C372E0 /* StatusController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5FD2BD5169653BA694708AC /* StatusController.swift */; };
 		635A30639264B1338906C7F6 /* Signals.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E550A019747430540301D38 /* Signals.swift */; };
 		638F5356FE541A45300A48E5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AAA9D2CC32D204C843BA5454 /* Sparkle */; };
@@ -38,6 +40,7 @@
 		B7731BE6BCB9AEDAED4111D5 /* EngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E0AD2333CEFBE4AC1B693A6 /* EngineTests.swift */; };
 		BE028D2E9E5FAA46C77A67B7 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A683909FBBF4463C94CF640 /* main.swift */; };
 		BF2DFCEBF0D24AB175DBC91B /* InputSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 661C0580E5E6B5E582BAD3D4 /* InputSources.swift */; };
+		C7392605C7027CF2F916A195 /* JavaWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66F9980CA8AFA8219C3D2DA6 /* JavaWire.swift */; };
 		CB0E1FC622D4A30F178B12ED /* AppToolkit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8176DD8F6742152C7D40E1AF /* AppToolkit.swift */; };
 		CCE6AED1AD68BA08CFE2E4D6 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3C504A1435BA73CE275369 /* Settings.swift */; };
 		CDBD08879CFA21A2E6D6C462 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05AC7C50B20F8ED398081259 /* DebugLog.swift */; };
@@ -92,6 +95,7 @@
 		0D099114FBF9D6AB3C21D5A4 /* LiveInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveInput.swift; sourceTree = "<group>"; };
 		1ADA60B811868C2A49D79172 /* KeyWatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyWatch.swift; sourceTree = "<group>"; };
 		21993D811D759042E28D12C2 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		2B00FE665B91F1FC71BDCAE6 /* JavaWireTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JavaWireTests.swift; sourceTree = "<group>"; };
 		36ECC934EBB2131DFC903D8E /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
 		3EDC763A5B1168D26B5D63A5 /* libVietEngine.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libVietEngine.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		40B13F5512AE34AB0B9A223B /* VietEngineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VietEngineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -102,6 +106,7 @@
 		61AA7C5CC11AC3862C10B7D5 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		651D73CBF80DB9EFE28F6BF4 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		661C0580E5E6B5E582BAD3D4 /* InputSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSources.swift; sourceTree = "<group>"; };
+		66F9980CA8AFA8219C3D2DA6 /* JavaWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JavaWire.swift; sourceTree = "<group>"; };
 		6A683909FBBF4463C94CF640 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		6E550A019747430540301D38 /* Signals.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Signals.swift; sourceTree = "<group>"; };
 		6EC9C644AE077F93675E91A9 /* icon-en.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = "icon-en.tiff"; sourceTree = "<group>"; };
@@ -121,6 +126,7 @@
 		C5FD2BD5169653BA694708AC /* StatusController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusController.swift; sourceTree = "<group>"; };
 		C942C41A08257D1C27DEDCBF /* Engine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine.swift; sourceTree = "<group>"; };
 		D20BB3D8C69F6C5A30753353 /* InputMethodKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = InputMethodKit.framework; path = System/Library/Frameworks/InputMethodKit.framework; sourceTree = SDKROOT; };
+		D5FA6E566D772D44163306F7 /* JavaHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JavaHelper.swift; sourceTree = "<group>"; };
 		EBD9DE142A7C26D8E0595822 /* TerminalScreenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreenTests.swift; sourceTree = "<group>"; };
 		F326911EE6FE5701740BC28C /* Modes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Modes.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -162,6 +168,7 @@
 			isa = PBXGroup;
 			children = (
 				C942C41A08257D1C27DEDCBF /* Engine.swift */,
+				66F9980CA8AFA8219C3D2DA6 /* JavaWire.swift */,
 				36ECC934EBB2131DFC903D8E /* Session.swift */,
 				6E550A019747430540301D38 /* Signals.swift */,
 				BAD40F1C897E90A79DF03B71 /* Tables.swift */,
@@ -199,6 +206,7 @@
 				8C4829B78686F5EEDAAE4D2B /* InputController.swift */,
 				661C0580E5E6B5E582BAD3D4 /* InputSources.swift */,
 				A7201BBDBA5BB66CE17F0318 /* JavaDetector.swift */,
+				D5FA6E566D772D44163306F7 /* JavaHelper.swift */,
 				1ADA60B811868C2A49D79172 /* KeyWatch.swift */,
 				0D099114FBF9D6AB3C21D5A4 /* LiveInput.swift */,
 				6A683909FBBF4463C94CF640 /* main.swift */,
@@ -235,6 +243,7 @@
 			isa = PBXGroup;
 			children = (
 				9E0AD2333CEFBE4AC1B693A6 /* EngineTests.swift */,
+				2B00FE665B91F1FC71BDCAE6 /* JavaWireTests.swift */,
 				92A46C139EFA1902702308B9 /* SessionTests.swift */,
 				B6E79A11DD17464ADC8C7062 /* SignalsTests.swift */,
 				EBD9DE142A7C26D8E0595822 /* TerminalScreenTests.swift */,
@@ -348,6 +357,7 @@
 				4DAC19F03163A0A7C2B8E471 /* Sources */,
 				D4504C533C7354A792101A9B /* Resources */,
 				4380E26192A9CEB58C0E331A /* Frameworks */,
+				851FBA719A1B099ED221F956 /* Java helper (gtv-java-helper.jar) */,
 			);
 			buildRules = (
 			);
@@ -438,6 +448,25 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		851FBA719A1B099ED221F956 /* Java helper (gtv-java-helper.jar) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Java helper (gtv-java-helper.jar)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/JavaHelper/build.sh\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/gtv-java-helper.jar\"\n";
+		};
 		B68D0DABFBB50C215EEE061B /* Copy Swift Objective-C Interface Header */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -462,6 +491,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B7731BE6BCB9AEDAED4111D5 /* EngineTests.swift in Sources */,
+				59562F7FCFFC064ECA9A5B8C /* JavaWireTests.swift in Sources */,
 				75A385E61452BF063D50685B /* SessionTests.swift in Sources */,
 				AB3EED20EBB4462FEECDEE1D /* SignalsTests.swift in Sources */,
 				85FD4EC9B339DDF645008C36 /* TerminalScreenTests.swift in Sources */,
@@ -479,6 +509,7 @@
 				2ABB4140E3596090D04C6F5C /* InputController.swift in Sources */,
 				BF2DFCEBF0D24AB175DBC91B /* InputSources.swift in Sources */,
 				F2B1FFB4240C5A87E97D16C4 /* JavaDetector.swift in Sources */,
+				53231721D75349BD346B3B45 /* JavaHelper.swift in Sources */,
 				F7B98D9A82DBF7C05A174797 /* KeyWatch.swift in Sources */,
 				EBD731229A701CED0C86F787 /* LiveInput.swift in Sources */,
 				27E517B3F7827B5E51EA4349 /* Modes.swift in Sources */,
@@ -502,6 +533,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8AC9242AC6506D3D3D52F561 /* Engine.swift in Sources */,
+				C7392605C7027CF2F916A195 /* JavaWire.swift in Sources */,
 				D75477C469A22CF7F93067FB /* Session.swift in Sources */,
 				635A30639264B1338906C7F6 /* Signals.swift in Sources */,
 				79C7FA9AAB3F6EEB7F81CEE2 /* Tables.swift in Sources */,
@@ -547,6 +579,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = "Resources/Input-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -602,6 +635,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = "Resources/Input-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

@@ -12,6 +12,7 @@ enum AppMenu {
         case hotkey = 50   // 50 + ToggleHotkey.rawValue
         case excludeCurrent = 60, addExcluded
         case showStatusIcon = 70, playSwitchSound, selectAtLogin, checkForUpdates, autoCheckUpdates
+        case javaHelper = 80
         case quit = 99
         case removeExcluded = 1000   // 1000 + vị trí trong `shownExcluded`
     }
@@ -140,6 +141,17 @@ enum AppMenu {
                 : "Mặc định GTV thay chữ trực tiếp. Bật nếu ứng dụng này gõ sai dấu: từ đang gõ được soạn rồi mới chốt."
             i.representedObject = appBundleID
             menu.addItem(i)
+            // Ứng dụng Java chạy JDK gốc: gõ thẳng được khi máy ảo của nó nạp trợ thủ GTV (`JavaHelper`).
+            if JavaDetector.runtime(appBundleID, wait: 0) == .stock {
+                if JavaDetector.helper(appBundleID) != nil {
+                    header("\(appName(appBundleID)) (Java): đang gõ thẳng qua trợ thủ GTV")
+                } else {
+                    let j = item("Gõ thẳng trong \(appName(appBundleID)) (Java)…", Tag.javaHelper.rawValue, false)
+                    j.toolTip = "Java không cho bộ gõ thay chữ đã gõ nên GTV phải soạn từng từ. Bấm để xem cách bật gõ thẳng."
+                    j.representedObject = appBundleID
+                    menu.addItem(j)
+                }
+            }
         }
         add("Luôn soạn từng từ (tương thích tối đa)", .markedAlways, s.alwaysMarked)
 
@@ -211,6 +223,11 @@ enum AppMenu {
             DispatchQueue.main.async { Updater.shared.checkForUpdates() }
         case .autoCheckUpdates:
             Updater.shared.automaticallyChecks.toggle()
+        case .javaHelper:
+            let name = NSRunningApplication.runningApplications(withBundleIdentifier: appBundleID).first?.localizedName
+                ?? fileName(appBundleID)
+            // Đợi menu đóng hẳn rồi mới mở hộp thoại.
+            DispatchQueue.main.async { JavaHelper.showInstructions(appName: name) }
         case .quit:
             InputSources.selectSystemKeyboard()
             NSApp.terminate(nil)

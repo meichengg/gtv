@@ -52,6 +52,16 @@ jobs:
             echo "::warning file=CHANGELOG.md::No '## $version' section in CHANGELOG.md. The Release workflow will stop on main without release notes."
           fi
 
+      # Trợ thủ Java (JavaHelper/): bài thử không cần màn hình, bằng JDK có sẵn trên máy.
+      - name: Java helper tests
+        run: |
+          javac="$(command -v javac || true)"
+          for h in "${JAVA_HOME_21_arm64:-}" "${JAVA_HOME_21_X64:-}" "${JAVA_HOME_17_arm64:-}" "${JAVA_HOME_17_X64:-}"; do
+            if [ -n "$h" ] && [ -x "$h/bin/javac" ]; then javac="$h/bin/javac"; break; fi
+          done
+          "$javac" -version
+          GTV_JAVAC="$javac" JavaHelper/test.sh | tail -3
+
       - name: Test
         run: |
           set -o pipefail

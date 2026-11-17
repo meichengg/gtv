@@ -1,7 +1,9 @@
 // Ô nhập liệu Java Swing (JTextArea) cho IME Lab — chỉ chạy trên máy ảo CI.
 //   java SwingField.java <file>: ghi nội dung ô ra <file> mỗi khi đổi (cả lúc đang có marked text); <file>.ready khi ô có
 //   focus. Ứng dụng Java (Burp Suite, IntelliJ…) bỏ qua cách thay chữ trực tiếp của GTV: GTV phải nhận ra và gõ bằng marked
-//   text (JavaDetector).
+//   text (JavaDetector), hoặc thay chữ qua trợ thủ Java khi chạy với -javaagent:gtv-java-helper.jar.
+//   Phía trên có một ô một dòng (JTextField, như ô đổi tên tab của Burp): nội dung ghi ra <file>.title. Lab ghi "title" /
+//   "area" vào <file>.focus để chuyển focus giữa hai ô bằng chương trình — bộ gõ không được gắn lại, không có click.
 import java.awt.Desktop;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
@@ -41,10 +43,20 @@ public class SwingField {
         Path clear = Paths.get(args[0] + ".clear");
         // Nhật ký sự kiện Java nhận (phím, bộ gõ) để biết phím nào tới / bị nuốt.
         Path events = Paths.get(args[0] + ".events");
+        Path titleOut = Paths.get(args[0] + ".title");
+        Path focus = Paths.get(args[0] + ".focus");
         SwingUtilities.invokeAndWait(() -> {
             JFrame frame = new JFrame("GTV Lab Swing");
             JTextArea area = new JTextArea(6, 40);
             area.setFont(area.getFont().deriveFont(18f));
+            javax.swing.JTextField title = new javax.swing.JTextField(40);
+            title.setFont(area.getFont());
+            title.getDocument().addDocumentListener(new DocumentListener() {
+                void dump() { write(titleOut, title.getText()); }
+                public void insertUpdate(DocumentEvent e) { dump(); }
+                public void removeUpdate(DocumentEvent e) { dump(); }
+                public void changedUpdate(DocumentEvent e) { dump(); }
+            });
             area.getDocument().addDocumentListener(new DocumentListener() {
                 void dump() { write(out, area.getText()); }
                 public void insertUpdate(DocumentEvent e) { dump(); }
@@ -59,7 +71,7 @@ public class SwingField {
                 @Override public void keyPressed(java.awt.event.KeyEvent e) { log("P", e); }
                 @Override public void keyTyped(java.awt.event.KeyEvent e) { log("T", e); }
             });
-            area.addInputMethodListener(new java.awt.event.InputMethodListener() {
+            java.awt.event.InputMethodListener imLog = new java.awt.event.InputMethodListener() {
                 @Override public void inputMethodTextChanged(java.awt.event.InputMethodEvent e) {
                     StringBuilder b = new StringBuilder();
                     java.text.AttributedCharacterIterator it = e.getText();
@@ -69,7 +81,9 @@ public class SwingField {
                     append(events, "IM committed=" + e.getCommittedCharacterCount() + " hl=" + (hl ? 1 : 0) + " text=" + b);
                 }
                 @Override public void caretPositionChanged(java.awt.event.InputMethodEvent e) { }
-            });
+            };
+            area.addInputMethodListener(imLog);
+            title.addInputMethodListener(imLog);
             // Mọi KeyEvent / InputMethodEvent AWT nhận (trước khi tới ô): phân biệt "phím không được phát" với "phím bị nuốt
             // trong Java".
             java.awt.Toolkit.getDefaultToolkit().addAWTEventListener(e -> {
@@ -82,7 +96,8 @@ public class SwingField {
                     append(events, "AWT im id=" + m.getID() + " committed=" + m.getCommittedCharacterCount());
                 }
             }, java.awt.AWTEvent.KEY_EVENT_MASK | java.awt.AWTEvent.INPUT_METHOD_EVENT_MASK);
-            frame.add(new JScrollPane(area));
+            frame.add(title, java.awt.BorderLayout.NORTH);
+            frame.add(new JScrollPane(area), java.awt.BorderLayout.CENTER);
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
             frame.addWindowFocusListener(new WindowAdapter() {
                 @Override public void windowGainedFocus(WindowEvent e) {
@@ -97,12 +112,24 @@ public class SwingField {
                 if (Files.exists(clear)) {
                     try { Files.deleteIfExists(clear); } catch (Exception ex) { ex.printStackTrace(); }
                     area.setText("");
+                    title.setText("");
                     write(out, "");
+                    write(titleOut, "");
+                    area.requestFocusInWindow();
+                }
+                if (Files.exists(focus)) {
+                    try {
+                        String which = new String(Files.readAllBytes(focus), StandardCharsets.UTF_8).trim();
+                        Files.deleteIfExists(focus);
+                        ("title".equals(which) ? title : area).requestFocusInWindow();
+                        append(events, "FOCUS " + which);
+                    } catch (Exception ex) { ex.printStackTrace(); }
                 }
             }).start();
             frame.pack();
             frame.setLocation(240, 360);
             write(out, "");
+            write(titleOut, "");
             frame.setVisible(true);
             frame.toFront();
             area.requestFocusInWindow();

@@ -13,6 +13,7 @@ app.setActivationPolicy(.accessory)   // không hiện trên Dock
 StatusController.shared.start()
 _ = Modes.shared
 Updater.shared.start()
+JavaHelper.installJar()
 withExtendedLifetime(server) {
     app.run()
 }

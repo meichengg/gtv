@@ -72,6 +72,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.gtv.inputmethod.GTV
         INFOPLIST_FILE: Resources/Input-Info.plist
         SKIP_INSTALL: YES
+        # Bước "Trợ thủ Java" ghi file vào gói và gọi javac ngoài thư mục dự án.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Trợ thủ Java (JavaHelper/): file .jar nạp vào máy ảo của ứng dụng Java chạy JDK gốc để GTV thay chữ trực tiếp được ở đó
+    # (Sources/GTVInput/JavaHelper.swift). Dựng bằng javac nếu máy có, không thì chép bản dựng sẵn.
+    postBuildScripts:
+      - name: Java helper (gtv-java-helper.jar)
+        script: |
+          "$SRCROOT/JavaHelper/build.sh" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/gtv-java-helper.jar"
+        basedOnDependencyAnalysis: false
 
   # App người dùng mở (trong /Applications).
   GTV:

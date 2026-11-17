@@ -101,6 +101,28 @@ APP_TESTS = [
     ("vni-punct", "vni", "d9a38ng, vie65t.", "đẳng, việt.", 45),
     # ⌫ bấm ngay sau phím dấu (3 ms).
     ("vni-bs-burst", "vni", "ho5{BS}a d9{BS}e ", "ha e ", 3),
+    # Gõ rất nhanh (3 ms giữa hai phím): người dùng báo "gõ nhanh thì không ra dấu mà ra số".
+    ("vni-fast3", "vni", "d9a38ng ca61p tuye65t d9o61i ", "đẳng cấp tuyệt đối ", 3),
+    # ⌥⌫ (xoá cả từ) rồi gõ tiếp: người dùng báo "ấn ⌥⌫ xong không gõ dấu được nữa". Chờ 1,3 s trước ⌥⌫: ô Java soạn từng từ
+    # nuốt phím bấm ngay sau từ (xem vni-arrow).
+    ("vni-optbs", "vni", "tie61ng vie65t{WAIT1300}{OPTBS}d9a38ng ca61p ", "tiếng đẳng cấp ", 45),
+]
+# Ô Java gõ trực tiếp (JetBrains Runtime, hay JDK gốc có trợ thủ GTV trong máy ảo): không có gì đang soạn, nên phím bấm
+# ngay sau từ (mũi tên, ⌘A, ⌥⌫) tới Java như thường; ô một dòng phía trên (như ô đổi tên tab của Burp) gõ như ô chính, kể cả
+# khi focus sang đó bằng chương trình (bộ gõ không được gắn lại).
+JAVA_DIRECT_TESTS = APP_TESTS + [
+    ("vni-arrow-now", "vni", "vie65t{LEFT}x ", "việx t", 45),
+    ("vni-shortcut-now", "vni", "vie65t{CMDA}{BS}xyz ", "xyz ", 45),
+    ("vni-optbs-now", "vni", "tie61ng vie65t{OPTBS}d9a38ng ca61p ", "tiếng đẳng cấp ", 45),
+    ("vni-optbs-fast", "vni", "tie61ng vie65t{OPTBS}d9a38ng ca61p ", "tiếng đẳng cấp ", 5),
+    ("telex-fast3", "telex", "ddawngr caaps tuyeetj ddoois ", "đẳng cấp tuyệt đối ", 3),
+    ("java-focus", "vni", "tie61ng{FOCUS:title}d9a38ng ca61p", "tiếng|đẳng cấp", 45),
+    ("java-focus-back", "vni", "{FOCUS:title}tuye65t{FOCUS:area}d9o61i ", "đối |tuyệt", 45),
+    ("java-title-fast", "vni", "{FOCUS:title}d9a38ng ca61p tuye65t d9o61i", "|đẳng cấp tuyệt đối", 3),
+]
+# Ô Java soạn từng từ (JDK gốc, không có trợ thủ): đổi ô bằng chương trình thì Java tự chốt từ đang soạn.
+JAVA_COMPOSE_TESTS = APP_TESTS + [
+    ("java-focus", "vni", "tie61ng{FOCUS:title}d9a38ng ca61p{WAIT1300}", "tiếng|đẳng cấp", 45),
 ]
 # Gõ ngay khi cửa sổ vừa được kích hoạt (như TinyCast: ⌘Space rồi gõ liền): phím đầu có thể tới trước lời gọi setValue mà
 # InputMethodKit gửi sau mỗi lần gắn bộ gõ — lỗi cũ: "d9a38ng" ra "d9ẳng".
@@ -116,7 +138,7 @@ CHROME_TESTS = APP_TESTS + [
 ]
 # View tự vẽ "mù con trỏ" (field.swift --blind: như view terminal GPUI / Herdr / Zed khi GTV chưa biết ứng dụng): mọi từ phải ra
 # đúng (gõ bằng marked text), không từ nào đi nguyên văn. Không có ⌘A (view không có menu Edit).
-BLIND_TESTS = [t for t in APP_TESTS if t[0] != "vni-shortcut"] + [
+BLIND_TESTS = [t for t in APP_TESTS if t[0] not in ("vni-shortcut", "vni-optbs")] + [
     ("telex-first-word", "telex", "ddawngf ", "đằng ", 45),
     ("vni-first-word-fast", "vni", "d9a82ng tie61ng ", "đằng tiếng ", 10),
 ]
@@ -464,6 +486,22 @@ def read_text(p):
         return None
 
 
+def drive(bid, keys, ms, out_file):
+    """Gõ `keys`. {FOCUS:<ô>} (app Swing): chuyển focus sang ô "title" / "area" bằng chương trình, không click."""
+    parts = re.split(r"\{FOCUS:(\w+)\}", keys)
+    for i, part in enumerate(parts):
+        if i % 2:
+            flag = pathlib.Path(str(out_file) + ".focus")
+            flag.write_text(part)
+            for _ in range(100):
+                if not flag.exists():
+                    break
+                time.sleep(0.02)
+            time.sleep(0.25)
+        elif part:
+            drv(bid, part, ms)
+
+
 def ime_trace(mark):
     """Các dòng vòng đời bộ gõ (activate/deactivate/setValue/commitComposition) và phím kể từ `mark`, rút gọn."""
     if not GTV_LOG.exists():
@@ -587,7 +625,7 @@ fetch('/ready', {method: 'POST', body: '1'});
 
 def run_app_suite(app, only=None, tag=None):
     """Bài gõ trong ô của ứng dụng thường. `app`: "field" (Cocoa), "blind", "swing" (Java, JDK gốc), "swingjbr" (JetBrains
-    Runtime). `only`: chỉ chạy các bài có tên trong đó; `tag`: hậu tố cho file log (lượt đo cách gắn thuộc tính)."""
+    Runtime), "swinghelper" (JDK gốc, máy ảo nạp trợ thủ Java của GTV). `only`: chỉ chạy các bài có tên trong đó; `tag`: hậu tố cho file log (lượt đo cách gắn thuộc tính)."""
     out_file = L / f"{app}.txt"
     ready = pathlib.Path(str(out_file) + ".ready")
     out_file.unlink(missing_ok=True)
@@ -621,7 +659,15 @@ def run_app_suite(app, only=None, tag=None):
             if not java:
                 return [{"terminal": app, "test": "-", "error": "không có JetBrains Runtime" if app == "swingjbr" else "không có JDK 11+"}]
             print(app, "java:", java, sh([java, "-version"]).stderr.strip().replace("\n", " | "), flush=True)
-            proc = subprocess.Popen([java, str(HERE / "SwingField.java"), str(out_file)],
+            cmd = [java]
+            tests = JAVA_COMPOSE_TESTS if app == "swing" else JAVA_DIRECT_TESTS
+            if app == "swinghelper":
+                # Bản trợ thủ đi kèm chính bộ gõ đang thử (cũng là thử việc đóng gói).
+                jar = IM / "Contents/Resources/gtv-java-helper.jar"
+                if not jar.exists():
+                    return [{"terminal": app, "test": "-", "error": f"bộ gõ không kèm {jar.name}"}]
+                cmd.append(f"-javaagent:{jar}")
+            proc = subprocess.Popen(cmd + [str(HERE / "SwingField.java"), str(out_file)],
                                     stdout=open(OUT / "logs" / f"{app}.log", "w"), stderr=subprocess.STDOUT)
             bid, pid = "-", proc.pid
         if not wait_file(ready, 60):
@@ -653,15 +699,24 @@ def run_app_suite(app, only=None, tag=None):
                     append_events(out_file, f"=== {name}")
                 marked_flag = pathlib.Path(str(out_file) + ".marked")
                 marked_flag.unlink(missing_ok=True)
-                drv(bid, keys, ms)
+                drive(bid, keys, ms, out_file)
                 time.sleep(0.8)
                 got = read_text(out_file)
+                if expect is not None and "|" in expect and app.startswith("swing"):
+                    got = f"{got}|{read_text(pathlib.Path(str(out_file) + '.title')) or ''}"
                 underline = used_underline(app, out_file, name)
                 r.update({"final": got, "pass": got == expect and not underline,
                           "shot": shot(f"{app}{'-' + tag if tag else ''}-{name}")})
                 if underline:
                     r["underline"] = underline
                 r.update(ime_seen(mark, None if app.startswith("swing") else bid))
+                if app == "swinghelper":
+                    # Phím nào cũng phải đi đường thay chữ qua trợ thủ (không phím nào soạn bằng marked text).
+                    lines = [l for l in log_since(mark).splitlines() if " phím " in l]
+                    r["helper_keys"] = sum("trợ thủ Java" in l for l in lines)
+                    if any("soạn (marked)" in l for l in lines):
+                        r["pass"] = False
+                        r["info"] = "có phím soạn bằng marked text"
                 if got != expect:
                     r["trace"] = ime_trace(mark)
             except Exception as e:  # noqa: BLE001

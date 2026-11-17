@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Premain-Class: gtv.helper.Agent
+Agent-Class: gtv.helper.Agent
+Implementation-Title: GTV Java helper
+Implementation-Version: 1

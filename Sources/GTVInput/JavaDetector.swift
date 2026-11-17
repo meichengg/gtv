@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import VietEngine
 
 /// Nhận biết ô nhập liệu của ứng dụng Java vẽ bằng AWT / Swing / JavaFX / Compose Desktop (Burp Suite, IntelliJ, Ghidra…).
 ///
@@ -62,6 +63,13 @@ enum JavaDetector {
         waited.insert(p)
         guard check.group.wait(timeout: .now() + timeout) == .success else { return nil }
         return finish(p, check)
+    }
+
+    /// Trợ thủ GTV trong máy ảo Java của tiến trình có ô nhập liệu (`JavaHelper`); nil: không có. Đọc lại ở mỗi lần gọi —
+    /// ô giữ focus trong cửa sổ Java đổi mà bộ gõ không được gắn lại.
+    static func helper(_ bundleID: String) -> JavaWire.State? {
+        guard let p = process(for: bundleID) else { return nil }
+        return JavaHelper.state(pid: p.pid, start: p.start / 1_000_000)
     }
 
     @discardableResult

@@ -9,10 +9,22 @@ private let notFound = NSRange(location: NSNotFound, length: 0)
 /// Chuyển IMKTextInput thành TextClient cho Session.
 private final class ClientAdapter: TextClient {
     var client: Client?
+    /// Ô Java (JDK gốc) có trợ thủ GTV trong máy ảo: vùng cần thay đi trong chính chuỗi gửi (`JavaWire`), vì AWT bỏ qua
+    /// `replacementRange`.
+    var javaHelper = false
+    /// Ô Java trả lời mỗi câu hỏi qua luồng sự kiện của nó (một vòng đi-về). Trong lúc xử lý một phím, vị trí con trỏ chỉ đổi
+    /// khi chính bộ gõ gửi chữ: nhớ câu trả lời tới lúc đó.
+    var remembersSelection = false {
+        didSet { remembered = nil }
+    }
+    private var remembered: (location: Int, length: Int)??
 
     func selectedRange() -> (location: Int, length: Int)? {
-        guard let r = client?.selectedRange(), r.location != NSNotFound else { return nil }
-        return (r.location, r.length)
+        if remembersSelection, let remembered { return remembered }
+        var result: (location: Int, length: Int)?
+        if let r = client?.selectedRange(), r.location != NSNotFound { result = (r.location, r.length) }
+        if remembersSelection { remembered = .some(result) }
+        return result
     }
 
     func text(location: Int, length: Int) -> String? {
@@ -20,6 +32,11 @@ private final class ClientAdapter: TextClient {
     }
 
     func replaceText(location: Int, length: Int, with text: String) {
+        remembered = nil
+        if javaHelper {
+            client?.insertText(JavaWire.encode(location: location, length: length, text: text), replacementRange: notFound)
+            return
+        }
         client?.insertText(text, replacementRange: NSRange(location: location, length: length))
     }
 
@@ -46,6 +63,7 @@ private final class ClientAdapter: TextClient {
     }
 
     func setMarkedText(_ text: String) {
+        remembered = nil
         client?.setMarkedText(Self.composing(text), selectionRange: NSRange(location: text.utf16.count, length: 0),
                               replacementRange: notFound)
     }
@@ -57,10 +75,14 @@ private final class ClientAdapter: TextClient {
             if hasMarkedText() { setMarkedText("") }
             return
         }
-        client?.insertText(text, replacementRange: notFound)
+        remembered = nil
+        // Ô Java có trợ thủ: chuỗi một ký tự gửi trần thì AWT bỏ rồi phát lại phím gốc — luôn kèm phần đầu.
+        client?.insertText(javaHelper ? JavaWire.encode(location: nil, length: 0, text: text) : text,
+                           replacementRange: notFound)
     }
 
     func replaceViaMarkedText(location: Int, length: Int, with text: String) {
+        remembered = nil
         client?.setMarkedText(Self.composing(text), selectionRange: NSRange(location: text.utf16.count, length: 0),
                               replacementRange: NSRange(location: location, length: length))
         client?.insertText(text, replacementRange: notFound)
@@ -133,6 +155,10 @@ final class GTVInputController: IMKInputController {
     private var javaView: Bool?
     /// Ô Java chạy JetBrains Runtime: gõ trực tiếp (xem `commitComposition`).
     private var directJava = false
+    /// Phím gần nhất gõ trực tiếp qua trợ thủ Java (`JavaHelper`): như `directJava`.
+    private var helperRoute = false
+    /// Số lần đổi focus trợ thủ Java báo ở phím trước (xem `javaHelperDirect`).
+    private var javaFocus: Int?
     /// Đã xét lại loại ô theo bộ công cụ của ứng dụng chưa (SwiftTerm bản mới, xem `refineKind`) — một lần cho mỗi lần gắn.
     private var kindRefined = false
     /// Ô Java: chốt từ đang gạch chân sau một lúc không gõ (xem `scheduleJavaCommit`).
@@ -154,6 +180,8 @@ final class GTVInputController: IMKInputController {
         kindRefined = false
         javaView = nil
         directJava = false
+        helperRoute = false
+        javaFocus = nil
         javaCommit?.cancel()
         guard let client = sender as? Client else { return }
         bundleID = client.bundleIdentifier() ?? ""
@@ -246,6 +274,28 @@ final class GTVInputController: IMKInputController {
         }
     }
 
+    /// Ô Java (JDK gốc): trong máy ảo có trợ thủ GTV và ô đang giữ focus là ô văn bản sửa được — thay chữ trực tiếp qua trợ thủ.
+    /// Hỏi vị trí con trỏ trước khi đọc trạng thái: câu trả lời đi qua luồng sự kiện của Java, nên khi nó về thì mọi lần đổi
+    /// focus xảy ra trước phím này đã được trợ thủ ghi lại.
+    private func javaHelperDirect() -> Bool {
+        guard JavaDetector.helper(bundleID) != nil else {      // không có trợ thủ: khỏi hỏi ô
+            javaFocus = nil
+            return false
+        }
+        adapter.remembersSelection = true
+        _ = adapter.selectedRange()
+        guard let state = JavaDetector.helper(bundleID) else { return false }
+        if let last = javaFocus, last != state.serial {
+            // Con trỏ sang ô khác trong cùng cửa sổ Java (bộ gõ không được gắn lại): từ đang gõ thuộc về ô cũ.
+            DebugLog.write("Java: ô giữ focus đổi (\(last) → \(state.serial)) — bắt đầu từ mới")
+            javaCommit?.cancel()
+            session.reset()
+            session.fieldChanged()
+        }
+        javaFocus = state.serial
+        return state.direct
+    }
+
     /// Terminal mà view terminal luôn báo con trỏ ở 0 (`Settings.cursorlessTerminals`): báo vị trí khác 0 là đang gõ trong
     /// một ô văn bản của app (Muxy: thanh Find không làm bộ gõ được gắn lại nên không thấy qua `activateServer`).
     private static func inTextField(_ client: Client, _ bundleID: String) -> Bool {
@@ -268,7 +318,7 @@ final class GTVInputController: IMKInputController {
         // Java: AWTView gọi abandonInput sau MỌI lần chèn chữ, kể cả chữ của phím đi thẳng — trước khi chữ đó vào văn bản. Ô
         // gõ trực tiếp (JetBrains Runtime) không có gì đang soạn: bỏ từ ở đây thì từ không bao giờ đủ dài để thêm dấu (IME Lab
         // 44067817184: mọi phím "đi thẳng"). Mỗi lần sửa vẫn đối chiếu lại với màn hình (`Session.lostTrack`, `replace`).
-        if directJava { return }
+        if directJava || helperRoute { return }
         let saved = adapter.client
         adapter.client = sender as? Client
         session.commitRequested(adapter.client == nil ? nil : adapter)
@@ -394,7 +444,11 @@ final class GTVInputController: IMKInputController {
         }
 
         adapter.client = client
-        defer { adapter.client = nil }
+        adapter.javaHelper = false
+        defer {
+            adapter.client = nil
+            adapter.remembersSelection = false
+        }
         let toolkit = AppToolkit.profile(bundleID)
         if clientKind == nil { classify(client) }
         refineKind(client, toolkit)
@@ -415,8 +469,13 @@ final class GTVInputController: IMKInputController {
             // Ứng dụng bỏ qua cách thay chữ trực tiếp (Java chạy JDK gốc, Qt 5, GTK, winit, LibreOffice, Emacs, MacVim, terminal
             // SwiftTerm / xterm.dart): soạn từ bằng marked text của InputMethodKit.
             forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
-                || isJavaView(client)
+            if !forceMarked, isJavaView(client) {
+                // Java chạy JDK gốc: có trợ thủ GTV trong máy ảo thì thay chữ trực tiếp qua nó, không thì soạn từng từ.
+                adapter.javaHelper = javaHelperDirect()
+                forceMarked = !adapter.javaHelper
+            }
         }
+        helperRoute = adapter.javaHelper
         if clientKind == nil { classify(client) }
         // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
         let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in
@@ -430,11 +489,12 @@ final class GTVInputController: IMKInputController {
                                      combinedCommit: toolkit.combinedCommit,
                                      clearAfterCommit: toolkit.clearAfterCommit, trustMarked: toolkit.trustMarked,
                                      keyText: keyText, web: web)
-        if javaView == true { scheduleJavaCommit(client) }
+        if javaView == true, !helperRoute { scheduleJavaCommit(client) }
         // Ô web Chromium: mọi phím đặc biệt (⌫, mũi tên, ⏎) đều qua bộ gõ.
         webRoute = web
         #if DEBUG
-        let route = web ? "web" : terminal != nil ? "terminal" : forceMarked ? "soạn (marked)" : "trực tiếp"
+        let route = web ? "web" : terminal != nil ? "terminal" : forceMarked ? "soạn (marked)"
+            : helperRoute ? "trực tiếp (trợ thủ Java)" : "trực tiếp"
         // Ô Java trả lời qua luồng sự kiện của nó — hỏi ở mỗi phím làm app chậm: không hỏi.
         let where_ = javaView == true ? "" : " sel=\(client.selectedRange()) len=\(client.length())"
         DebugLog.write("phím \(event.keyCode) '\(event.characters ?? "")' \(bundleID) [\(route)\(session.blindLatched ? ", ô mù" : "")\(javaView == true ? ", java" : "")]: \(handled ? "bộ gõ xử lý" : "đi thẳng")\(where_)")
