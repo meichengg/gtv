@@ -78,8 +78,8 @@ enum JavaHelper {
             • Ghidra: dòng VMARGS trong support/launch.properties.
             • Ứng dụng khác: file .vmoptions của nó, hoặc biến môi trường JAVA_TOOL_OPTIONS.
 
-            Dòng này nạp gtv-java-helper.jar (đi kèm GTV) vào Java của ứng dụng. Đừng xoá file đó khi dòng trên còn trong \
-            cấu hình: Java sẽ không khởi động được.
+            Dòng này nạp gtv-java-helper.jar (đi kèm GTV) vào Java của ứng dụng (Java 11 trở lên; Java cũ hơn bỏ qua trợ thủ \
+            và vẫn soạn từng từ). Đừng xoá file đó khi dòng trên còn trong cấu hình: Java sẽ không khởi động được.
             """
         alert.addButton(withTitle: "Chép dòng cấu hình")
         alert.addButton(withTitle: "Đóng")

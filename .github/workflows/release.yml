@@ -75,6 +75,17 @@ jobs:
           xcodebuild -project GTV.xcodeproj -scheme GTV -derivedDataPath build/dd test \
             | grep -E "Executed|error:|TEST (SUCCEEDED|FAILED)|BUILD (SUCCEEDED|FAILED)"
 
+      # Trợ thủ Java đi kèm bản phát hành (nạp vào máy ảo của Burp Suite / Ghidra): bài thử hỏng thì không phát hành.
+      - name: Java helper tests
+        run: |
+          set -o pipefail
+          javac="$(command -v javac || true)"
+          for h in "${JAVA_HOME_21_arm64:-}" "${JAVA_HOME_21_X64:-}" "${JAVA_HOME_17_arm64:-}" "${JAVA_HOME_17_X64:-}"; do
+            if [ -n "$h" ] && [ -x "$h/bin/javac" ]; then javac="$h/bin/javac"; break; fi
+          done
+          "$javac" -version
+          GTV_JAVAC="$javac" JavaHelper/test.sh | tail -14
+
       # Chứng chỉ ký mã riêng của fork: chữ ký cố định giữa các bản.
       - name: Import code signing certificate
         env:
@@ -230,13 +241,32 @@ jobs:
           PRERELEASE: ${{ steps.meta.outputs.prerelease }}
           FRESH_APPCAST: ${{ steps.appcast.outputs.fresh }}
         run: |
+          # Số build lấy theo giờ dựng, không theo commit: chạy lại (Re-run) lượt của một commit cũ sau khi commit mới hơn đã
+          # phát hành sẽ đưa mã CŨ lên với số build MỚI NHẤT — Sparkle "cập nhật" mọi máy về mã cũ. Chỉ phát hành từ đầu nhánh.
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" -q .sha 2>/dev/null || true)"
+            if [ -n "$head" ] && [ "$head" != "$GITHUB_SHA" ]; then
+              echo "::warning::$GITHUB_SHA không còn là đầu nhánh $GITHUB_REF_NAME ($head): không phát hành bản dựng này."
+              echo "Bỏ qua phát hành: commit không còn là đầu nhánh." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
           files=("$DMG")
           [ -f build/appcast.xml ] && files+=(build/appcast.xml)
           if gh release view "$TAG" >/dev/null 2>&1; then
             # DMG (tên riêng theo số build) trước, appcast.xml sau cùng: feed luôn trỏ tới một DMG đã có, khớp chữ ký.
             gh release upload "$TAG" "$DMG" --clobber
             if [ "$FRESH_APPCAST" = "true" ]; then
-              gh release upload "$TAG" build/appcast.xml --clobber
+              # --clobber xoá file cũ rồi mới tải file mới: lần tải lỗi thì feed cập nhật mất (404) cho mọi máy — thử lại, và
+              # coi là lỗi nếu cuối cùng release không có appcast.xml.
+              for i in 1 2 3 4; do
+                gh release upload "$TAG" build/appcast.xml --clobber && break
+                echo "tải appcast.xml lỗi (lần $i), thử lại"; sleep $((i * 10))
+              done
+              if ! gh release view "$TAG" --json assets -q '.assets[].name' | grep -qx appcast.xml; then
+                echo "::error::Release $TAG không có appcast.xml: máy người dùng không kiểm tra cập nhật được. Chạy lại job."
+                exit 1
+              fi
               # Bỏ DMG cũ của phiên bản này, giữ thêm bản ngay trước (máy vừa đọc appcast cũ có thể còn đang tải nó).
               gh release view "$TAG" --json assets \
                 -q '[.assets[] | select(.name | test("^GTV-.*\\.dmg$"))] | sort_by(.createdAt) | reverse | .[2:] | .[].name' \

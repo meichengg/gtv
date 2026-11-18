@@ -146,13 +146,17 @@ func unlockInstall() {
     lockFD = -1
 }
 
-/// Hai bản có giống hệt nhau không (so sánh file thực thi và Info.plist).
+/// Hai bản có giống hệt nhau không: so file thực thi, Info.plist và niêm chữ ký (CodeResources — băm của mọi file tài
+/// nguyên, kể cả trợ thủ Java). Chỉ so hai file đầu thì lần cập nhật bằng rsync hỏng giữa chừng (file thực thi đã mới, tài
+/// nguyên còn cũ) bị coi là đã xong, không bao giờ được chép lại.
 func sameBuild(_ a: URL, _ b: URL) -> Bool {
     for path in ["Contents/MacOS/GTVInput", "Contents/Info.plist"] {
         guard let x = fm.contents(atPath: a.appendingPathComponent(path).path),
               let y = fm.contents(atPath: b.appendingPathComponent(path).path), x == y else { return false }
     }
-    return true
+    // Bản build không ký thì cả hai đều không có file này.
+    let seal = "Contents/_CodeSignature/CodeResources"
+    return fm.contents(atPath: a.appendingPathComponent(seal).path) == fm.contents(atPath: b.appendingPathComponent(seal).path)
 }
 
 /// Thời điểm build của một bản bộ gõ (giây UTC): khoá GTVBuildStamp do build.sh ghi; bản build không qua build.sh (Xcode,
@@ -275,6 +279,13 @@ func flag(_ src: TISInputSource, _ key: CFString) -> Bool {
 
 // Chạy ngầm từ bộ gõ: chỉ chọn lại GTV nếu người dùng đang ở GTV (bộ gõ cũ bị tắt có thể làm macOS chuyển sang ABC).
 let wasGTV = isGTVSelected()
+/// Đang ở English (GTV) lúc bắt đầu: nếu phải chọn lại GTV (macOS rơi về ABC khi bộ gõ cũ bị tắt) thì chọn lại đúng chế độ
+/// đó — cập nhật ngầm không được đổi tiếng Anh của người dùng thành tiếng Việt.
+let wasEnglish: Bool = {
+    guard wasGTV, let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
+    let mode = property(current, kTISPropertyInputModeID) as? String ?? property(current, kTISPropertyInputSourceID) as? String
+    return mode == inputID + ".en"
+}()
 
 // 1. Cài / cập nhật
 guard lockInstall() else {
@@ -377,8 +388,11 @@ func showManualSetup() {
     return property(current, kTISPropertyBundleID) as? String == inputID
 }
 @Sendable func selectVietnamese() {
-    let vietnameseMode = inputSources().first { property($0, kTISPropertyInputSourceID) as? String == inputID + ".vi" }
-    if let target = vietnameseMode ?? inputSources().first(where: { flag($0, kTISPropertyInputSourceIsSelectCapable) }) {
+    func mode(_ suffix: String) -> TISInputSource? {
+        inputSources().first { property($0, kTISPropertyInputSourceID) as? String == inputID + suffix }
+    }
+    let wanted = (wasEnglish ? mode(".en") : nil) ?? mode(".vi")
+    if let target = wanted ?? inputSources().first(where: { flag($0, kTISPropertyInputSourceIsSelectCapable) }) {
         TISSelectInputSource(target)
     }
 }

@@ -3,6 +3,8 @@
 #   JavaHelper/build.sh <file .jar đầu ra>
 # Cần javac 11 trở lên. Không tìm thấy thì chép bản dựng sẵn (prebuilt/) — bản đó phải được dựng lại mỗi khi sửa mã nguồn
 # (JavaHelper/build.sh JavaHelper/prebuilt/gtv-java-helper.jar).
+# Lớp điểm vào (Agent) dịch cho Java 8 để máy ảo Java 8–10 có dòng -javaagent vẫn khởi động được (trợ thủ tự thôi ở đó);
+# các lớp còn lại cần Java 11. Xem compile.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
 OUT="${1:?thiếu đường dẫn file .jar đầu ra}"
@@ -28,7 +30,7 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-"$JAVAC" --release 11 -Xlint:all -Werror -encoding UTF-8 -d "$WORK/classes" src/gtv/helper/*.java
+./compile.sh "$JAVAC" "$WORK/classes"
 mkdir -p "$WORK/classes/META-INF"
 cp MANIFEST.MF "$WORK/classes/META-INF/MANIFEST.MF"
 rm -f "$OUT"

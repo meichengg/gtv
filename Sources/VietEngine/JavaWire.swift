@@ -5,8 +5,8 @@
 /// luồng sự kiện của Java, chọn đúng vùng đó trong ô văn bản rồi cho ô chèn phần chữ — như JetBrains Runtime tự làm
 /// (`CInputMethod.selectRange`). Mọi vị trí tính theo UTF-16.
 public enum JavaWire {
-    /// Dấu ngăn: DEL. Chuỗi chốt bắt đầu bằng ký tự điều khiển thì Swing bỏ qua cả chuỗi nếu trợ thủ không có mặt
-    /// (DefaultKeyTypedAction) — không có chữ rác nào vào văn bản.
+    /// Dấu ngăn: DEL. Chỉ gửi dạng này khi file trạng thái của máy ảo cho biết trợ thủ đang có mặt (`JavaHelper.state`):
+    /// không có trợ thủ thì ô Swing chỉ bỏ riêng ký tự DEL, các chữ số của vị trí / độ dài vẫn vào văn bản.
     public static let mark: Character = "\u{7f}"
 
     /// `DEL [vị trí] DEL [độ dài] DEL chữ`. `location` nil: chèn tại con trỏ (đè lên vùng đang chọn).

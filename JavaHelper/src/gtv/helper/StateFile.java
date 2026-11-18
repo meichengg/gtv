@@ -20,6 +20,8 @@ final class StateFile {
 
     private RandomAccessFile file;
     private File path;
+    /** Máy ảo đang thoát: file đã bị xoá, không tạo lại (luồng sự kiện còn xử lý đổi focus lúc đóng cửa sổ). */
+    private volatile boolean closed;
 
     void open() {
         try {
@@ -30,7 +32,10 @@ final class StateFile {
             create();
             final File mine = path;
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-                @Override public void run() { mine.delete(); }
+                @Override public void run() {
+                    closed = true;
+                    mine.delete();
+                }
             }, "GTV Java helper cleanup"));
         } catch (Throwable e) {
             file = null;
@@ -44,7 +49,7 @@ final class StateFile {
     }
 
     void write(char kind, int serial) {
-        if (path == null) return;
+        if (path == null || closed) return;
         try {
             // File bị xoá từ bên ngoài (gỡ rồi cài lại GTV, dọn thư mục): tạo lại, không thì bộ gõ không còn thấy trợ thủ.
             if (file == null || !path.exists()) {
@@ -53,6 +58,7 @@ final class StateFile {
             }
             file.seek(0);
             file.write(record(kind, serial, startSeconds()));
+            if (closed) path.delete();      // máy ảo bắt đầu thoát ngay giữa lần ghi này
         } catch (Throwable e) {
             // bộ gõ đọc bản ghi cũ: tệ nhất là một từ soạn theo kiểu cũ
         }

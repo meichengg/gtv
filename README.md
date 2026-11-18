@@ -44,7 +44,7 @@ Tài liệu kỹ thuật chi tiết (kiến trúc, lý do thiết kế, giải t
 - GTV có 2 chế độ: **Tiếng Việt (GTV)** và **Tiếng Anh (GTV)**. Biểu tượng bộ gõ của macOS hiện **V** / **E** theo chế độ.
 - Chuyển Anh/Việt: nhấn rồi nhả **⌘⇧ (Command + Shift)** (đổi được trong menu: ⌘⇧, ⌃⇧, ⌥⇧ hoặc không dùng), chọn trong menu bộ gõ, hoặc phím 🌐 / Ctrl+Space. Có âm báo của hệ thống khi chuyển (tắt được trong menu).
 - Mọi cài đặt nằm trong **menu bộ gõ của macOS**. Muốn có biểu tượng V/E riêng như Unikey thì bật *Hiện biểu tượng GTV trên thanh menu*.
-- **Chọn GTV khi đăng nhập** (mặc định bật, tắt được trong menu): GTV.app nằm trong *Mở khi đăng nhập*; khi đăng nhập nếu đang ở bộ gõ khác (vd. ABC) thì tự chọn Tiếng Việt (GTV), nếu đang ở GTV thì giữ nguyên chế độ.
+- **Chọn GTV khi đăng nhập** (macOS 13 trở lên; mặc định bật, tắt được trong menu): GTV.app nằm trong *Mở khi đăng nhập*; khi đăng nhập nếu đang ở bộ gõ khác (vd. ABC) thì tự chọn Tiếng Việt (GTV), nếu đang ở GTV thì giữ nguyên chế độ.
 - Nhiều bộ gõ (vd. GTV + tiếng Nhật): đổi giữa các bộ gõ bằng phím 🌐 / ⌃Space của macOS; ⌘⇧ chỉ chuyển Việt ↔ Anh khi đang ở GTV. Không cần bỏ ABC: nó chỉ nằm trong vòng xoay của 🌐 / ⌃Space; lúc đăng nhập GTV tự được chọn, và khi thoát GTV hệ thống quay về ABC.
 - **Thoát GTV** trong menu: chuyển về bàn phím ABC rồi tắt hẳn. Mở lại GTV để dùng tiếp (không bị hỏi lại).
 

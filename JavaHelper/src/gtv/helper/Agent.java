@@ -14,6 +14,10 @@ import java.lang.instrument.Instrumentation;
  * <p>Lớp này không được đụng tới lớp AWT nào: {@code premain} chạy trước {@code main} của ứng dụng, nạp AWT ở đây là khởi
  * động AWT trước khi ứng dụng kịp đặt cấu hình của nó (headless, tên ứng dụng, thanh menu…). Chỉ khi ứng dụng đã tự tạo
  * bộ công cụ AWT thì {@link Bridge} mới được nạp, trên luồng sự kiện.
+ *
+ * <p>Riêng lớp này được dịch cho Java 8 (xem {@code build.sh}) và chỉ dùng API của Java 8: máy ảo cũ hơn Java 11 vẫn nạp
+ * được nó — rồi nó tự thôi ({@link #supported}). Các lớp còn lại cần Java 11; nếu chính lớp điểm vào cũng vậy thì mọi máy
+ * ảo Java 8–10 có dòng {@code -javaagent} này (vd. qua {@code JAVA_TOOL_OPTIONS}) chết ngay lúc khởi động.
  */
 public final class Agent {
     private static boolean started;
@@ -33,7 +37,7 @@ public final class Agent {
         started = true;
         try {
             String os = System.getProperty("os.name", "");
-            if (!os.toLowerCase().contains("mac")) return;
+            if (!os.toLowerCase().contains("mac") || !supported(System.getProperty("java.specification.version"))) return;
             Thread t = new Thread(new Runnable() {
                 @Override public void run() { waitForAwt(inst); }
             }, "GTV Java helper");
@@ -42,6 +46,17 @@ public final class Agent {
             t.start();
         } catch (Throwable e) {
             // Trợ thủ không bao giờ được làm ứng dụng không khởi động được.
+        }
+    }
+
+    /** Máy ảo Java 11 trở lên ("1.8" là Java 8; từ Java 9 là "9", "10", "11"…). */
+    static boolean supported(String specification) {
+        if (specification == null || specification.startsWith("1.")) return false;
+        try {
+            int dot = specification.indexOf('.');
+            return Integer.parseInt(dot < 0 ? specification : specification.substring(0, dot)) >= 11;
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 

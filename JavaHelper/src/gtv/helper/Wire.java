@@ -8,8 +8,10 @@ package gtv.helper;
  * DEL là U+007F; vị trí và độ dài là số thập phân tính theo UTF-16 (đơn vị {@code char} của Java) trong văn bản của ô.
  * Bỏ trống vị trí: chèn tại con trỏ (đè lên vùng đang chọn nếu có). Chữ có thể rỗng (chỉ xoá vùng đó).
  *
- * <p>Chuỗi bắt đầu bằng DEL thì không bộ gõ nào khác gửi; nếu trợ thủ không có mặt, Swing bỏ qua nguyên chuỗi chốt có ký
- * tự đầu là ký tự điều khiển (DefaultKeyTypedAction) — không có chữ rác nào vào văn bản.
+ * <p>Chuỗi bắt đầu bằng DEL thì không bộ gõ nào khác gửi. GTV chỉ gửi dạng này khi file trạng thái của máy ảo cho biết
+ * trợ thủ đang có mặt: không có trợ thủ thì ô Swing chỉ bỏ riêng ký tự DEL (DefaultKeyTypedAction bỏ ký tự điều khiển),
+ * các chữ số của vị trí / độ dài và phần chữ vẫn vào văn bản — đừng dựa vào Swing làm lớp an toàn. Trợ thủ nuốt mọi
+ * chuỗi chốt bắt đầu bằng DEL, kể cả khi phần đầu không đọc được ({@code Bridge.handle}).
  */
 final class Wire {
     static final char MARK = '\u007f';

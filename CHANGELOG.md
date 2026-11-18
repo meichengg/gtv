@@ -19,8 +19,9 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
 - **Java chạy JDK gốc: gõ thẳng qua trợ thủ Java.** Soạn từng từ trong Burp Suite rất khó chịu: ô đổi tên tab gạch chân từ
   đang soạn, ô soạn request để con trỏ ở đầu từ, và AWT bỏ qua phím tắt / mũi tên / ⌥⌫ bấm ngay sau từ. GTV nay kèm
   `gtv-java-helper.jar` (mã nguồn: `JavaHelper/`): nạp nó vào máy ảo của ứng dụng bằng một dòng
-  `-javaagent:~/Library/GTV/gtv-java-helper.jar` trong tham số JVM (Burp Suite: `user.vmoptions`; Ghidra: `VMARGS` trong
-  `support/launch.properties`) thì AWT nhận vùng cần thay của bộ gõ như JetBrains Runtime — GTV thay chữ trực tiếp, không còn
+  `-javaagent:/Users/<tên>/Library/GTV/gtv-java-helper.jar` trong tham số JVM (đường dẫn đầy đủ — Java không hiểu `~`; menu GTV
+  chép sẵn đúng dòng này. Burp Suite: `user.vmoptions`; Ghidra: `VMARGS` trong `support/launch.properties`; cần Java 11 trở
+  lên, máy ảo cũ hơn bỏ qua trợ thủ) thì AWT nhận vùng cần thay của bộ gõ như JetBrains Runtime — GTV thay chữ trực tiếp, không còn
   gì "đang soạn". Trợ thủ chỉ đọc vùng cần thay GTV ghi ở đầu chuỗi gửi, chọn đúng vùng đó trong ô văn bản rồi cho ô chèn
   chữ; chữ của bộ gõ khác đi qua nguyên vẹn. Trợ thủ cũng báo cho GTV ô nào đang giữ focus trong cửa sổ Java: sang ô khác
   thì GTV bắt đầu từ mới, và ở ô không nhận chữ (bảng, cây, nút, ô chỉ đọc) phím đi thẳng tới ứng dụng. Menu GTV có mục *Gõ thẳng trong … (Java)…* khi đang ở ứng dụng Java chưa có trợ
@@ -59,6 +60,39 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   sau thông báo rồi mới đọc, một lần cho cả loạt thông báo của cùng một lần đổi.
 - Bộ gõ khởi động lại lúc một ô nhập liệu đang mở (vd. sau khi cập nhật): ô đó chưa áp dụng cài đặt riêng của ứng dụng (loại
   trừ, soạn từng từ, terminal) cho tới khi đổi sang ứng dụng khác. (Từ bản gốc 1.11.2.)
+- **Xoá từ vừa gõ (⌥⌫) hay cả dòng (⌘⌫) rồi gõ lại ngay thì ra số / chữ không dấu** (VNI lẫn Telex; Claude, Zalo, VS Code và
+  mọi ô web của Chrome / Electron): sau phím xoá hay click, bộ gõ chưa có bằng chứng từ mới nằm ở đâu trong bản sao văn bản
+  của Chromium nên bỏ hẳn việc thêm dấu cho từ đó — và cho mọi từ sau, tới khi ngừng gõ hơn 1 s. Nay từ đó tạm đi nguyên văn
+  rồi được thay bằng chữ có dấu ngay khi trang cho thấy nó nằm ở đâu (thường ở phím thứ hai, thứ ba), các từ sau gõ như
+  thường. Chữ chèn trong một phím chưa tới trang thì không thay theo vị trí ngay trong phím đó (IME Lab: "đ9ẳng").
+- Ô thường (gõ trực tiếp): mất dấu từ đang gõ đúng ở phím kết thúc từ (ô chat tự xoá sau khi bấm Gửi rồi tin sau mở đầu bằng
+  dấu ngoặc / nháy; ô báo chậm lúc bấm dấu cách liền tay) không còn làm cả từ SAU đi nguyên văn. Từ đang đi nguyên văn bị
+  ⌫ hết rồi gõ lại thì gõ như thường.
+- Ô thường: chữ tổ hợp (NFD — tên file của Finder) ngay trước con trỏ làm phím dấu ra thô ("ngươi2"); ⌫ vào giữa một từ
+  tiếng Anh dài (hơn 12 chữ) hay có chữ lạ rồi gõ tiếp bị thêm dấu như bắt đầu từ mới ("responsibilitié").
+- Ghostty: ⏎ / ⇥ bấm liền tay sau phím cuối (lần sửa còn chờ gửi) chạy lệnh chưa được khôi phục — `user` ⏎ chạy "ủe".
+- Phím tắt ba phím bổ trợ (⌥⌘⇧V, ⌃⌘⇧4…) làm V/E tự đổi khi nhả phím thừa trước rồi mới nhả ⌘⇧: lần nhả đó trông như nhấn
+  tổ hợp đổi Anh/Việt "trơn".
+- Từ viết tắt có đ: `d9c` / `ddc` ra "đc" (không bị trả về phím gõ), `D9H` "ĐH"; đ không đứng đầu gõ được — `HD9` "HĐ",
+  `QD9` "QĐ", `ND9-CP` "NĐ-CP", `SD9T` "SĐT" (Telex: `HDD`, `QDD`…; gõ lặp `HDDD` ra "HDD").
+- Gõ được "Kạn" (Bắc Kạn), "Kông" (Kông Chro), "Kô", "Kơ" (Kơ nia) và vần "oao" (ngoáo ộp).
+- VNI: số không áp dụng được gõ ngay sau số vừa thành dấu nghĩa là đang gõ một con số — `i18n`, `e19`, `to19` ra nguyên văn
+  (trước: "í8n"). Số áp dụng được vẫn là dấu như mọi bộ gõ VNI (`a10` ra "a", `u23` ra "ủ": gõ lặp số đầu — `u223` — để ra
+  "u23").
+- Telex: `keeper`, `deeper`, `downward`… ra "keper", "donward" (phím lặp không liền nhau huỷ mũ / móc rồi không khôi phục).
+- Từ có sẵn đặt dấu thanh theo kiểu kia (hoà / hòa, thuý / thúy) hay đặt lệch (qúa) không nạp lại được để gõ tiếp.
+- Bật nhật ký (`trace`) rồi đĩa đầy: mỗi lần ghi lỗi ném NSException làm bộ gõ chết ở mỗi phím. Nay ghi ở luồng nền, lỗi ghi
+  bị bỏ qua.
+- Thêm / bỏ một ứng dụng KHÁC khỏi danh sách loại trừ lúc đang tự chọn tiếng Anh thì bị bật tiếng Việt; bộ gõ khởi động lại
+  (cập nhật) lúc đang ở ứng dụng loại trừ thì kẹt tiếng Anh ở mọi ứng dụng.
+- Màn hình khoá hiện quá 2 phút mà thông báo mở khoá không tới (macOS 27): mở khoá xong máy ở lại ABC. Nay GTV tự dò tới khi
+  hết khoá.
+- Trợ thủ Java: máy ảo Java 8–10 có dòng `-javaagent` không còn chết lúc khởi động (trợ thủ tự thôi ở đó); ô từ chối chữ có
+  dấu (ô chỉ nhận số / hex) không còn bị bôi đen vùng vừa định thay — phím sau không xoá mất chữ; ô đang giữ focus chuyển
+  từ chỉ đọc sang sửa được thì gõ có dấu ngay, không phải click sang ô khác rồi quay lại.
+- Cập nhật ngầm lúc đang ở English (GTV) có thể chọn lại Tiếng Việt (GTV); cập nhật bằng rsync (ổ HFS+) hỏng giữa chừng bị coi
+  là đã xong. Phát hành: bài thử trợ thủ Java hỏng không làm đỏ CI; chạy lại lượt Release của commit cũ phát hành mã cũ với số
+  build mới nhất.
 
 ### Đồng bộ với bản gốc
 - Ghép bản gốc S0nnyHoang/gtv 1.11.2. Chế độ terminal của bản gốc (gửi DEL + chữ mới) đã có ở đây từ 1.12 với phần nhận biết

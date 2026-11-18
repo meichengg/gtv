@@ -85,6 +85,98 @@ public final class HelperTest {
         }
         stateRecord();
         focusKinds();
+        rejectedEdits();
+        badHeader();
+        focusedFieldChanges();
+        javaVersions();
+    }
+
+    /** Ô từ chối lần sửa: vùng cần thay không được ở lại làm vùng chọn (phím kế tiếp sẽ thay mất nó). */
+    private static void rejectedEdits() {
+        JTextField ascii = new JTextField();
+        ((javax.swing.text.AbstractDocument) ascii.getDocument()).setDocumentFilter(new javax.swing.text.DocumentFilter() {
+            @Override public void replace(FilterBypass fb, int offset, int length, String text,
+                                          javax.swing.text.AttributeSet attrs) throws javax.swing.text.BadLocationException {
+                if (text != null && !text.chars().allMatch(ch -> ch < 128)) return;      // chỉ nhận ASCII
+                super.replace(fb, offset, length, text, attrs);
+            }
+            @Override public void insertString(FilterBypass fb, int offset, String text,
+                                               javax.swing.text.AttributeSet attrs) throws javax.swing.text.BadLocationException {
+                if (text != null && !text.chars().allMatch(ch -> ch < 128)) return;
+                super.insertString(fb, offset, text, attrs);
+            }
+        });
+        type(ascii, "be");
+        commit(ascii, wire(1, 1, "ê"));
+        check("ô chỉ nhận ASCII: chữ bị từ chối, văn bản nguyên", ascii.getText(), "be");
+        check("ô chỉ nhận ASCII: không còn vùng chọn", ascii.getSelectionStart() + "-" + ascii.getSelectionEnd(), "2-2");
+        type(ascii, "f");
+        check("ô chỉ nhận ASCII: phím sau nối vào cuối", ascii.getText(), "bef");
+
+        // Lần sửa được nhận thì vẫn như thường.
+        commit(ascii, wire(0, 3, "abc"));
+        check("ô chỉ nhận ASCII: lần sửa ASCII được nhận", ascii.getText(), "abc");
+
+        // Vùng chọn có sẵn của người dùng (khác vùng cần thay) được trả lại khi ô từ chối.
+        ascii.select(0, 2);
+        commit(ascii, wire(2, 1, "đ"));
+        check("ô chỉ nhận ASCII: trả lại vùng chọn cũ", ascii.getSelectionStart() + "-" + ascii.getSelectionEnd(), "0-2");
+
+        // Lệnh chỉ xoá bị từ chối.
+        JTextField locked = new JTextField();
+        type(locked, "abc");
+        ((javax.swing.text.AbstractDocument) locked.getDocument()).setDocumentFilter(new javax.swing.text.DocumentFilter() {
+            @Override public void remove(FilterBypass fb, int offset, int length) { }
+            @Override public void replace(FilterBypass fb, int offset, int length, String text,
+                                          javax.swing.text.AttributeSet attrs) { }
+        });
+        commit(locked, wire(1, 1, ""));
+        check("ô không cho xoá: văn bản nguyên", locked.getText(), "abc");
+        check("ô không cho xoá: không còn vùng chọn", locked.getSelectionStart() + "-" + locked.getSelectionEnd(), "3-3");
+    }
+
+    /** Chuỗi bắt đầu bằng DEL mà phần đầu hỏng: không chữ nào của nó được vào văn bản. */
+    private static void badHeader() {
+        JTextArea c = new JTextArea();
+        type(c, "x");
+        commit(c, "\u007f12345678901\u007f1\u007fabc");
+        check("phần đầu hỏng: không vào văn bản", c.getText(), "x");
+        commit(c, "\u007fabc");
+        check("phần đầu thiếu dấu ngăn: không vào văn bản", c.getText(), "x");
+    }
+
+    /** Ô đang giữ focus đổi sang sửa được / chỉ đọc / tắt: loại ô ghi cho bộ gõ đổi theo, không chờ lần đổi focus sau. */
+    private static void focusedFieldChanges() {
+        Bridge b = Bridge.detached();
+        JTextArea field = new JTextArea();
+        field.setEditable(false);
+        Object manager = new Object();
+        b.propertyChange(new java.beans.PropertyChangeEvent(manager, "permanentFocusOwner", null, field));
+        check("ô giữ focus: chỉ đọc", b.published, 'N');
+        field.setEditable(true);
+        check("ô giữ focus: vừa cho sửa", b.published, 'D');
+        field.setEnabled(false);
+        check("ô giữ focus: vừa bị tắt", b.published, 'N');
+        field.setEnabled(true);
+        check("ô giữ focus: bật lại", b.published, 'D');
+        JTextField other = new JTextField();
+        b.propertyChange(new java.beans.PropertyChangeEvent(manager, "permanentFocusOwner", field, other));
+        check("ô giữ focus: sang ô khác", b.published, 'D');
+        field.setEditable(false);
+        check("ô cũ đổi: không ảnh hưởng", b.published, 'D');
+        check("ô cũ không còn bị nghe", field.getPropertyChangeListeners("editable").length, 0);
+    }
+
+    /** Máy ảo cũ hơn Java 11 nạp được lớp điểm vào nhưng trợ thủ tự thôi. */
+    private static void javaVersions() {
+        check("Java 8", Agent.supported("1.8"), false);
+        check("Java 9", Agent.supported("9"), false);
+        check("Java 10", Agent.supported("10"), false);
+        check("Java 11", Agent.supported("11"), true);
+        check("Java 17", Agent.supported("17"), true);
+        check("Java 26", Agent.supported("26"), true);
+        check("không rõ phiên bản", Agent.supported(null), false);
+        check("phiên bản lạ", Agent.supported("abc"), false);
     }
 
     private static void wireFormat() {

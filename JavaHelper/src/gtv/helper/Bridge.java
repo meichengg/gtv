@@ -4,6 +4,7 @@ import java.awt.AWTEvent;
 import java.awt.Component;
 import java.awt.EventQueue;
 import java.awt.KeyboardFocusManager;
+import java.awt.TextArea;
 import java.awt.TextComponent;
 import java.awt.Toolkit;
 import java.awt.event.AWTEventListener;
@@ -28,7 +29,11 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTable;
 import javax.swing.JToolBar;
 import javax.swing.JTree;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.table.JTableHeader;
+import javax.swing.text.Caret;
+import javax.swing.text.Document;
 import javax.swing.text.JTextComponent;
 
 /**
@@ -54,6 +59,8 @@ public final class Bridge implements AWTEventListener, PropertyChangeListener, R
     private final StateFile state = new StateFile();
     private Component focus;
     private int serial;
+    /** Loại ô vừa ghi cho bộ gõ (bài thử đọc). */
+    char published;
 
     private Bridge() {}
 
@@ -75,6 +82,7 @@ public final class Bridge implements AWTEventListener, PropertyChangeListener, R
             KeyboardFocusManager kfm = KeyboardFocusManager.getCurrentKeyboardFocusManager();
             kfm.addPropertyChangeListener("permanentFocusOwner", this);
             focus = kfm.getPermanentFocusOwner();
+            watch(null, focus);
             state.open();
             publish();
         } catch (Throwable e) {
@@ -82,12 +90,21 @@ public final class Bridge implements AWTEventListener, PropertyChangeListener, R
         }
     }
 
-    /** Ô giữ focus đổi (kể cả giữa hai ô trong cùng cửa sổ: bộ gõ không thấy việc đó). */
+    /**
+     * Ô giữ focus đổi (kể cả giữa hai ô trong cùng cửa sổ: bộ gõ không thấy việc đó), hoặc ô đang giữ focus đổi sang sửa được
+     * / chỉ đọc / tắt (nút Edit không lấy focus, ô tự mở khoá khi có dữ liệu): loại ô ghi cho bộ gõ phải theo kịp, không thì
+     * ô vừa cho sửa vẫn bị coi là "không nhận chữ" tới lần đổi focus sau.
+     */
     @Override public void propertyChange(PropertyChangeEvent event) {
         try {
+            if (!"permanentFocusOwner".equals(event.getPropertyName())) {
+                if (event.getSource() == focus) publish();
+                return;
+            }
             Object now = event.getNewValue();
             Component next = now instanceof Component ? (Component) now : null;
             if (next == focus) return;
+            watch(focus, next);
             focus = next;
             serial++;
             publish();
@@ -96,8 +113,16 @@ public final class Bridge implements AWTEventListener, PropertyChangeListener, R
         }
     }
 
+    private void watch(Component old, Component next) {
+        for (String property : new String[] {"editable", "enabled"}) {
+            if (old != null) old.removePropertyChangeListener(property, this);
+            if (next != null) next.addPropertyChangeListener(property, this);
+        }
+    }
+
     private void publish() {
-        state.write(kind(focus), serial);
+        published = kind(focus);
+        state.write(published, serial);
     }
 
     /**
@@ -149,37 +174,90 @@ public final class Bridge implements AWTEventListener, PropertyChangeListener, R
         StringBuilder b = new StringBuilder(committed);
         for (char c = it.first(); c != CharacterIterator.DONE && b.length() < committed; c = it.next()) b.append(c);
         Wire.Edit edit = Wire.parse(b.toString());
-        if (edit == null) return;
-        // Chuỗi mang phần đầu của GTV không bao giờ được tới ô nhập liệu nguyên văn.
+        // Chuỗi mang phần đầu của GTV không bao giờ được tới ô nhập liệu nguyên văn — kể cả khi phần đầu hỏng (Swing chỉ bỏ
+        // ký tự DEL, các chữ số của vị trí / độ dài sẽ thành chữ trong văn bản).
         e.consume();
+        if (edit == null) return;
         Object source = e.getSource();
         if (source instanceof Component) apply((Component) source, edit);
     }
 
     static void apply(Component target, Wire.Edit edit) {
         if (target instanceof JTextComponent) {
-            JTextComponent t = (JTextComponent) target;
-            if (!t.isEditable() || !t.isEnabled()) return;
-            if (edit.location >= 0) {
-                int end = t.getDocument().getLength();
-                int from = Math.min(edit.location, end);
-                int to = Math.min(edit.location + edit.length, end);
-                if (t.getSelectionStart() != from || t.getSelectionEnd() != to) t.select(from, to);
-            }
-            if (edit.text.isEmpty()) {
-                if (t.getSelectionStart() != t.getSelectionEnd()) t.replaceSelection("");
-                return;
-            }
-        } else if (target instanceof TextComponent) {
+            applySwing((JTextComponent) target, edit);
+            return;
+        }
+        if (target instanceof TextComponent) {
             TextComponent t = (TextComponent) target;
             if (!t.isEditable() || !t.isEnabled()) return;
             if (edit.location >= 0) t.select(edit.location, edit.location + edit.length);
+            if (edit.text.isEmpty()) {
+                // Chỉ xoá: ô AWT thuần không có "thay vùng chọn bằng chuỗi rỗng" qua sự kiện của bộ gõ.
+                int from = t.getSelectionStart(), to = t.getSelectionEnd();
+                if (from == to) return;
+                if (t instanceof TextArea) {
+                    ((TextArea) t).replaceRange("", from, to);
+                } else {
+                    String text = t.getText();
+                    t.setText(text.substring(0, from) + text.substring(to));
+                }
+                t.setCaretPosition(from);
+                return;
+            }
         }
         // Ô khác (tự vẽ): không chọn được vùng cần thay — ít nhất chữ tới nơi, không kèm phần đầu.
         if (edit.text.isEmpty()) return;
-        TextHitInfo caret = TextHitInfo.afterOffset(edit.text.length() - 1);
+        commit(target, edit.text);
+    }
+
+    private static void commit(Component target, String text) {
+        TextHitInfo caret = TextHitInfo.afterOffset(text.length() - 1);
         target.dispatchEvent(new InputMethodEvent(target, InputMethodEvent.INPUT_METHOD_TEXT_CHANGED,
-                                                  new AttributedString(edit.text).getIterator(), edit.text.length(),
-                                                  caret, caret));
+                                                  new AttributedString(text).getIterator(), text.length(), caret, caret));
+    }
+
+    /**
+     * Ô văn bản Swing: chọn vùng cần thay rồi để chính ô chèn chữ đè lên. Ô từ chối lần sửa (DocumentFilter chỉ nhận số /
+     * hex, KeyListener nuốt chữ ngoài ASCII, JFormattedTextField…) thì văn bản không đổi nhưng vùng vừa chọn còn nguyên —
+     * phím kế tiếp của người dùng sẽ thay mất nó ("be" + ê bị từ chối + f → "bf"): trả con trỏ / vùng chọn về như trước.
+     */
+    private static void applySwing(JTextComponent t, Wire.Edit edit) {
+        if (!t.isEditable() || !t.isEnabled()) return;
+        Caret caret = t.getCaret();
+        int dot = caret == null ? -1 : caret.getDot(), mark = caret == null ? -1 : caret.getMark();
+        boolean selected = false;
+        if (edit.location >= 0) {
+            int end = t.getDocument().getLength();
+            int from = Math.min(edit.location, end);
+            int to = Math.min(edit.location + edit.length, end);
+            if (t.getSelectionStart() != from || t.getSelectionEnd() != to) {
+                t.select(from, to);
+                selected = true;
+            }
+        }
+        final boolean[] changed = {false};
+        DocumentListener listener = new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { changed[0] = true; }
+            @Override public void removeUpdate(DocumentEvent e) { changed[0] = true; }
+            @Override public void changedUpdate(DocumentEvent e) { changed[0] = true; }
+        };
+        Document document = t.getDocument();
+        document.addDocumentListener(listener);
+        try {
+            if (edit.text.isEmpty()) {
+                if (t.getSelectionStart() != t.getSelectionEnd()) t.replaceSelection("");
+            } else {
+                commit(t, edit.text);
+            }
+        } finally {
+            document.removeDocumentListener(listener);
+            if (selected && !changed[0] && caret != null && t.getDocument() == document) {
+                int end = document.getLength();
+                if (mark >= 0 && mark <= end && dot >= 0 && dot <= end) {
+                    caret.setDot(mark);
+                    if (dot != mark) caret.moveDot(dot);
+                }
+            }
+        }
     }
 }

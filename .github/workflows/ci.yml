@@ -55,6 +55,7 @@ jobs:
       # Trợ thủ Java (JavaHelper/): logic thay chữ (không cần màn hình) và đường đi sự kiện thật của AWT, bằng JDK có sẵn trên máy.
       - name: Java helper tests
         run: |
+          set -o pipefail      # không có thì mã thoát là của `tail`: bài thử hỏng job vẫn xanh
           javac="$(command -v javac || true)"
           for h in "${JAVA_HOME_21_arm64:-}" "${JAVA_HOME_21_X64:-}" "${JAVA_HOME_17_arm64:-}" "${JAVA_HOME_17_X64:-}"; do
             if [ -n "$h" ] && [ -x "$h/bin/javac" ]; then javac="$h/bin/javac"; break; fi
