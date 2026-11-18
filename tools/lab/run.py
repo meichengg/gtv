@@ -107,6 +107,19 @@ APP_TESTS = [
     # nuốt phím bấm ngay sau từ (xem vni-arrow).
     ("vni-optbs", "vni", "tie61ng vie65t{WAIT1300}{OPTBS}d9a38ng ca61p ", "tiếng đẳng cấp ", 45),
 ]
+# Gõ sai, xoá cả từ (⌥⌫) hay cả dòng (⌘⌫) rồi gõ lại NGAY, không ngừng tay — người dùng báo: từ gõ lại ra số (VNI) thay vì ra
+# dấu, trong Claude desktop / Zalo (Chromium). Ô Chromium trả lời vị trí con trỏ từ một bộ đệm; ngay sau phím xoá bộ gõ chưa chắc
+# con trỏ ở đâu, bản cũ bỏ dấu của mọi từ gõ liền sau đó.
+DELETE_RETYPE_TESTS = [
+    ("vni-optbs-now", "vni", "tie61ng vie65t{OPTBS}d9a38ng ca61p ", "tiếng đẳng cấp ", 45),
+    ("vni-optbs-fast", "vni", "tie61ng vie65t{OPTBS}d9a38ng ca61p ", "tiếng đẳng cấp ", 8),
+    ("telex-optbs-now", "telex", "tieengs vieetj{OPTBS}ddawngr caaps ", "tiếng đẳng cấp ", 45),
+    ("vni-cmdbs-now", "vni", "tuye65t vo72i{CMDBS}d9a38ng ca61p tuye65t ", "đẳng cấp tuyệt ", 45),
+    ("telex-cmdbs-now", "telex", "tuyeetj vowis{CMDBS}ddawngr caaps tuyeetj ", "đẳng cấp tuyệt ", 45),
+    ("vni-optbs-twice", "vni", "xin chao tuye65t {OPTBS}{OPTBS}d9a38ng ca61p ", "xin đẳng cấp ", 45),
+    ("vni-retype-loop", "vni", "tuye65{OPTBS}tuye65{OPTBS}tuye65t d9o61i ", "tuyệt đối ", 30),
+    ("vni-optbs-raw-word", "vni", "tuye65{OPTBS}d9a38ng{OPTBS}d9o61i ", "đối ", 20),
+]
 # Ô Java gõ trực tiếp (JetBrains Runtime, hay JDK gốc có trợ thủ GTV trong máy ảo): không có gì đang soạn, nên phím bấm
 # ngay sau từ (mũi tên, ⌘A, ⌥⌫) tới Java như thường; ô một dòng phía trên (như ô đổi tên tab của Burp) gõ như ô chính, kể cả
 # khi focus sang đó bằng chương trình (bộ gõ không được gắn lại).
@@ -140,7 +153,7 @@ RACE = ("vni", "d9a38ng", "đẳng", 10)
 # Chrome (Chromium: cũng là Electron, VS Code, Claude desktop…): gõ rất nhanh (bộ đệm văn bản phía trình duyệt cập nhật
 # chậm sau lần thay của bộ gõ: có thể mất dấu) và ⌫ làm dời dấu thanh (kiểu cũ: "hoàn" ⌫ → "hòa"; Chromium có thể vừa
 # nhận lần thay của bộ gõ vừa tự xoá).
-CHROME_TESTS = APP_TESTS + [
+CHROME_TESTS = APP_TESTS + DELETE_RETYPE_TESTS + [
     ("telex-fast8", "telex", "Vieetj Nam ddaij hocj tieengs Vieetj nguwowif ", "Việt Nam đại học tiếng Việt người ", 8),
     ("vni-fast6", "vni", "Vie65t Nam d9a5i ho5c tie61ng Vie65t ngu7o72i ", "Việt Nam đại học tiếng Việt người ", 6),
     ("telex-bs-tone", "telex", "hoafn{BS} ", "hòa ", 45),
@@ -160,6 +173,9 @@ CHROME_SLOW_TESTS = [
     ("slow-telex-words", "telex", "Vieetj Nam ddaij hocj tieengs nguwowif ", "Việt Nam đại học tiếng người ", 70),
     ("slow-bs-tone", "telex", "hoafn{BS} ", "hòa ", 70),
     ("slow-bs-retype", "vni", "tie61ng{BS}{BS}{BS}e65t ", "tiệt ", 70),
+    # Trang chậm: từ gõ lại có thể đi nguyên văn (bộ gõ không sửa ở chỗ chưa chắc) — chỉ ghi lại, không chấm.
+    ("slow-optbs", "vni", "tie61ng vie65t{OPTBS}d9a38ng ca61p ", None, 70),
+    ("slow-cmdbs", "vni", "tuye65t vo72i{CMDBS}d9a38ng ca61p tuye65t ", None, 70),
 ]
 CHROME = "/Applications/Google Chrome.app"
 CHROME_ID = "com.google.Chrome"
@@ -654,6 +670,8 @@ def run_app_suite(app, only=None, tag=None):
             bid, pid = FIELD_ID, None
             if app == "blind":
                 tests = BLIND_TESTS
+            else:
+                tests = APP_TESTS + DELETE_RETYPE_TESTS
         elif app in ("chrome", "chromeslow"):
             if not pathlib.Path(CHROME).exists():
                 return [{"terminal": app, "test": "-", "error": "chưa cài Chrome"}]

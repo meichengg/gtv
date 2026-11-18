@@ -191,6 +191,12 @@ public final class Session {
     private var webResumeArmed = false
     /// Lần sửa đầu của một chuỗi chưa có bằng chứng vị trí, đang chờ trang báo (`deferWebEdit`).
     private var webPending: (old: String, new: String, typed: Character)?
+    /// Từ đang gõ tạm đi nguyên văn ở ô web: chữ của nó hiện có trên trang (đúng các phím đã gõ — chưa lần sửa nào được gửi vì
+    /// bộ gõ chưa chắc từ nằm ở đâu), trong khi `engine` vẫn giữ từ định gõ. Ngay khi bộ đệm cho thấy chắc chắn từ nằm ở đâu
+    /// (`webShadowFix`) thì chữ nguyên văn được thay bằng từ định gõ trong một lần, rồi gõ tiếp như thường. nil: không có.
+    private var webShadow: String?
+    /// Chỗ bộ đệm cho thấy từ đó nằm (khác chỗ bộ gõ nhớ) ở lần đọc trước, và số đơn vị UTF-16 đã gõ lúc đó.
+    private var webShadowSeen: (at: Int, length: Int)?
     private weak var webPendingClient: TextClient?
     private var webSerial = 0
 
@@ -440,8 +446,9 @@ public final class Session {
         if inWeb, let client {
             // Ô web: bộ gõ tự giữ từ đang gõ — chỉ bỏ khi trang cho thấy chữ đã bị đổi bởi thứ khác.
             if webPending != nil { flushWebPending(client, final: true) }
+            if webShadow != nil { webShadowFix(client) }
             if engine.isEmpty { return }
-            if case .foreign = webRead(client, word: engine.displayed) { commit(client) }
+            if case .foreign = webRead(client, word: webShadow ?? engine.displayed) { commit(client) }
             return
         }
         if !marked, !literalTail, !inTerminal, pending == nil, !engine.isEmpty, let client, wordOnScreen(client) {
@@ -463,6 +470,7 @@ public final class Session {
     /// Chốt từ đang gõ (khi ô nhập liệu mất focus, click chuột...).
     public func commit(_ client: TextClient?) {
         if let client, webPending != nil { flushWebPending(client, final: true) }
+        if let client, webShadow != nil { webShadowFix(client) }
         if let client, pending != nil {
             if client.lateEditSafe() {
                 settlePending(client)
@@ -1304,6 +1312,15 @@ public final class Session {
         /// Chuỗi chưa xác minh: ký tự người dùng vừa gõ ngay trước đầu chuỗi (⏎ → "\n", ⇥ → "\t"); bộ đệm cho thấy đúng ký tự đó
         /// trước đầu chuỗi (hay đầu chuỗi là đầu ô) mới là bằng chứng vị trí. nil: không biết — chỉ ngừng tay lâu mới tin.
         var expectBefore: Character?
+        /// Lúc chuỗi bắt đầu, không còn phím gõ nào trước đó mà trang chưa báo (đã ngừng gõ lâu, hay chuỗi trước kết thúc lúc bộ
+        /// đệm đã theo kịp nó — `webLeft`). Thứ duy nhất bộ đệm có thể chưa có là tác dụng của phím / click ngay trước chuỗi.
+        /// Khi đó bộ đệm đổi khác đi chỉ có thể do trang báo việc xảy ra SAU đó: dùng làm bằng chứng vị trí được (`webEvident`).
+        /// Trang đang chậm (còn phím cũ chưa báo) thì không: bộ đệm còn "phát lại" các phím cũ, trông y như chữ đang gõ.
+        var clean = false
+        /// Số đơn vị UTF-16 của chuỗi (tính từ `start`) đã có lúc gần nhất con trỏ có thể bị dời mà bộ gõ không biết (đầu chuỗi:
+        /// 0; click / phím tắt bộ gõ không thấy giữa chuỗi: độ dài chuỗi lúc đó). Chỉ chữ gõ SAU mốc này mới là bằng chứng vị
+        /// trí, và phải thấy từ hai ký tự trở lên (một ký tự có thể chỉ là Chromium tự đoán trên bộ đệm cũ).
+        var evidenceFrom = 0
     }
 
     private enum WebRead { case current, lag, moved(Int), foreign }
@@ -1352,6 +1369,12 @@ public final class Session {
     }
     /// Lúc phím gần nhất ở ô web (chưa có phím nào: như đã lâu không gõ).
     private var webLastKeyAt = -Double.infinity
+    /// Chuỗi trước vừa kết thúc bằng một phím bộ gõ không biết tác dụng (⌥⌫, ⌘⌫, mũi tên, ⏎, phím tắt…) đúng lúc bộ đệm đã theo
+    /// kịp nó: con trỏ của bộ đệm lúc đó. Bộ đệm sau đó báo con trỏ ở chỗ khác thì trang đã báo tác dụng của phím ấy — đầu
+    /// chuỗi kế tiếp đọc từ bộ đệm là thật. nil: không có / bộ đệm lúc đó còn chậm.
+    /// `shown`: con trỏ bộ đệm lúc đó; `final`: con trỏ của chuỗi sau lần sửa bộ gõ gửi ngay lúc kết thúc chuỗi (khôi phục từ
+    /// không phải tiếng Việt…) — lần sửa đó chưa thể có trong bộ đệm.
+    private var webLeft: (shown: Int, final: Int)?
     /// Trang chậm hợp lý tới chừng này phím; bộ đệm cho thấy trạng thái cũ hơn là chữ lạ.
     private static let webLagLimit = 8
     private static let webIdleBreak = 1.0
@@ -1367,6 +1390,9 @@ public final class Session {
         webResumeArmed = false
         webPending = nil
         webPendingClient = nil
+        webShadow = nil
+        webShadowSeen = nil
+        webLeft = nil
         webSerial &+= 1
     }
 
@@ -1389,9 +1415,10 @@ public final class Session {
         webSeen = webStateCount
     }
 
-    private func startWebChain(at location: Int, trusted: Bool = true) {
+    private func startWebChain(at location: Int, trusted: Bool = true, clean: Bool = false) {
         webSuffix = ""
-        web = WebChain(caret: location, start: location, proven: false, trusted: trusted, expectBefore: webNextExpect)
+        web = WebChain(caret: location, start: location, proven: false, trusted: trusted, expectBefore: webNextExpect,
+                       clean: clean || trusted)
         webNextExpect = nil
         anchor = location
         webBefore = ""
@@ -1402,12 +1429,17 @@ public final class Session {
         if webPending != nil { flushWebPending(client, final: true) }   // lần sửa còn chờ: tới trang trước phím này
         webKeyCount += 1
         defer { webLastKeyAt = client.currentTime() }
+        // `webLeft` chỉ nói về phím ngay trước phím này.
+        let left = webLeft
+        webLeft = nil
+        let idle = client.currentTime() - webLastKeyAt > Self.webIdleBreak
         let dropped = gap == .interrupted || gap == .bypassed
         if engine.isEmpty, !untracked, dropped {
             // Có click / phím tắt bộ gõ không thấy (Chromium không đưa chuột cho bộ gõ; macOS 27 báo click muộn tới 0,5 s): con
             // trỏ có thể đã ở chỗ khác. Không bỏ chuỗi (trang chậm thì bộ đệm còn cũ — bắt đầu lại ở đó là sửa sai chỗ) mà coi
             // như chưa có bằng chứng vị trí: lần sửa đầu chờ bộ đệm xác nhận; không gõ tiếp từ trước sau ⌫.
             web?.proven = false
+            web?.evidenceFrom = (webHistory.last?.text ?? webBefore).utf16.count
             webResumeArmed = false
         }
         if dropped, web != nil { webGapSerial = webStateCount }
@@ -1421,6 +1453,7 @@ public final class Session {
             if moved {
                 web?.proven = false
                 web?.trusted = false
+                web?.evidenceFrom = (webHistory.last?.text ?? webBefore).utf16.count
             }
         }
         if case .backspace = key {
@@ -1433,7 +1466,24 @@ public final class Session {
         webResumeArmed = false
         switch key {
         case .other, .backspace:
+            // Phím không ra chữ (⌥⌫, ⌘⌫, mũi tên, phím tắt…): từ đang đi nguyên văn kết thúc ở đây — từ gõ sau đó là từ mới, không
+            // đi nguyên văn theo (nhật ký máy người dùng: gõ sai, ⌥⌫, gõ lại vẫn ra "tuye65t").
+            if webShadow != nil, !webShadowFix(client) { webShadowAbandon() }
+            if untracked {
+                untracked = false
+                engine.reset()
+                web = nil
+            }
+            let hadChain = web != nil
             endWebWord(client, terminator: nil)
+            if !hadChain, !dropped, let sel = client.selectedRange(), sel.length == 0 {
+                // Không có chuỗi nào (ô vừa được gắn, hay phím ngay trước cũng là phím như vậy — ⌥⌫ hai lần liền): vẫn biết bộ
+                // đệm không còn gì chưa báo ngoài tác dụng của phím này nếu đã ngừng gõ lâu, hoặc bộ đệm vừa cho thấy tác dụng
+                // của phím trước.
+                if idle || left.map({ sel.location != $0.shown && sel.location != $0.final }) == true {
+                    webLeft = (sel.location, sel.location)
+                }
+            }
             return false
         case let .char(ch):
             if untracked {
@@ -1442,7 +1492,23 @@ public final class Session {
                 engine.reset()
                 web = nil
             }
-            if engine.isEmpty { startWebWord(client, options: options, resume: resume, dropped: dropped) }
+            if engine.isEmpty { startWebWord(client, options: options, resume: resume, dropped: dropped, left: left) }
+            if webShadow != nil, !webShadowFix(client) {
+                // Vẫn chưa biết từ nằm đâu: phím này cũng đi nguyên văn, `engine` gõ tiếp từ định gõ.
+                guard engine.process(ch) != nil else {
+                    webShadowAbandon()                   // hết từ mà trang vẫn chưa cho thấy nó
+                    endWebWord(client, terminator: ch)
+                    if Self.producesText(ch) { webNoteInsert(String(ch)) }
+                    return false
+                }
+                let page = (webShadow ?? "") + String(ch)
+                webShadow = page
+                webPush(webBefore + page)
+                web?.caret = anchor + page.utf16.count
+                webNoteInsert(String(ch))
+                webShadowWatch(client)
+                return false
+            }
             guard let action = engine.process(ch) else {
                 endWebWord(client, terminator: ch)
                 if Self.producesText(ch) { webNoteInsert(String(ch)) }
@@ -1459,7 +1525,8 @@ public final class Session {
         }
     }
 
-    private func startWebWord(_ client: TextClient, options: EngineOptions, resume: Bool, dropped: Bool = false) {
+    private func startWebWord(_ client: TextClient, options: EngineOptions, resume: Bool, dropped: Bool = false,
+                              left: (shown: Int, final: Int)? = nil) {
         engine.options = options
         endDirectWord()
         marked = false
@@ -1474,9 +1541,22 @@ public final class Session {
             }
         }
         guard let chain = web else {
-            // Đầu chuỗi đọc từ bộ đệm: chỉ tin khi đã ngừng gõ lâu và không có click / phím tắt bộ gõ không thấy ngay trước.
+            // Đầu chuỗi đọc từ bộ đệm: tin khi đã ngừng gõ lâu và không có click / phím tắt bộ gõ không thấy ngay trước — hoặc khi
+            // chuỗi trước kết thúc lúc bộ đệm đã theo kịp (`webLeft`) mà nay bộ đệm báo con trỏ ở chỗ khác: trang đã báo tác dụng
+            // của phím kết thúc chuỗi đó (⌥⌫ / ⌘⌫ xoá chữ, mũi tên dời con trỏ…), không còn gì chưa báo.
             let location = client.selectedRange()?.location ?? 0
-            startWebChain(at: location, trusted: client.currentTime() - webLastKeyAt > Self.webIdleBreak && !dropped)
+            let idle = client.currentTime() - webLastKeyAt > Self.webIdleBreak
+            var trusted = idle && !dropped
+            var clean = idle
+            if let left {
+                if location != left.shown, location != left.final {
+                    clean = true                                 // trang đã báo cả lần sửa cuối lẫn tác dụng của phím đó
+                    if !dropped { trusted = true }
+                } else if location == left.final {
+                    clean = true                                 // chỉ còn tác dụng của phím đó là có thể chưa báo
+                }
+            }
+            startWebChain(at: location, trusted: trusted, clean: clean)
             webNoteSuffix(client, at: location)
             return
         }
@@ -1518,6 +1598,7 @@ public final class Session {
         }
         let prefix = String(webBefore.prefix(chars))
         chain.start += drop
+        chain.evidenceFrom = max(0, chain.evidenceFrom - drop)
         web = chain
         webBefore.removeFirst(chars)
         webHistory = webHistory.filter { $0.text.hasPrefix(prefix) }
@@ -1657,7 +1738,7 @@ public final class Session {
 
     /// Dời từ đang gõ (`word`) tới `at`: chuỗi mới bắt đầu ở đó.
     private func webMove(to at: Int, word: String) {
-        web = WebChain(caret: at + word.utf16.count, start: at, proven: true)
+        web = WebChain(caret: at + word.utf16.count, start: at, proven: true, clean: true)
         anchor = at
         webBefore = ""
         webSetHistory(word)
@@ -1682,12 +1763,135 @@ public final class Session {
             web?.trusted = true
         case .current, .lag:
             if !proven {
-                deferWebEdit(old: old, new: new, typed: typed, client)
-                return true
+                if webEvident(client) {
+                    web?.proven = true
+                    web?.trusted = true
+                } else if !trusted, webBefore.utf16.count + old.utf16.count < 2 {
+                    // Đầu chuỗi chưa đáng tin mà trên trang mới có một ký tự của chuỗi: chờ cũng không có bằng chứng (cần hai ký
+                    // tự). Phím đi nguyên văn; có nó trên trang rồi thì trang báo là sửa lại được.
+                    webShadowStart(client, old: old, typed: typed)
+                    return true
+                } else {
+                    deferWebEdit(old: old, new: new, typed: typed, client)
+                    return true
+                }
             }
         }
         applyWebEdit(old: old, new: new, client)
         return true
+    }
+
+    /// Bộ đệm vừa khớp một trạng thái của chuỗi (`webRead` trả `.current` / `.lag`) với con trỏ cách mốc `evidenceFrom` (đầu
+    /// chuỗi, hay chỗ chuỗi đang ở lúc có click / phím tắt bộ gõ không thấy) từ hai đơn vị trở lên, và không còn click nào
+    /// trang chưa báo: trang chắc chắn đã báo ít nhất một ký tự gõ SAU mốc đó (Chromium tự đoán chỉ đẩy con trỏ quá vị trí báo
+    /// lần cuối đúng một ký tự). Trang báo theo đúng thứ tự xử lý, nên mọi
+    /// thứ xảy ra trước chuỗi (⌥⌫, ⌘⌫, click, mũi tên…) đã có trong bộ đệm: đầu chuỗi là thật, kể cả khi lúc đọc nó chưa đáng
+    /// tin (`WebChain.trusted`).
+    /// Chỉ khi lúc chuỗi bắt đầu không còn phím cũ nào chưa được báo (`WebChain.clean`).
+    private func webEvident(_ client: TextClient) -> Bool {
+        guard let chain = web, chain.clean, webGapSerial == nil, let sel = client.selectedRange(), sel.length == 0 else {
+            return false
+        }
+        let m = sel.location - chain.start
+        return m - chain.evidenceFrom >= 2 && client.text(location: chain.start, length: m) != nil
+    }
+
+    /// Không đặt được lần sửa (chưa chắc từ nằm ở đâu): phím đã giữ lại đi nguyên văn, và từ tạm đi nguyên văn (`webShadow`) —
+    /// không bỏ từ: bộ gõ vẫn giữ từ định gõ, trang cho thấy chỗ của nó là sửa lại.
+    private func webShadowStart(_ client: TextClient, old: String, typed: Character) {
+        webPending = nil
+        webPendingClient = nil
+        client.insertText(String(typed))
+        webNoteInsert(String(typed))
+        let page = old + String(typed)
+        log?("ô web: chưa chắc vị trí — \(page.debugDescription) tạm đi nguyên văn, chờ trang báo để sửa thành \(engine.displayed.debugDescription)")
+        webShadow = page
+        webShadowSeen = nil
+        webPush(webBefore + page)
+        web?.caret = anchor + page.utf16.count
+        if !webShadowFix(client) { webShadowWatch(client) }
+    }
+
+    /// Xem lại bộ đệm sau khi trang có thời gian báo (30 / 70 / 250 ms), không cần đợi phím kế tiếp.
+    private func webShadowWatch(_ client: TextClient) {
+        webSerial &+= 1
+        let serial = webSerial
+        for delay in [0.03, 0.07, 0.25] {
+            client.schedule(after: delay) { [weak self, weak client] in
+                guard let self, let client, self.webSerial == serial, self.webShadow != nil else { return }
+                self.webShadowFix(client)
+            }
+        }
+    }
+
+    /// Bộ đệm cho thấy chắc chắn từ đang đi nguyên văn nằm ở đâu thì thay chữ nguyên văn trên trang bằng từ định gõ (một lần
+    /// thay theo vị trí — mọi phím nguyên văn đã tới trang trước nó) và gõ tiếp như thường.
+    @discardableResult
+    private func webShadowFix(_ client: TextClient) -> Bool {
+        guard let page = webShadow, web != nil else { return false }
+        switch webRead(client, word: page) {
+        case .current, .lag:
+            guard webEvident(client) else { return false }
+        case .moved, .foreign:
+            // Từ không nằm ở chỗ bộ gõ nhớ (đầu chuỗi đọc lúc trang chưa báo phím trước đó). Tìm nó ngay trước con trỏ của bộ
+            // đệm. Bộ đệm cũ (trang chưa báo gì) cũng có thể trông như vậy khi chữ có sẵn trước con trỏ cũ trùng chữ vừa gõ —
+            // nhưng khi đó con trỏ của bộ đệm đứng yên, mỗi ký tự gõ thêm làm "chỗ" ấy lùi một ô. Thấy cùng một chỗ ở hai lần
+            // đọc mà giữa đó đã gõ thêm thì trang có báo: chỗ đó là thật.
+            guard web?.clean == true, webGapSerial == nil, let at = webShadowLocate(client, page) else { return false }
+            guard let seen = webShadowSeen, seen.at == at, seen.length < page.utf16.count else {
+                webShadowSeen = (at, page.utf16.count)
+                return false
+            }
+            // Dời cả chuỗi tới đó. Giữ lịch sử: bộ đệm còn cho thấy các trạng thái nguyên văn cũ của từ (trang báo chậm) thì đó
+            // vẫn là trạng thái của chuỗi, không phải chữ lạ.
+            let delta = at - anchor
+            web?.start += delta
+            web?.caret += delta
+            anchor = at
+        }
+        let new = engine.displayed
+        log?("ô web: trang cho thấy \(page.debugDescription) — sửa thành \(new.debugDescription)")
+        webShadow = nil
+        webShadowSeen = nil
+        webSerial &+= 1
+        web?.proven = true
+        web?.trusted = true
+        applyWebEdit(old: page, new: new, client, atPosition: true)
+        return true
+    }
+
+    /// Chỗ bộ đệm cho thấy từ đang đi nguyên văn (`page`) bắt đầu, khi nó nằm ngay trước con trỏ của bộ đệm: trọn từ, hoặc —
+    /// trang báo chậm vài phím — `j` ký tự đầu của nó (từ hai trở lên), có hay không kèm ký tự vừa gõ mà Chromium tự đoán.
+    private func webShadowLocate(_ client: TextClient, _ page: String) -> Int? {
+        guard let sel = client.selectedRange(), sel.length == 0 else { return nil }
+        let u = Array(page.utf16)
+        let n = u.count, c = sel.location
+        guard n >= 2, c >= 2 else { return nil }
+        let len = min(n, c)
+        guard let t = client.text(location: c - len, length: len) else { return nil }
+        let w = Array(t.utf16)
+        guard w.count == len else { return nil }
+        func ends(_ tail: [UInt16]) -> Bool { tail.count <= len && Array(w[(len - tail.count)...]) == tail }
+        if ends(u) { return c - n }
+        var j = n - 1
+        while j >= 2 {
+            if ends(Array(u[..<j])) { return c - j }                              // trang đã báo j ký tự đầu
+            if j + 1 < n, ends(Array(u[..<j]) + [u[n - 1]]) { return c - j - 1 }  // … kèm ký tự cuối Chromium tự đoán
+            j -= 1
+        }
+        return nil
+    }
+
+    /// Hết từ (hay ⌫, phím không ra chữ) mà trang vẫn chưa cho thấy từ nằm ở đâu: để nguyên văn như đã gõ.
+    private func webShadowAbandon() {
+        guard let page = webShadow else { return }
+        log?("ô web: hết từ mà trang chưa cho thấy \(page.debugDescription) — để nguyên văn")
+        webShadow = nil
+        webShadowSeen = nil
+        webSerial &+= 1
+        engine.reset()
+        webBefore += page
+        anchor += page.utf16.count
     }
 
     /// Lần sửa đầu của chuỗi chưa có bằng chứng vị trí: giữ phím lại, xem bộ đệm sau khi trang có thời gian báo (30 / 70 /
@@ -1717,24 +1921,29 @@ public final class Session {
         switch webRead(c, word: p.old) {
         case .current:
             // Chuỗi chưa xác minh: thấy đúng ký tự biết trước ngay trước đầu chuỗi thì vị trí đã chắc (khớp một ký tự cũng đủ).
-            let provable = trusted ? webProvable(p.old) : webStartConfirmed(c)
+            let provable = webEvident(c) || (trusted ? webProvable(p.old) : webStartConfirmed(c))
             if check < (provable ? 1 : 2) { return }
             // Đầu chuỗi đọc từ bộ đệm có thể cũ: bộ đệm khớp có thể chỉ là trùng hợp trên vị trí cũ (dòng trên, chữ cũ).
-            if !trusted, !provable { webGiveUp(c, p.typed); return }
+            if !trusted, !provable { webShadowStart(c, old: p.old, typed: p.typed); return }
         case .lag:
-            if check < 2 { return }
-            // Bộ đệm vẫn chưa cho thấy chữ đang gõ mà đầu chuỗi chưa xác minh, hay trang chưa báo gì từ lúc có click: không đoán vị trí.
-            if !trusted || webGapSerial != nil { webGiveUp(c, p.typed); return }
+            if !webEvident(c) {
+                if check < 2 { return }
+                // Bộ đệm vẫn chưa cho thấy chữ đang gõ mà đầu chuỗi chưa xác minh, hay trang chưa báo gì từ lúc có click: không
+                // đoán vị trí.
+                if !trusted || webGapSerial != nil { webShadowStart(c, old: p.old, typed: p.typed); return }
+            }
         case let .moved(at):
             if !trusted, !webMovedConfirmed(c, at: at) {
                 if check < 2 { return }
-                webGiveUp(c, p.typed)                      // từ trùng ở chỗ khác có thể là chữ có sẵn
+                // Từ trùng ở chỗ khác có thể là chữ có sẵn: chưa sửa ở đó, chờ thấy lại cùng chỗ sau phím kế tiếp.
+                webShadowStart(c, old: p.old, typed: p.typed)
                 return
             }
             webMove(to: at, word: p.old)
         case .foreign:
             if check < 2 { return }                    // còn chờ trang báo
-            if !trusted { webGiveUp(c, p.typed); return }    // bộ đệm có thể vẫn cũ: đọc lại từ là đọc chữ đã xoá
+            // Bộ đệm có thể vẫn cũ: đọc lại từ là đọc chữ đã xoá.
+            if !trusted { webShadowStart(c, old: p.old, typed: p.typed); return }
             webPending = nil
             webSerial &+= 1
             webResync(c, typed: p.typed)
@@ -1761,18 +1970,6 @@ public final class Session {
         if chain.start == 0 { return true }
         guard let t = client.text(location: chain.start - 1, length: 1) else { return false }
         return t == String(expect) || (expect == "\n" && t == "\r")
-    }
-
-    /// Không xác minh được vị trí lần sửa đang chờ: gõ phím đã giữ lại nguyên văn, các chữ còn lại của từ đi nguyên văn.
-    private func webGiveUp(_ client: TextClient, _ typed: Character) {
-        log?("ô web: chưa chắc vị trí — phím \(String(typed).debugDescription) đi nguyên văn")
-        webPending = nil
-        webSerial &+= 1
-        client.insertText(String(typed))
-        webNoteInsert(String(typed))
-        engine.reset()
-        untracked = true
-        web = nil
     }
 
     /// Chữ trước con trỏ không còn là chuỗi của bộ gõ: đọc lại từ đang nằm trước con trỏ (bộ đệm, sau khi trang đã có thời gian
@@ -1843,11 +2040,14 @@ public final class Session {
                 web!.caret += String(ch).utf16.count
             } else {
                 webNoteArrow(ch, text: webBefore)
+                webLeave(client, text: webBefore)
                 web = nil
             }
             return
         }
         var final = engine.displayed
+        // Chữ bộ đệm còn cho thấy nếu vừa gửi một lần sửa ở đây (lần sửa có vùng thay không vào bộ đệm trước khi trang báo).
+        var shown: String?
         let (text, action) = engine.finishWord()
         if case let .replace(old, new) = action {
             // Khôi phục từ tiếng Anh / sửa "ươ" khi hết từ.
@@ -1856,9 +2056,11 @@ public final class Session {
                 web = nil
             case let .moved(at):
                 webMove(to: at, word: old)
+                shown = webBefore + old
                 applyWebEdit(old: old, new: new, client)
                 final = text
             case .current, .lag:
+                shown = webBefore + old
                 applyWebEdit(old: old, new: new, client)
                 final = text
             }
@@ -1869,7 +2071,35 @@ public final class Session {
             web!.caret = anchor + final.utf16.count + String(ch).utf16.count
         } else {
             webNoteArrow(ch, text: webBefore + final)
+            webLeave(client, text: webBefore + final, shown: shown)
             web = nil
+        }
+    }
+
+    /// Chuỗi (chữ `text` từ đầu chuỗi) sắp kết thúc bằng một phím bộ gõ không biết tác dụng (⌥⌫, ⌘⌫, mũi tên, ⏎, phím tắt…):
+    /// ghi lại con trỏ của bộ đệm (`webLeft`) nếu sau đó thứ duy nhất trang còn có thể chưa báo là phím cuối / lần sửa cuối của
+    /// chuỗi và tác dụng của chính phím kết thúc — tức là:
+    /// - đầu chuỗi đã được xác minh là thật (đáng tin từ đầu, hay đã có bằng chứng) và lúc chuỗi bắt đầu không còn phím cũ nào
+    ///   chưa báo; và
+    /// - bộ đệm đang cho thấy trọn chuỗi, hoặc trạng thái ngay trước phím / lần sửa cuối (`shown`: lần sửa có vùng thay bộ gõ vừa
+    ///   gửi ở đây chưa thể có trong bộ đệm; trang báo chậm một phím).
+    private func webLeave(_ client: TextClient, text: String, shown: String? = nil) {
+        webLeft = nil
+        guard let chain = web, chain.clean, chain.trusted || chain.proven, webGapSerial == nil,
+              let sel = client.selectedRange(), sel.length == 0 else { return }
+        let final = chain.start + text.utf16.count
+        var candidates = [shown ?? text]
+        // Trạng thái ngay trước trạng thái cuối trong lịch sử (trang chậm đúng một phím).
+        if shown == nil, webHistory.count >= 2, webHistory[webHistory.count - 1].text == text {
+            candidates.append(webHistory[webHistory.count - 2].text)
+        }
+        for cached in candidates {
+            let n = cached.utf16.count
+            guard sel.location == chain.start + n else { continue }
+            if n == 0 || client.text(location: chain.start, length: n) == cached {
+                webLeft = (sel.location, final)
+                return
+            }
         }
     }
 
@@ -1894,6 +2124,7 @@ public final class Session {
     /// gõ tiếp chữ trước con trỏ (mất dấu còn hơn sửa sai chỗ).
     private func webBackspace(_ client: TextClient, dropped: Bool) -> Bool {
         webResumeArmed = false
+        if webShadow != nil, !webShadowFix(client) { webShadowAbandon() }
         if untracked {
             untracked = false
             engine.reset()

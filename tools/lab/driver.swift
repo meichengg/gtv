@@ -1,6 +1,6 @@
 // Gõ phím giả (như bàn phím thật, qua HID) vào ứng dụng đang ở trước. Chỉ dùng trong IME Lab (máy ảo CI).
 //   driver <bundleID mong đợi> <ms giữa 2 phím> <chuỗi>
-// Phím đặc biệt: {BS} {RET} {TAB} {ESC} {LEFT} {RIGHT} {UP} {DOWN} {CA} {CE} {CU} {CX} {CQ}=Ctrl+\ {CMDN} {OPTBS}
+// Phím đặc biệt: {BS} {RET} {TAB} {ESC} {LEFT} {RIGHT} {UP} {DOWN} {CA} {CE} {CU} {CX} {CQ}=Ctrl+\ {CMDN} {OPTBS} {CMDBS}
 // Lệnh: {WAIT<ms>}  {IS:vi} {IS:en} {IS:abc} (chọn input source)  {MS:<ms>} (đổi khoảng cách giữa 2 phím)
 //       {TOGGLE} (nhấn-nhả ⌘⇧)  {TAPCTRL} (nhấn-nhả ⌃: người dùng đổi bộ gõ, như ⌃Space)  {TAPSHIFT} (nhấn-nhả ⇧: không phải thao tác chọn bộ gõ)
 //       {SECURE:on} {SECURE:off} (bật/tắt secure input như ô mật khẩu; tự tắt khi driver thoát)
@@ -42,6 +42,8 @@ let special: [String: (CGKeyCode, CGEventFlags, String?)] = [
     "CMDT": (17, .maskCommand, "t"), "CMDF": (3, .maskCommand, "f"), "CMDV": (9, .maskCommand, "v"), "CMDA": (0, .maskCommand, "a"), "CMDSP": (35, [.maskCommand, .maskShift], "P"),
     // ⌥⌫: xoá cả từ trước con trỏ (ô văn bản Cocoa, Swing).
     "OPTBS": (51, .maskAlternate, "\u{7f}"),
+    // ⌘⌫: xoá từ đầu dòng tới con trỏ.
+    "CMDBS": (51, .maskCommand, "\u{7f}"),
 ]
 
 // Biến môi trường để dò cách phím giả đi qua bộ gõ: DRIVER_SOURCE=hid|combined|private,

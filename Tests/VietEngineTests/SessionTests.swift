@@ -277,6 +277,41 @@ private final class ChromiumField: TextClient {
     }
     func finish() { for _ in 0..<5 { tick(100) } }
     func idle() { for _ in 0..<10 { tick(200) } }
+    /// Phím không ra chữ mà bộ gõ thấy (⌥⌫, ⌘⌫, ⌥←…): bộ gõ cho đi, trang xử lý bằng `effect` rồi báo như mọi phím.
+    func other(gap: KeyGap = .none, _ effect: () -> Void) {
+        tick(stepMS)
+        XCTAssertFalse(session.handle(.other, self, options: options, forceMarked: false, gap: gap, web: true))
+        effect()
+        snapshot()
+    }
+    /// ⌥⌫: xoá từ ngay trước con trỏ (cùng các dấu cách sau nó).
+    func deleteWord(gap: KeyGap = .none) {
+        other(gap: gap) {
+            var i = caret
+            while i > 0, units[i - 1] == 0x20 { i -= 1 }
+            while i > 0, units[i - 1] != 0x20, units[i - 1] != 0x0a { i -= 1 }
+            units.removeSubrange(i..<caret)
+            caret = i
+        }
+    }
+    /// ⌘⌫: xoá từ đầu dòng tới con trỏ.
+    func deleteLine(gap: KeyGap = .none) {
+        other(gap: gap) {
+            var i = caret
+            while i > 0, units[i - 1] != 0x0a { i -= 1 }
+            units.removeSubrange(i..<caret)
+            caret = i
+        }
+    }
+    /// Gõ `keys` với phím đầu mang `gap` (sổ phím báo có click / phím tắt bộ gõ không thấy trước nó).
+    func type(_ keys: String, firstGap: KeyGap) {
+        var gap = firstGap
+        for k in keys {
+            tick(stepMS)
+            if !session.handle(.char(k), self, options: options, forceMarked: false, gap: gap, web: true) { insertText(String(k)) }
+            gap = .none
+        }
+    }
     /// Trang tự đổi chữ bằng JavaScript (xoá ô sau khi gửi, đổi nháp…): không qua phím nên trang không báo bộ đệm.
     func jsSet(_ t: String) {
         units = Array(t.utf16)
@@ -1870,6 +1905,172 @@ final class SessionTests: XCTestCase {
         f.sel = (0, 0)
         f.type("d9a38ng ")
         XCTAssertEqual(f.text, "d9a38ng ")
+    }
+
+    // MARK: Ô web: xoá cả từ / cả dòng rồi gõ lại (người dùng báo: ra số thay vì ra dấu — Claude desktop, Zalo)
+
+    private func web(_ method: InputMethod, lag: Int = 0, step: Double = 80) -> ChromiumField {
+        let f = ChromiumField()
+        f.options.method = method
+        f.lag = lag
+        f.stepMS = step
+        return f
+    }
+
+    /// Trang phản hồi kịp (báo trước phím kế tiếp — Claude desktop, Zalo, Chrome bình thường): phải ra đúng. Trang chậm hơn thì
+    /// từng từ hoặc ra đúng hoặc đi nguyên văn như đã gõ — không bao giờ sửa vào chữ khác.
+    private func assertWeb(_ f: ChromiumField, _ expect: String, raw: String, lag: Int, _ note: String,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        if lag == 0 {
+            XCTAssertEqual(f.text, expect, note, file: file, line: line)
+            return
+        }
+        let got = f.text.split(separator: " ", omittingEmptySubsequences: false)
+        let good = expect.split(separator: " ", omittingEmptySubsequences: false)
+        let plain = raw.split(separator: " ", omittingEmptySubsequences: false)
+        guard got.count == good.count, good.count == plain.count else {
+            XCTFail("\(note): \(f.text.debugDescription)", file: file, line: line)
+            return
+        }
+        for (i, w) in got.enumerated() where w != good[i] && w != plain[i] {
+            XCTFail("\(note): từ \(i) là \(String(w).debugDescription) trong \(f.text.debugDescription)", file: file, line: line)
+        }
+    }
+
+    /// Gõ sai, ⌥⌫ xoá cả từ rồi gõ lại ngay: từ gõ lại phải ra dấu (nhật ký máy người dùng: "tuye65t" ra nguyên văn).
+    func testChromiumRetypeAfterDeleteWord() {
+        for lag in 0...3 {
+            for step in [40.0, 80, 150] {
+                let v = web(.vni, lag: lag, step: step)
+                v.type("xin tuye65")
+                v.deleteWord()
+                v.type("tuye65t d9o61i ")
+                v.finish()
+                assertWeb(v, "xin tuyệt đối ", raw: "xin tuye65t d9o61i ", lag: lag, "VNI, trang chậm \(lag) phím, \(step) ms")
+                let t = web(.telex, lag: lag, step: step)
+                t.type("xin tuyeet")
+                t.deleteWord()
+                t.type("tuyeetj ddoois ")
+                t.finish()
+                assertWeb(t, "xin tuyệt đối ", raw: "xin tuyeetj ddoois ", lag: lag, "Telex, trang chậm \(lag) phím, \(step) ms")
+            }
+        }
+    }
+
+    /// Từ gõ lại bắt đầu bằng "đ" (d9 / dd): lần sửa đầu chỉ có một ký tự trước con trỏ.
+    func testChromiumRetypeDWordAfterDeleteWord() {
+        for lag in 0...3 {
+            let v = web(.vni, lag: lag)
+            v.type("ca61p d9ang")
+            v.deleteWord()
+            v.type("d9a38ng ca61p ")
+            v.finish()
+            assertWeb(v, "cấp đẳng cấp ", raw: "cấp d9a38ng ca61p ", lag: lag, "VNI, trang chậm \(lag) phím")
+            let t = web(.telex, lag: lag)
+            t.type("caaps ddang")
+            t.deleteWord()
+            t.type("ddawngr caaps ")
+            t.finish()
+            assertWeb(t, "cấp đẳng cấp ", raw: "cấp ddawngr caaps ", lag: lag, "Telex, trang chậm \(lag) phím")
+        }
+    }
+
+    /// ⌘⌫ xoá cả dòng rồi gõ lại ngay.
+    func testChromiumRetypeAfterDeleteLine() {
+        for lag in 0...3 {
+            let v = web(.vni, lag: lag)
+            v.type("tuye65t vo72i luo6n em")
+            v.deleteLine()
+            v.type("d9a38ng ca61p tuye65t d9o61i ")
+            v.finish()
+            assertWeb(v, "đẳng cấp tuyệt đối ", raw: "d9a38ng ca61p tuye65t d9o61i ", lag: lag, "VNI, trang chậm \(lag) phím")
+            let t = web(.telex, lag: lag)
+            t.type("tuyeetj vowif")
+            t.deleteLine()
+            t.type("ddawngr caaps tuyeetj ddoois ")
+            t.finish()
+            assertWeb(t, "đẳng cấp tuyệt đối ", raw: "ddawngr caaps tuyeetj ddoois ", lag: lag, "Telex, trang chậm \(lag) phím")
+        }
+    }
+
+    /// ⌥⌫ hai lần liền (xoá hai từ) rồi gõ lại — đúng chuỗi thao tác trong nhật ký máy người dùng.
+    func testChromiumRetypeAfterTwoDeleteWords() {
+        for step in [40.0, 80, 200] {
+            let v = web(.vni, step: step)
+            v.type("xin chao tuye65t ")
+            v.deleteWord()
+            v.deleteWord()
+            v.type("d9a38ng ca61p tuye65t ")
+            v.finish()
+            XCTAssertEqual(v.text, "xin đẳng cấp tuyệt ", "VNI, \(step) ms")
+            let t = web(.telex, step: step)
+            t.type("xin chao tuyeetj ")
+            t.deleteWord()
+            t.deleteWord()
+            t.type("ddawngr caaps tuyeetj ")
+            t.finish()
+            XCTAssertEqual(t.text, "xin đẳng cấp tuyệt ", "Telex, \(step) ms")
+        }
+    }
+
+    /// Xoá rồi gõ lại nhiều lượt liền, không ngừng tay: lượt nào cũng phải ra dấu (lỗi cũ: hỏng một lần là hỏng cả tràng).
+    func testChromiumRepeatedDeleteAndRetype() {
+        for method in [InputMethod.vni, .telex] {
+            let f = web(method)
+            let keys = method == .vni ? "tuye65t d9o61i" : "tuyeetj ddoois"
+            f.type("xin ")
+            for _ in 0..<6 {
+                f.type(keys)
+                XCTAssertEqual(f.text, "xin tuyệt đối", "\(method)")
+                f.deleteLine()
+                f.type("xin ")
+            }
+        }
+    }
+
+    /// Click vào ô (bộ gõ không thấy click; sổ phím báo ở phím kế tiếp) rồi gõ: từ đầu tiên phải ra dấu.
+    func testChromiumFirstWordAfterClick() {
+        for gap in [KeyGap.interrupted, .bypassed] {
+            for lag in 0...1 {
+                let v = web(.vni, lag: lag)
+                v.type("xin chao ")
+                v.idle()
+                v.click(at: v.caret)
+                v.tick(300)
+                v.type("tuye65t d9o61i ", firstGap: gap)
+                v.finish()
+                XCTAssertEqual(v.text, "xin chao tuyệt đối ", "VNI, \(gap), trang chậm \(lag) phím")
+                let d = web(.vni, lag: lag)
+                d.type("xin chao ")
+                d.click(at: d.caret)
+                d.tick(300)
+                d.type("d9a38ng ca61p ", firstGap: gap)
+                d.finish()
+                XCTAssertEqual(d.text, "xin chao đẳng cấp ", "VNI đ, \(gap), trang chậm \(lag) phím")
+            }
+        }
+    }
+
+    /// Một từ đã bị bỏ dấu (bộ gõ không chắc vị trí): ⌥⌫ rồi gõ lại không được dính tiếp trạng thái "đi nguyên văn".
+    func testChromiumDeleteWordEndsRawWord() {
+        let v = web(.vni)
+        v.type("xin ")
+        v.jsSet("khac han ")            // trang tự đổi chữ, không báo: lần sửa kế tiếp không xác minh được
+        v.type("tuye65t")
+        v.deleteWord()
+        v.idle()
+        v.type("tuye65t ")
+        v.finish()
+        XCTAssertTrue(v.text.hasSuffix("tuyệt "), v.text)
+    }
+
+    /// ⌥⌫ ở ô trống (không có gì để xoá) rồi gõ.
+    func testChromiumDeleteWordInEmptyField() {
+        let v = web(.vni)
+        v.deleteWord()
+        v.type("d9a38ng tuye65t ")
+        v.finish()
+        XCTAssertEqual(v.text, "đẳng tuyệt ")
     }
 
     /// Ô mù khi chưa có quyền gửi phím (Trợ năng): từ đầu tiên lộ ra là ô mù đi nguyên văn phần còn lại, các từ sau gạch chân
