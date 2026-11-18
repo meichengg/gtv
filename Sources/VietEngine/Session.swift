@@ -1568,7 +1568,9 @@ public final class Session {
         if let sel = client.selectedRange(), sel.length == 0, sel.location != chain.caret,
            !webCacheIsOlder(client, sel.location, chain: chain, model: text) {
             webNextExpect = nil
-            startWebChain(at: sel.location, trusted: chain.trusted && !dropped)
+            // Bộ đệm không còn là một trạng thái của chuỗi cũ: trang đã báo một việc bộ gõ không biết — mà trang báo theo thứ tự,
+            // nên mọi phím của chuỗi cũ đã được báo trước đó (không còn phím cũ nào chưa báo: `clean`).
+            startWebChain(at: sel.location, trusted: chain.trusted && !dropped, clean: true)
             webNoteSuffix(client, at: sel.location)
             return
         }
