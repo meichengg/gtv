@@ -114,7 +114,7 @@ enum VTable {
         "ôi": .open, "ơi": .open, "ua": .open, "uâ": .closed, "uê": .both, "ui": .open,
         "uô": .closed, "uơ": .open, "uy": .both, "ưa": .open, "ưi": .open, "ươ": .both,
         "ưu": .open, "yê": .closed,
-        "iêu": .open, "yêu": .open, "oai": .open, "oay": .open, "oeo": .open, "uây": .open,
+        "iêu": .open, "yêu": .open, "oai": .open, "oao": .open, "oay": .open, "oeo": .open, "uây": .open,
         "uôi": .open, "ươi": .open, "ươu": .open, "uyê": .closed, "uya": .open, "uyu": .open,
     ]
 

@@ -498,3 +498,135 @@ final class LoanwordOoTests: XCTestCase {
         XCTAssertEqual(type("goong2", EngineOptions(method: .vni)), "goòng")
     }
 }
+
+/// Từ viết tắt có đ: đc, đt, ĐH (đ đứng đầu) không bị trả về phím gõ; HĐ, QĐ, NĐ-CP, SĐT (đ không đứng đầu) gõ được.
+final class StrokeAbbreviationTests: XCTestCase {
+    func testVNI() {
+        let o = EngineOptions(method: .vni)
+        let cases: [(String, String)] = [
+            ("d9c", "đc"), ("d9t", "đt"), ("d9k", "đk"), ("D9H", "ĐH"), ("D9HQG", "ĐHQG"), ("d9c d9i", "đc đi"),
+            ("HD9", "HĐ"), ("QD9", "QĐ"), ("ND9-CP", "NĐ-CP"), ("HD9ND", "HĐND"), ("GD9", "GĐ"), ("BD9S", "BĐS"),
+            ("SD9T", "SĐT"), ("hd9", "hđ"),
+            ("HD99", "HD9"), ("HD999", "HD99"),          // gõ lặp: trả lại, rồi thôi
+            ("HD9<", "H"), ("HD9<D9", "HĐ"), ("d9c<", "đ"), ("d9c<i", "đi"),
+            // Không đổi
+            ("d9", "đ"), ("d99", "d9"), ("d9a5i", "đại"), ("ad9", "ad9"), ("HD", "HD"), ("H9", "H9"),
+        ]
+        for (k, v) in cases { XCTAssertEqual(type(k, o), v, k) }
+        XCTAssertEqual(type("d9c", EngineOptions(method: .vni, autoRestore: false)), "đc")
+        XCTAssertEqual(type("HD9", EngineOptions(method: .vni, autoRestore: false)), "HĐ")
+    }
+
+    func testTelex() {
+        let cases: [(String, String)] = [
+            ("ddc", "đc"), ("ddt", "đt"), ("DDH", "ĐH"), ("DDHQG", "ĐHQG"),
+            ("HDD", "HĐ"), ("QDD", "QĐ"), ("NDD-CP", "NĐ-CP"), ("HDDND", "HĐND"), ("SDDT", "SĐT"),
+            ("HDDD", "HDD"), ("HDDDD", "HDDD"), ("TDDD", "TDD"),
+            // Không đổi
+            ("ddd", "dd"), ("dddd", "ddd"), ("add", "add"), ("odd", "odd"), ("dead", "dead"), ("hd", "hd"),
+        ]
+        for (k, v) in cases { XCTAssertEqual(type(k), v, k) }
+    }
+
+    func testSeedContinues() {
+        let e = Engine(options: EngineOptions(method: .vni))
+        XCTAssertTrue(e.seed("HĐ"))
+        XCTAssertEqual(e.process("N"), Action.passThrough)
+        XCTAssertEqual(e.displayed, "HĐN")
+    }
+}
+
+/// Tên riêng viết k trước a / o: Bắc Kạn, Kông Chro, Pa Kô, Kơ nia; từ tiếng Anh gần giống vẫn nguyên.
+final class KNameTests: XCTestCase {
+    func testVNI() {
+        let o = EngineOptions(method: .vni)
+        let cases: [(String, String)] = [
+            ("Ba81c Ka5n", "Bắc Kạn"), ("Kan5", "Kạn"), ("KA5N", "KẠN"), ("Ko6ng Chro", "Kông Chro"), ("Pa Ko6", "Pa Kô"),
+            ("Ko7 nia", "Kơ nia"),
+            // Không đổi
+            ("ka", "ka"), ("kan", "kan"), ("ko", "ko"), ("kon", "kon"), ("ka1", "ka1"), ("ka5 ", "ka5 "),
+            ("ky2", "kỳ"), ("ke3", "kẻ"),
+        ]
+        for (k, v) in cases { XCTAssertEqual(type(k, o), v, k) }
+    }
+
+    func testTelex() {
+        let cases: [(String, String)] = [
+            ("Bawsc Kanj", "Bắc Kạn"), ("Kajn", "Kạn"), ("Koong", "Kông"), ("Kow nia", "Kơ nia"),
+        ]
+        for (k, v) in cases { XCTAssertEqual(type(k), v, k) }
+        for w in ["karma", "kanji", "kansas", "kafka", "kaput", "kanban", "kali", "kayak", "korea", "kong", "kook",
+                  "koala", "kowtow", "kos", "kar", "know", "kaj"] {
+            XCTAssertEqual(type(w), w, w)
+        }
+    }
+}
+
+/// VNI: số không áp dụng được đến ngay sau số vừa được nhận làm dấu — đang gõ một con số dính liền chữ.
+final class NumberRunTests: XCTestCase {
+    func testVNI() {
+        let o = EngineOptions(method: .vni)
+        let cases: [(String, String)] = [
+            ("i18n", "i18n"), ("e19", "e19"), ("to19", "to19"), ("a67", "a67"), ("a109", "a109"), ("I18N", "I18N"),
+            ("i18<", "í"),                               // ⌫: bỏ phím vừa làm từ trở về phím gõ
+            // Không đổi: số áp dụng được vẫn là dấu; số ở giữa từ cho thấy đang gõ tiếng Việt
+            ("a18", "ắ"), ("u23", "ủ"), ("a10", "a"), ("vie6t59", "việt9"), ("d9a19", "dá9"), ("ho8c5", "ho8c5"),
+            ("a11", "a1"), ("l10n", "l10n"), ("k8s", "k8s"),
+        ]
+        for (k, v) in cases { XCTAssertEqual(type(k, o), v, k) }
+        XCTAssertEqual(type("i18n", EngineOptions(method: .vni, autoRestore: false)), "í8n")
+    }
+}
+
+/// Telex: phím lặp huỷ mũ/móc mà không liền sau phím đã đặt nó là chữ của từ tiếng Anh — hết từ thì trả về phím gõ.
+final class LateUndoTests: XCTestCase {
+    func testTelex() {
+        for w in ["keeper", "deeper", "beeper", "teeter", "downward", "peeper"] {
+            XCTAssertEqual(type(w), w, w)
+        }
+        // Không đổi: gõ lặp liền nhau vẫn là cố ý bỏ dấu
+        let kept: [(String, String)] = [
+            ("seeen", "seen"), ("xooong", "xoong"), ("aaa", "aa"), ("woww", "wow"), ("uww", "uw"), ("aww", "aw"),
+            ("cocoo", "coco"), ("memee", "meme"), ("]w", "]w"),
+        ]
+        for (k, v) in kept { XCTAssertEqual(type(k), v, k) }
+    }
+}
+
+/// Vần "oao" (ngoáo ộp) và nạp lại từ đặt dấu thanh theo kiểu kia.
+final class MiscEngineTests: XCTestCase {
+    func testOao() {
+        XCTAssertEqual(type("ngoaos"), "ngoáo")
+        XCTAssertEqual(type("ngoao1 o65p", EngineOptions(method: .vni)), "ngoáo ộp")
+    }
+
+    func testSeedOtherToneStyle() {
+        func cont(_ screen: String, _ keys: String, _ o: EngineOptions) -> String {
+            let e = Engine(options: o)
+            var text = screen
+            guard e.seed(screen) else { return "seed failed" }
+            for k in keys {
+                switch e.process(k) {
+                case .passThrough?: text.append(k)
+                case let .replace(old, new)?:
+                    XCTAssertTrue(text.hasSuffix(old), "'\(text)' không kết thúc bằng '\(old)'")
+                    text = String(text.dropLast(old.count)) + new
+                case nil: text.append(k)
+                }
+            }
+            return text
+        }
+        let old = EngineOptions(), modern = EngineOptions(modernToneStyle: true)
+        XCTAssertEqual(cont("hoà", "n", old), "hoàn")
+        XCTAssertEqual(cont("hoà", "s", old), "hóa")           // gõ tiếp: dấu về kiểu đang chọn
+        XCTAssertEqual(cont("hòa", "s", modern), "hoá")
+        XCTAssertEqual(cont("thuý", "f", old), "thùy")
+        XCTAssertEqual(cont("qúa", "f", old), "quà")
+        XCTAssertEqual(cont("tóan", "f", old), "toàn")
+        let e = Engine()
+        XCTAssertTrue(e.seed("khoẻ"))
+        XCTAssertEqual(e.displayed, "khoẻ")                    // đúng chữ đang có trên màn hình
+        XCTAssertEqual(e.backspace(), Action.replace(old: "khoẻ", new: "khỏ"))
+        XCTAssertFalse(Engine().seed("aká"))                   // thanh nằm ngoài vần: không nhận
+    }
+}

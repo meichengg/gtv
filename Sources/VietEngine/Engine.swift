@@ -17,6 +17,10 @@ public final class Engine {
     private var hatUndo = false     // đã huỷ dấu mũ bằng phím gõ lặp (aaa, eee, ooo)
     private var toneLost = false    // thanh đã gõ bị bỏ vì chữ mang nó trở về phím (ww → w, [[ → [)
     private var rewinding = false   // ⌫ đang lùi lại từng phím đã gõ (xem `rewind`), tới khi gõ phím khác
+    private var markSetAt = 0       // số phím trong raw tới phím vừa đặt mũ/móc (0: chưa có)
+    private var lateUndo = false    // mũ/móc bị huỷ bởi phím lặp KHÔNG liền sau phím đã đặt nó ("keeper", "downward")
+    private var strokeAt = 0        // số phím trong raw tới phím vừa gạch chữ d cuối của từ viết tắt (xem `strokeLast`)
+    private var strokeUndone = false // đã trả chữ đ của từ viết tắt về d bằng phím lặp: thôi không gạch nữa
 
     public init(options: EngineOptions = EngineOptions()) {
         self.options = options
@@ -42,6 +46,10 @@ public final class Engine {
         hatUndo = false
         toneLost = false
         rewinding = false
+        markSetAt = 0
+        lateUndo = false
+        strokeAt = 0
+        strokeUndone = false
         displayed = ""
     }
 
@@ -66,6 +74,7 @@ public final class Engine {
         raw.append(ch)
 
         if literalOnly {
+            if strokeLast(key, upper) { return finish(old, ch) }
             guard isLetter else { raw.removeLast(); return nil }
             // "ooo" → "oo" rồi ng/c (goòng, moóc, soóc): phím thanh vẫn đặt dấu. Chỉ với ng/c: "zoooms", "booots"
             // là cách gõ tiếng Anh.
@@ -85,11 +94,23 @@ public final class Engine {
         case .undone:
             literalOnly = true
         case .none:
-            guard isLetter else { raw.removeLast(); return nil }
+            guard isLetter else {
+                // VNI: số không áp dụng được đến ngay sau một số vừa được nhận làm dấu ("i1" rồi "8", "e1" rồi "9", "a10" rồi
+                // "9") — người dùng đang gõ một con số dính liền chữ (i18n, e19): trả cả từ về phím gõ, số này đi theo.
+                if numberRun() {
+                    restoreRaw()
+                    restoredAt = raw.utf8.count
+                    literalOnly = true
+                    return finish(old, ch)
+                }
+                raw.removeLast()
+                return nil
+            }
             appendTyped(key, upper)
             normalizeHorn()
             if !isValid(strict: false) {
-                if options.autoRestore && rawValid {
+                // Từ viết tắt bắt đầu bằng đ (đc, đt, đk, ĐH, ĐHQG): giữ chữ đ, không trả về "d9c" / "ddc".
+                if options.autoRestore && rawValid && !strokeAbbreviation() {
                     restoreRaw()
                     restoredAt = raw.utf8.count
                 }
@@ -97,6 +118,47 @@ public final class Engine {
             }
         }
         return finish(old, ch)
+    }
+
+    /// Từ chưa có nguyên âm mà chữ đầu là đ: viết tắt (đc, đt, ĐH…), không phải từ tiếng Anh gõ dở.
+    private func strokeAbbreviation() -> Bool {
+        guard let f = chars.first, f.base == Ch.d, f.mark == .stroke else { return false }
+        return !chars.contains(where: { $0.isVowel })
+    }
+
+    /// Từ viết tắt toàn phụ âm (HĐ, QĐ, NĐ-CP, HĐND, SĐT, BĐS): phím gạch (VNI 9, Telex d) ngay sau chữ d vừa gõ ở cuối từ thì
+    /// gạch chữ đó. Gõ lặp ngay sau thì trả lại ("HD99" → "HD9", "HDDD" → "HDD"), rồi thôi không gạch nữa trong từ này.
+    /// Chỉ gọi khi từ đang đi nguyên văn (`literalOnly`): chữ d đứng đầu từ đã có `setStroke`.
+    private func strokeLast(_ key: UInt8, _ upper: Bool) -> Bool {
+        guard key == (options.method == .vni ? UInt8(ascii: "9") : Ch.d), chars.count >= 2,
+              let last = chars.last, last.base == Ch.d, !chars.contains(where: { $0.isVowel }) else { return false }
+        let n = raw.utf8.count
+        if last.mark == .stroke {
+            guard strokeAt == n - 1 else { return false }
+            chars[chars.count - 1].mark = .none
+            chars.append(VChar(base: key, upper: upper))
+            strokeUndone = true
+            return true
+        }
+        guard !strokeUndone, last.rawEnd == n - 1 else { return false }
+        chars[chars.count - 1].mark = .stroke
+        strokeAt = n
+        restoredAt = 0          // ⌫ sau đó xoá chữ đ như thường, không lùi lại từng phím
+        return true
+    }
+
+    /// VNI: phím vừa gõ (đã nằm cuối `raw`) là số không áp dụng được, ngay trước nó là một dãy số đã được nhận làm dấu, và
+    /// ngoài dãy số ở cuối ấy từ không còn số nào khác ("vie6t5" + 9 thì không: số 6 ở giữa cho thấy đang gõ tiếng Việt).
+    private func numberRun() -> Bool {
+        guard options.method == .vni, options.autoRestore, rawValid else { return false }
+        let p = parse()
+        guard p.vowelEnd > p.initEnd else { return false }
+        let u = Array(raw.utf8)
+        func digit(_ b: UInt8) -> Bool { b >= 48 && b <= 57 }
+        guard u.count >= 3, digit(u[u.count - 2]) else { return false }
+        var i = u.count - 1
+        while i > 0, digit(u[i - 1]) { i -= 1 }
+        return i > 0 && !u[..<i].contains(where: digit)
     }
 
     /// Xoá lùi một ký tự của từ hiện tại.
@@ -129,7 +191,10 @@ public final class Engine {
             toneUndoAt = 0
             hatUndo = false
             toneLost = false
+            lateUndo = false
+            strokeUndone = false
         }
+        strokeAt = 0
         if restoredAt > raw.utf8.count { restoredAt = 0 }
         displayed = render()
         return displayed == String(old.dropLast()) ? .passThrough : .replace(old: old, new: displayed)
@@ -156,6 +221,7 @@ public final class Engine {
     public func seed(_ word: String) -> Bool {
         reset()
         guard !word.isEmpty, word.count <= 12 else { return false }
+        var toneAt = -1
         for c in word {
             if let a = c.asciiValue, (a | 0x20) >= 97, (a | 0x20) <= 122 {
                 chars.append(VChar(base: a | 0x20, upper: a < 97))
@@ -164,6 +230,7 @@ public final class Engine {
                 if v.tone != .none {
                     guard tone == .none else { reset(); return false }
                     tone = v.tone
+                    toneAt = chars.count
                 }
                 chars.append(v.char)
             } else {
@@ -171,7 +238,13 @@ public final class Engine {
                 return false
             }
         }
-        guard render() == word else { reset(); return false }
+        if render() != word {
+            // Dấu thanh đặt theo kiểu kia (hoà / hòa, thuý / thúy) hay đặt lệch trong cùng vần (qúa, tóan): vẫn là từ đó —
+            // `displayed` giữ đúng chữ đang có trên màn hình, phím kế tiếp thay nó bằng chữ đặt dấu theo kiểu đang chọn.
+            // Thanh nằm sau vần (từ nhiều âm tiết) thì không nhận.
+            let p = parse()
+            guard toneAt >= 0, toneAt < p.vowelEnd, chars[toneAt].isVowel else { reset(); return false }
+        }
         displayed = word
         raw = word
         rawValid = false
@@ -313,15 +386,27 @@ public final class Engine {
             chars[idx].mark = .none
             chars.append(VChar(base: key, upper: upper))
             hatUndo = true
+            noteMarkUndo()
             return .undone
         }
-        return attempt {
+        return noteMarkSet(attempt {
             chars[idx].mark = .hat
             // "ươ" + o -> "uô"
             if chars[idx].base == Ch.o, idx > p.initEnd, chars[idx - 1].base == Ch.u {
                 chars[idx - 1].mark = .none
             }
-        }
+        })
+    }
+
+    private func noteMarkSet(_ r: TResult) -> TResult {
+        if r == .applied { markSetAt = raw.utf8.count }
+        return r
+    }
+
+    /// Phím lặp huỷ mũ/móc mà không liền sau phím đã đặt nó (k-e-e-p-E-r, d-o-w-n-W-ard): không ai thoát dấu kiểu đó — đó là
+    /// chữ của một từ tiếng Anh. Hết từ mà không phải tiếng Việt thì trả về phím gõ (xem `escapeRestore`).
+    private func noteMarkUndo() {
+        if markSetAt != raw.utf8.count - 1 { lateUndo = true }
     }
 
     private func setHorn(_ key: UInt8, _ mode: HornMode, standalone: Bool, _ upper: Bool) -> TResult {
@@ -361,11 +446,12 @@ public final class Engine {
                     }
                 }
                 chars.append(VChar(base: key, upper: upper))
+                noteMarkUndo()
             }
             dropStaleTone(host)
             return .undone
         }
-        return attempt { for t in targets { chars[t].mark = want(t) } }
+        return noteMarkSet(attempt { for t in targets { chars[t].mark = want(t) } })
     }
 
     /// Telex `[` `]` `{` `}` → ơ ư Ơ Ư. Gõ lặp ngay sau đó thì trả về dấu ngoặc ([[ → [).
@@ -452,7 +538,7 @@ public final class Engine {
     /// (phím ngay sau lần huỷ chưa gõ thì chưa biết).
     private func escapeRestore(decided: Bool) -> Bool {
         guard options.autoRestore, rawValid, options.method != .vni else { return false }
-        if tone != .none || toneLost || chars.contains(where: { $0.isVowel && $0.mark != .none }) { return true }
+        if tone != .none || toneLost || lateUndo || chars.contains(where: { $0.isVowel && $0.mark != .none }) { return true }
         guard toneUndoAt > 0 else { return false }
         let u = raw.utf8
         guard toneUndoAt < u.count else { return !decided }
@@ -569,6 +655,22 @@ public final class Engine {
         guard fin.isEmpty || VTable.finals.contains(fin) else { return false }
 
         let first = chars[p.initEnd].base
+        if ini == "k", first == Ch.a || first == Ch.o {
+            // Tên riêng viết k trước a / o, chỉ đúng các chữ này để không nuốt từ tiếng Anh ("karma", "kanji", "korea"):
+            // (Bắc) Kạn, Kông (Chro), (Pa) Kô, Kơ (nia, Ho, Tu).
+            guard p.vowelEnd - p.initEnd == 1 else { return false }
+            let mark = chars[p.initEnd].mark
+            if first == Ch.a {
+                guard mark == .none, tone == .none || tone == .dot, fin.isEmpty || fin == "n" else { return false }
+                return !strict || (fin == "n" && tone == .dot)
+            }
+            guard tone == .none else { return false }
+            switch mark {
+            case .horn: return fin.isEmpty
+            case .hat: return fin.isEmpty || fin == "ng" || (!strict && fin == "n")
+            default: return !strict && (fin.isEmpty || fin == "n" || fin == "ng")
+            }
+        }
         switch ini {
         case "k", "gh", "ngh": guard first == Ch.e || first == Ch.i || first == Ch.y else { return false }
         case "c": guard first != Ch.e && first != Ch.i && first != Ch.y else { return false }
