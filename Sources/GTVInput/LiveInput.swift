@@ -262,12 +262,4 @@ final class LiveInput {
             $0.anyHeld(now: ProcessInfo.processInfo.systemUptime, physical: physical, physicalButton: button)
         }
     }
-
-    /// Người dùng có nhấn phím đặc biệt, nút chuột hay nhấn thêm phím bổ trợ (nhả thì không tính) trong [from, to] không —
-    /// chỉ biết khi đã đọc liên tục suốt khoảng đó (`covered`).
-    func activity(from: Double, to: Double) -> (seen: Bool, covered: Bool) {
-        withLog { log in
-            (log.pressed(from: from, to: to) || log.flagsPressed(from: from, to: to), log.covered(since: from))
-        }
-    }
 }

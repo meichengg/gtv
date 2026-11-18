@@ -138,6 +138,9 @@ final class GTVInputController: IMKInputController {
     private let adapter = ClientAdapter()
     private var bundleID = ""
     private var hotkeyArmedAt: TimeInterval?
+    /// Trong lần giữ phím bổ trợ này đã có phím bổ trợ ngoài tổ hợp đổi Anh/Việt (⌥ của ⌥⌘⇧V): không phải nhấn tổ hợp
+    /// "trơn", kể cả khi nhả phím thừa trước rồi mới nhả tổ hợp. Khoá tới khi nhả hết.
+    private var hotkeyBlocked = false
     /// Ô đang gắn là ô văn bản hay view terminal (hỏi một lần lúc gắn); nil: chưa biết (ô tạm), hỏi lại ở phím kế tiếp.
     private var clientKind: ClientKind? {
         didSet { if clientKind == nil { chromiumWeb = false } }
@@ -157,6 +160,9 @@ final class GTVInputController: IMKInputController {
     private var directJava = false
     /// Phím gần nhất gõ trực tiếp qua trợ thủ Java (`JavaHelper`): như `directJava`.
     private var helperRoute = false
+    /// Phím gần nhất thật sự gõ trực tiếp ở ô Java (JetBrains Runtime hay trợ thủ) — không phải soạn từng từ, dù ô đó
+    /// từng gõ trực tiếp (người dùng vừa bật "Soạn từng từ" cho ứng dụng). Xem `commitComposition`.
+    private var directRoute = false
     /// Số lần đổi focus trợ thủ Java báo ở phím trước (xem `javaHelperDirect`).
     private var javaFocus: Int?
     /// Đã xét lại loại ô theo bộ công cụ của ứng dụng chưa (SwiftTerm bản mới, xem `refineKind`) — một lần cho mỗi lần gắn.
@@ -181,6 +187,7 @@ final class GTVInputController: IMKInputController {
         javaView = nil
         directJava = false
         helperRoute = false
+        directRoute = false
         javaFocus = nil
         javaCommit?.cancel()
         guard let client = sender as? Client else { return }
@@ -318,7 +325,7 @@ final class GTVInputController: IMKInputController {
         // Java: AWTView gọi abandonInput sau MỌI lần chèn chữ, kể cả chữ của phím đi thẳng — trước khi chữ đó vào văn bản. Ô
         // gõ trực tiếp (JetBrains Runtime) không có gì đang soạn: bỏ từ ở đây thì từ không bao giờ đủ dài để thêm dấu (IME Lab
         // 44067817184: mọi phím "đi thẳng"). Mỗi lần sửa vẫn đối chiếu lại với màn hình (`Session.lostTrack`, `replace`).
-        if directJava || helperRoute { return }
+        if directRoute { return }
         let saved = adapter.client
         adapter.client = sender as? Client
         session.commitRequested(adapter.client == nil ? nil : adapter)
@@ -367,7 +374,9 @@ final class GTVInputController: IMKInputController {
             // Phím tắt chuyển Anh/Việt: nhấn rồi nhả tổ hợp phím bổ trợ, không kèm phím nào khác.
             if let hotkey = settings.hotkey.flags {
                 if flags == hotkey {
-                    if hotkeyArmedAt == nil {
+                    // Chỉ khi đi LÊN tới tổ hợp. Nhả ⌥ của ⌥⌘⇧V cũng về đúng ⌘⇧, nhưng chữ V đã bấm trước đó: tính từ lúc
+                    // này thì lần nhả ⌘⇧ sau đó trông như nhấn "trơn" và chế độ tự đổi (`hotkeyBlocked`).
+                    if hotkeyArmedAt == nil, !hotkeyBlocked {
                         hotkeyArmedAt = ProcessInfo.processInfo.systemUptime
                         Hotkey.heldAtArm = LiveInput.shared.anyHeld()
                         LiveInput.shared.trackHID(for: 3)        // phím / click lúc đang giữ: xem `Hotkey.isCleanTap`
@@ -375,15 +384,17 @@ final class GTVInputController: IMKInputController {
                 } else if flags.isEmpty {
                     // Phím tắt như ⌘⇧Z được ứng dụng xử lý trước, bộ gõ không thấy phím Z:
                     // hỏi hệ thống xem có phím/click nào xen vào không.
-                    if let armed = hotkeyArmedAt, Hotkey.isCleanTap(since: armed) {
+                    if let armed = hotkeyArmedAt, !hotkeyBlocked, Hotkey.isCleanTap(since: armed) {
                         DebugLog.event("phím tắt đổi Anh/Việt (\(bundleID))")
                         commit(client)
                         // Chọn chế độ ngoài lúc đang xử lý sự kiện phím.
                         DispatchQueue.main.async { Modes.shared.toggle() }
                     }
                     hotkeyArmedAt = nil
+                    hotkeyBlocked = false
                 } else if !hotkey.isSuperset(of: flags) {
                     hotkeyArmedAt = nil
+                    hotkeyBlocked = true
                 }
             }
             return false
@@ -492,7 +503,8 @@ final class GTVInputController: IMKInputController {
             }
         }
         helperRoute = adapter.javaHelper
-        session.cursorReliable = directJava || helperRoute
+        directRoute = helperRoute || (directJava && !forceMarked && terminal == nil)
+        session.cursorReliable = directRoute
         if clientKind == nil { classify(client) }
         // Chữ phím này ra (⌥+chữ, dấu câu…) — chốt cùng từ đang gạch chân ở ô chỉ giữ một lần chèn mỗi phím (GTK, winit).
         let keyText = flags.isDisjoint(with: [.command, .control]) ? event.characters.flatMap { s in

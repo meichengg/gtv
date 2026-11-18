@@ -47,12 +47,12 @@ enum AppToolkit {
 
     private static var cache: [String: Profile] = [:]
     private static var pending: Set<String> = []
-    private static let queue = DispatchQueue(label: "gtv.app-toolkit", qos: .utility)
+    /// Người dùng đang chờ gõ vào ứng dụng vừa mở: quét ở mức ưu tiên của thao tác người dùng (mức `.utility` có thể bị hệ
+    /// thống hoãn cả giây lúc máy bận — từ đầu tiên đi nhầm đường "ứng dụng thường").
+    private static let queue = DispatchQueue(label: "gtv.app-toolkit", qos: .userInitiated)
 
     /// Ứng dụng bỏ qua vùng cần thay, biết qua bundle ID.
     private static let markedBundleIDs: Set<String> = ["org.gnu.Emacs", "org.vim.MacVim"]
-
-    static func isQt(_ bundleID: String) -> Bool { profile(bundleID).qt }
 
     /// Hồ sơ của ứng dụng; lần đầu thì bắt đầu kiểm tra ở luồng nền và tạm coi như ứng dụng thường.
     static func profile(_ bundleID: String) -> Profile {

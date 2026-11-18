@@ -14,9 +14,10 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         NotificationCenter.default.addObserver(self, selector: #selector(refresh),
                                                name: .gtvSettingsChanged, object: nil)
-        // Người dùng đổi bộ gõ bằng menu của macOS / phím Globe.
+        // Người dùng đổi bộ gõ bằng menu của macOS / phím Globe. Đọc bộ gõ ngay lúc nhận thông báo có khi còn ra bộ gõ CŨ
+        // (xem `Modes.sourceChangeNotified`): vẽ ngay, rồi vẽ lại sau một nhịp theo trạng thái đã yên.
         DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(refresh),
+            self, selector: #selector(sourceChanged),
             name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
         #if DEBUG
         // Cho phép test bật/tắt từ bên ngoài như khi bấm menu.
@@ -45,6 +46,11 @@ final class StatusController: NSObject, NSMenuDelegate {
             self.refresh()
         }
         #endif
+    }
+
+    @objc private func sourceChanged() {
+        refresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.refresh() }
     }
 
     @objc private func refresh() {

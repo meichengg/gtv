@@ -21,7 +21,7 @@ enum InputSources {
 
     static var isGTVSelected: Bool { currentID?.hasPrefix(gtvID) ?? false }
 
-    /// Chọn chế độ khi không có ô nhập liệu nào để gọi `selectMode` (dự phòng).
+    /// Chọn một chế độ (input mode) của GTV.
     /// Chế độ người dùng đã gỡ khỏi danh sách nguồn đầu vào thì không chọn (TISSelectInputSource sẽ lỗi im lặng, biểu tượng
     /// lệch với chế độ của GTV) và không tự bật lại (đó là cấu hình của người dùng): GTV vẫn giữ chế độ V/E của nó.
     static func selectMode(_ id: String) {

@@ -46,7 +46,7 @@ final class KeyWatch {
     private var checkTimer: DispatchSourceTimer?
     /// Lần đọc trạng thái lúc xử lý phím terminal gần nhất: `LiveInput` phải đọc liên tục từ đó tới phím sau.
     private var lastTerminalRead: Double?
-    /// Lúc bộ gõ nhận keyDown gần nhất (mọi ứng dụng): `Modes` hỏi người dùng có gõ gì không.
+    /// Lúc bộ gõ nhận keyDown gần nhất (mọi ứng dụng): `Hotkey.isCleanTap` hỏi người dùng có gõ gì lúc giữ tổ hợp không.
     private(set) var lastKeyAt: Double = 0
 
     private init() {

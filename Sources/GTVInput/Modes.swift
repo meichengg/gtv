@@ -4,9 +4,9 @@ import InputMethodKit
 
 /// Chế độ Tiếng Việt / Tiếng Anh của GTV.
 ///
-/// Đây là 2 input mode của cùng bộ gõ GTV ("<id>.vi", "<id>.en"). Chuyển chế độ bằng
-/// `selectMode` trên ô nhập liệu đang dùng (API chính thức của InputMethodKit): bộ gõ không bị gỡ ra
-/// hay gắn lại, nên chuyển tức thì, không nháy cửa sổ, và ⌘⇧ luôn do bộ gõ bắt được.
+/// Đây là 2 input mode của cùng bộ gõ GTV ("<id>.vi", "<id>.en"). Chuyển chế độ bằng cách chọn input mode đó
+/// (`InputSources.selectMode`, TISSelectInputSource): bộ gõ không bị gỡ ra hay gắn lại, nên chuyển tức thì, không nháy
+/// cửa sổ, và ⌘⇧ luôn do bộ gõ bắt được.
 ///
 /// Ứng dụng loại trừ: khi GTV được gắn vào ô nhập liệu của ứng dụng trong danh sách thì chuyển sang
 /// tiếng Anh; khi sang ứng dụng khác thì khôi phục tiếng Việt nếu trước đó đang gõ tiếng Việt.
@@ -16,8 +16,14 @@ final class Modes {
     private(set) var vietnamese: Bool
     /// Đang ở ứng dụng loại trừ và trước đó đang gõ tiếng Việt.
     private var restoreVietnamese = false
-    private weak var client: AnyObject?
     private var clientBundleID = ""
+    /// Ứng dụng của ô đang gắn có nằm trong danh sách loại trừ không, theo lần xét gần nhất (xem `exclusionChanged`).
+    private var clientExcluded = false
+    /// Đã nhận thông báo đổi bộ gõ nào từ lúc tiến trình khởi động chưa. Chưa thì `lastSourceIsGTV` = false chỉ là "chưa
+    /// biết", không phải "người dùng đang ở bộ gõ khác".
+    private var sourceNotified = false
+    /// Từ lúc tạm dừng (khoá / ngủ) đã thấy màn hình khoá hiện chưa (xem `pollUnlock`).
+    private var lockSeen = false
     /// GTV có đang được chọn không, bỏ qua lần đổi sang ABC do màn hình khoá (để khôi phục khi mở khoá).
     private var gtvInUse = InputSources.isGTVSelected
     /// Máy đang khoá màn hình hoặc đang ngủ: không coi các lần đổi bộ gõ lúc này là do người dùng.
@@ -98,44 +104,56 @@ final class Modes {
         }
     }
 
+    /// Hạn tự dò màn hình khoá sau mỗi lần tạm dừng.
+    private static let lockWatch: TimeInterval = 12 * 3600
+
     private func suspend(_ reason: String) {
         DebugLog.event("tạm dừng theo dõi (\(reason)), gtvInUse=\(gtvInUse), hiện tại=\(InputSources.currentID ?? "-")")
         suspended = true
         pendingLeaveGTV?.cancel()
         pendingLeaveGTV = nil
+        // Không trông vào thông báo mở khoá / thức dậy (máy macOS 27 của người dùng có lúc không nhận được): từ đây tự dò —
+        // thấy màn hình khoá hiện rồi hết thì coi là đã mở khoá. Chưa từng thấy khoá (chỉ tắt màn hình) thì chờ thông báo.
+        watchLock(seen: Self.lockScreenShowing)
     }
 
-    /// Thức dậy / mở khoá. Thông báo "mở khoá" có thể đến trước khi hệ thống kịp tắt cờ "màn hình
-    /// khoá" (thấy khi gập máy rồi mở lại), nên nếu còn khoá thì kiểm tra lại mỗi 0,5 giây, tối đa
-    /// 2 phút (đủ thời gian nhập mật khẩu).
+    /// Thức dậy / mở khoá. Thông báo "mở khoá" có thể đến trước khi hệ thống kịp tắt cờ "màn hình khoá" (thấy khi gập máy
+    /// rồi mở lại), nên nếu còn khoá thì dò tiếp mỗi 0,5 giây tới khi hết khoá (không giới hạn 2 phút như trước: để màn hình
+    /// khoá hiện lâu hơn rồi mới nhập mật khẩu thì GTV kẹt ở trạng thái tạm dừng, mở khoá xong vẫn ở ABC).
     private func resume(_ reason: String) {
         let locked = Self.lockScreenShowing
         DebugLog.event("tiếp tục (\(reason)), màn hình khoá=\(locked), gtvInUse=\(gtvInUse), hiện tại=\(InputSources.currentID ?? "-")")
         if locked {
-            awaitUnlock(for: 120)
+            watchLock(seen: true)
             return
         }
         unlockDeadline = nil
+        lockSeen = false
         unlocked()
     }
 
-    /// Màn hình đang khoá: kiểm tra lại mỗi 0,5 giây, ít nhất `seconds` giây nữa, rồi khôi phục GTV khi hết khoá.
-    private func awaitUnlock(for seconds: TimeInterval) {
+    /// Dò màn hình khoá mỗi 0,5 giây (tối đa `lockWatch`), khôi phục GTV khi nó đã hiện rồi hết. `seen`: đang thấy nó hiện.
+    private func watchLock(seen: Bool) {
+        if seen { lockSeen = true }
         let startPolling = unlockDeadline == nil
-        unlockDeadline = max(unlockDeadline ?? .distantPast, Date().addingTimeInterval(seconds))
+        unlockDeadline = Date().addingTimeInterval(Self.lockWatch)
         if startPolling { pollUnlock() }
     }
 
     private func pollUnlock() {
         guard let deadline = unlockDeadline else { return }
-        if !Self.lockScreenShowing {
+        let showing = Self.lockScreenShowing
+        if showing { lockSeen = true }
+        if lockSeen, !showing {
             unlockDeadline = nil
+            lockSeen = false
             DebugLog.event("màn hình đã hết khoá")
             unlocked()
-        } else if Date() < deadline {
+        } else if suspended, Date() < deadline {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.pollUnlock() }
         } else {
             unlockDeadline = nil
+            lockSeen = false
         }
     }
 
@@ -192,11 +210,12 @@ final class Modes {
         DebugLog.event("bộ gõ đổi -> \(InputSources.currentID ?? "-"), front=\(front), tạm dừng=\(suspended)")
         let wasGTV = lastSourceIsGTV
         lastSourceIsGTV = InputSources.isGTVSelected
+        sourceNotified = true
         if !suspended, !lastSourceIsGTV, front == "com.apple.loginwindow" || Self.isScreenLocked {
             // Màn hình khoá đã chuyển sang ABC mà thông báo khoá chưa tới — hoặc không bao giờ tới (máy macOS 27 của người dùng:
             // mở khoá xong máy ở lại ABC). Tự coi là đang khoá và tự chờ mở khoá (tối đa 12 giờ), không trông vào thông báo.
             suspend("màn hình khoá, chưa có thông báo")
-            awaitUnlock(for: 12 * 3600)
+            watchLock(seen: true)
         }
         if wasGTV && !lastSourceIsGTV {
             leftGTVBySystem = suspended || front == "com.apple.loginwindow" || Self.isScreenLocked
@@ -216,7 +235,7 @@ final class Modes {
                         // Lần đổi sang ABC tới trước khi màn hình kịp báo khoá, và thông báo khoá không tới: không phải người
                         // dùng rời GTV.
                         self.suspend("màn hình khoá sau khi rời GTV, chưa có thông báo")
-                        self.awaitUnlock(for: 12 * 3600)
+                        self.watchLock(seen: true)
                         return
                     }
                     self.gtvInUse = false
@@ -374,12 +393,12 @@ final class Modes {
 
     /// GTV được gắn vào một ô nhập liệu.
     func clientActivated(_ client: Client, bundleID: String) {
-        self.client = client
         clientBundleID = bundleID
         activatedAt = Self.now
         awaitingFirstReport = true
         LiveInput.shared.keep(for: Self.activationWindow + 0.5)   // xem `userInput(since:)`
-        if isExcluded(bundleID) {
+        clientExcluded = isExcluded(bundleID)
+        if clientExcluded {
             if vietnamese {
                 restoreVietnamese = true
                 set(false)
@@ -387,8 +406,10 @@ final class Modes {
         } else if restoreVietnamese {
             restoreVietnamese = false
             // Người dùng tự rời GTV rồi tự chọn lại một chế độ của nó ở ứng dụng này: lựa chọn đó quyết định (`adopt`), không
-            // khôi phục đè.
-            if lastSourceIsGTV || leftGTVBySystem { set(true) }
+            // khôi phục đè. Chưa có thông báo đổi bộ gõ nào từ lúc khởi động (bộ gõ khởi động lại — cập nhật — khi đang ở ứng
+            // dụng loại trừ, hệ thống vẫn ở English (GTV) suốt) thì không phải trường hợp đó: khôi phục tiếng Việt, không thì
+            // kẹt tiếng Anh ở mọi ứng dụng.
+            if lastSourceIsGTV || leftGTVBySystem || !sourceNotified { set(true) }
         }
         // Vừa chọn lại GTV từ bộ gõ khác: chế độ người dùng (hoặc hệ thống) chọn tới ngay sau (setValue, thông báo đổi bộ
         // gõ) và `adopt` quyết định theo hay giữ; chọn lại chế độ cũ ngay ở đây sẽ đè lên lựa chọn của người dùng. Bộ gõ "cha"
@@ -420,7 +441,9 @@ final class Modes {
             return
         }
         let on = modeID != InputSources.englishID
-        if on && isExcluded(clientBundleID) {
+        // Ứng dụng đang nhận phím (như đường thông báo đổi bộ gõ), không nhất thiết là ứng dụng của ô gắn gần nhất.
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? clientBundleID
+        if on && isExcluded(currentApp(front: front)) {
             // Ứng dụng loại trừ không gõ tiếng Việt: trả về tiếng Anh.
             if wantsVietnameseHere { restoreVietnamese = true }
             vietnamese = false
@@ -467,13 +490,16 @@ final class Modes {
     /// Người dùng thêm/bỏ ứng dụng khỏi danh sách loại trừ.
     private func exclusionChanged() {
         guard !clientBundleID.isEmpty else { return }
-        if isExcluded(clientBundleID) {
+        let was = clientExcluded
+        clientExcluded = isExcluded(clientBundleID)
+        if clientExcluded {
             if vietnamese {
                 restoreVietnamese = true
                 set(false)
             }
-        } else if !vietnamese {
-            // Vừa bỏ loại trừ ứng dụng đang dùng: người dùng muốn gõ tiếng Việt ở đây.
+        } else if was, !vietnamese {
+            // Vừa bỏ loại trừ chính ứng dụng đang dùng: người dùng muốn gõ tiếng Việt ở đây. (Thêm / bỏ ứng dụng KHÁC khi
+            // đang tự chọn tiếng Anh ở ứng dụng này thì không đụng tới chế độ.)
             restoreVietnamese = false
             set(true)
         }

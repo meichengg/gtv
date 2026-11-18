@@ -22,9 +22,8 @@ enum AppMenu {
     /// sắp lại có thể ra thứ tự khác và bỏ loại trừ nhầm ứng dụng.
     private static var shownExcluded: [String] = []
 
-    /// `standalone`: menu của biểu tượng V/E trên thanh menu (dùng menu con).
-    /// Menu bộ gõ của macOS được chép sang tiến trình khác để hiển thị: chỉ dựa vào `tag`
-    /// (representedObject có thể mất) và trải phẳng các nhóm thay vì dùng menu con.
+    /// `standalone`: menu của biểu tượng V/E trên thanh menu.
+    /// Menu bộ gõ của macOS được chép sang tiến trình khác để hiển thị: chỉ dựa vào `tag` (representedObject có thể mất).
     static func build(target: AnyObject, action: Selector, appBundleID: String, standalone: Bool) -> NSMenu {
         let s = Settings.shared
         let o = s.options
