@@ -33,6 +33,17 @@ public final class Engine {
     /// chữ cái gõ tiếp chỉ được nối thêm nguyên văn, kết thúc từ cũng không khôi phục gì.
     public var isFinal: Bool {
         literalOnly && tone == .none && !escapeRestore(decided: false) && !(hatUndo && ooTone(pending: true))
+            && !strokePending()
+    }
+
+    /// Từ viết tắt toàn phụ âm vừa gõ chữ d ở cuối (phím gạch kế tiếp còn biến nó thành đ: "HD" + 9), hoặc vừa gạch (phím lặp
+    /// kế tiếp còn trả lại) — xem `strokeLast`.
+    private func strokePending() -> Bool {
+        guard chars.count >= 2, let last = chars.last, last.base == Ch.d, !chars.contains(where: { $0.isVowel }) else {
+            return false
+        }
+        let n = raw.utf8.count
+        return last.mark == .stroke ? strokeAt == n : !strokeUndone && last.rawEnd == n
     }
 
     public func reset() {

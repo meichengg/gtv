@@ -155,6 +155,10 @@ public final class Session {
     /// Số ký tự của từ đã đi nguyên văn kể từ lúc bật `untracked`. ⌫ hết chừng đó ký tự thì người dùng đang gõ lại: gỡ cờ, gõ
     /// tiếp như thường (không thì xoá từ rồi gõ lại vẫn ra phím gõ thô).
     private var untrackedLength = 0
+    /// Gõ trực tiếp: phím kết thúc từ vừa rồi tới khi ô còn báo chậm (xem `lostTrack`), và con trỏ ô báo lúc đó. Đầu từ sau mà ô
+    /// vẫn báo đúng con trỏ ấy thì nó chưa báo gì thêm — vị trí đọc được là của bản chụp cũ: từ đó đi nguyên văn. Ô đã báo
+    /// con trỏ khác thì gõ như thường.
+    private var staleAt: Int?
     /// Gõ trực tiếp: phím trước đi thẳng (ứng dụng tự chèn chữ) và vị trí con trỏ đọc được lúc đó — ở phím sau, con trỏ phải
     /// đã nhích.
     private var passedAt: Int?
@@ -233,6 +237,7 @@ public final class Session {
         endMarkedWord()
         continueWordOnNextChar = false
         endDirectWord()
+        staleAt = nil
     }
 
     /// Bỏ những gì biết về từ gõ trực tiếp (xem `untracked`, `passedAt`, `lastEdit`).
@@ -351,12 +356,14 @@ public final class Session {
         switch key {
         case .other:
             continueWordOnNextChar = false
+            staleAt = nil
             if combinedCommit, marked, !engine.isEmpty {
                 return endMarkedWord(with: keyText, client, clear: clearAfterCommit)
             }
             breakWord(client)
             return false
         case .backspace:
+            staleAt = nil
             let handled = backspace(client)
             if engine.isEmpty && !marked {
                 continueWordOnNextChar = true
@@ -376,6 +383,16 @@ public final class Session {
                     sel = client.selectedRange()
                     marked = sel == nil
                     anchor = sel?.location ?? 0
+                    if let stale = staleAt, let sel, sel.location == stale, sel.length == 0 {
+                        // Ô vẫn báo đúng con trỏ cũ của lúc phím kết thúc từ trước tới: chưa có gì mới từ ô.
+                        if Self.continuesWord(ch) {
+                            staleAt = nil
+                            continueWordOnNextChar = false
+                            return loseTrack("ô chưa báo gì từ phím kết thúc từ trước (con trỏ \(stale))")
+                        }
+                    } else {
+                        staleAt = nil
+                    }
                 }
                 committed = ""
                 preedit = ""
@@ -402,6 +419,7 @@ public final class Session {
                         log?("gõ trực tiếp: \(reason) — bỏ từ \(engine.displayed.debugDescription), phím kết thúc từ đi thẳng")
                         engine.reset()
                         endDirectWord()
+                        staleAt = sel?.location
                         return false
                     }
                     return loseTrack(reason)
@@ -1323,9 +1341,10 @@ public final class Session {
     }
 
     /// Bỏ trạng thái hiện tại, nạp lại từ đang nằm ngay trước con trỏ (nếu đọc được).
-    /// Trả về false khi ngay trước con trỏ là chữ của một từ mà không nạp lại được (từ dài quá, có chữ ngoài bảng tiếng
-    /// Việt — "responsibilit", "naïv"): gõ tiếp là gõ giữa từ đó, không được bắt đầu âm tiết mới ("responsibilitié") — nơi gọi
-    /// cho phần còn lại đi nguyên văn. Không đọc được ô thì coi như không có gì (true), như trước.
+    /// Trả về false khi ngay trước con trỏ là chữ của một từ không phải tiếng Việt mà không nạp lại được (dài quá, có chữ
+    /// ngoài bảng tiếng Việt — "responsibilit", "naïv"): gõ tiếp là gõ giữa từ đó, không được bắt đầu âm tiết mới
+    /// ("responsibilitié") — nơi gọi cho phần còn lại đi nguyên văn. Chữ tiếng Việt viết liền nhiều âm tiết (#hànội, tên miền)
+    /// thì vẫn như trước: âm tiết gõ thêm là từ mới. Không đọc được ô thì coi như không có gì (true).
     @discardableResult
     private func resync(_ client: TextClient) -> Bool {
         engine.reset()
@@ -1337,10 +1356,14 @@ public final class Session {
         let word = String(text.reversed().prefix(while: { $0.isLetter }).reversed())
         guard !word.isEmpty else { return true }
         // Chỉ nạp khi thấy trọn từ (đứng sau ký tự không phải chữ, hoặc ở đầu văn bản).
-        guard word.utf16.count < len || len == sel.location else { return false }
-        guard engine.seed(word) else { return false }
-        anchor = sel.location - word.utf16.count
-        return true
+        if word.utf16.count < len || len == sel.location, engine.seed(word) {
+            anchor = sel.location - word.utf16.count
+            return true
+        }
+        // TCVN3: chữ có dấu trên màn hình là ký tự Latin-1, không bao giờ nạp lại được — như trước.
+        guard engine.options.charset != .tcvn3 else { return true }
+        let vietnamese = word.contains(where: { !$0.isASCII }) && word.allSatisfy({ $0.isASCII || VTable.decompose[$0] != nil })
+        return vietnamese
     }
 
     /// Lý do mất dấu của `lostTrack` là do ô không cho biết con trỏ thật (không phải ô đã đổi chữ / dời con trỏ).

@@ -2666,6 +2666,19 @@ final class SessionTests: XCTestCase {
         h.units.removeLast(); h.sel = (4, 0)
         h.type(" d9a38ng ")
         XCTAssertEqual(h.text, "abc  đẳng ")
+        // Ô chậm vẫn chưa báo gì ở đầu từ sau: từ đó đi nguyên văn, không sửa sai chỗ; xoá rồi gõ lại thì ra dấu.
+        let s = LaggyField()
+        s.options.method = .vni
+        s.flush()
+        s.type("xi")
+        s.autoFlush = false
+        s.type("n d9a38ng")
+        XCTAssertEqual(s.text, "xin d9a38ng")
+        s.flush()
+        s.autoFlush = true
+        for _ in 0..<7 { s.backspace() }
+        s.type("d9a38ng ")
+        XCTAssertEqual(s.text, "xin đẳng ")
         // Ô chậm: "n" rồi dấu cách liền tay (ô chưa báo "n"), sau đó gõ chậm.
         for (m, next, want) in [(InputMethod.vni, "d9a38ng", "đẳng"), (.telex, "tieengs", "tiếng")] {
             let l = LaggyField()
