@@ -152,6 +152,9 @@ public final class Session {
     /// dụng chưa cập nhật — Chromium / Electron khi trang xử lý chậm): các chữ còn lại của từ đi nguyên văn tới hết từ. Không
     /// đoán, nên không bao giờ thay sai chỗ (chữ ở giữa từ thành "ư", xoá mất chữ sau từ).
     private var untracked = false
+    /// Số ký tự của từ đã đi nguyên văn kể từ lúc bật `untracked`. ⌫ hết chừng đó ký tự thì người dùng đang gõ lại: gỡ cờ, gõ
+    /// tiếp như thường (không thì xoá từ rồi gõ lại vẫn ra phím gõ thô).
+    private var untrackedLength = 0
     /// Gõ trực tiếp: phím trước đi thẳng (ứng dụng tự chèn chữ) và vị trí con trỏ đọc được lúc đó — ở phím sau, con trỏ phải
     /// đã nhích.
     private var passedAt: Int?
@@ -185,6 +188,7 @@ public final class Session {
     public func fieldChanged() {
         blindLatched = false
         blindSel = nil
+        markedReported = false      // ô khác có thể không báo `hasMarkedText`: không suy "ô đã tự chốt" từ ô cũ
     }
     private var web: WebChain?
     /// Phím vừa rồi là ⌫ trong chuỗi và từ đang gõ trống: chữ sau gõ tiếp từ nằm ngay trước con trỏ (chữ của chuỗi).
@@ -234,6 +238,7 @@ public final class Session {
     /// Bỏ những gì biết về từ gõ trực tiếp (xem `untracked`, `passedAt`, `lastEdit`).
     private func endDirectWord() {
         untracked = false
+        untrackedLength = 0
         passedAt = nil
         lastEdit = nil
         deletedAt = nil
@@ -274,10 +279,11 @@ public final class Session {
             }
         }
         // Ô mù (không cho biết con trỏ): không thay chữ trực tiếp được — soạn từ bằng InputMethodKit còn hơn chữ đi nguyên văn.
+        let callerForcesMarked = forceMarked
         let forceMarked = forceMarked || (blindLatched && terminal == nil && !web)
         if web {
             inTerminal = false
-            if marked || literalTail { reset() }
+            if marked || literalTail { commit(client) }   // đang gạch chân: chốt phần đang soạn, không bỏ (mất chữ)
             inWeb = true
             return handleWeb(key, client, options: options, gap: gap)
         }
@@ -288,7 +294,7 @@ public final class Session {
         self.earlyCommit = earlyCommit
         inTerminal = terminal != nil
         if let terminal {
-            if marked || literalTail { reset() }     // vừa đổi từ chế độ gạch chân
+            if marked || literalTail { commit(client) }     // vừa đổi từ chế độ gạch chân: chốt phần đang soạn
             return handleTerminal(key, client, options: options, style: terminal, repeatDelay: repeatDelay, gap: gap,
                                   legacy: legacy)
         }
@@ -325,8 +331,18 @@ public final class Session {
             // Từ không theo dõi được (xem `untracked`): chữ trong từ đi nguyên văn, phím khác kết thúc từ.
             switch key {
             case let .char(ch) where Self.continuesWord(ch):
+                untrackedLength += 1
                 return false
             case .backspace:
+                untrackedLength -= 1
+                if untrackedLength <= 0 {
+                    // Đã xoá hết phần đi nguyên văn: người dùng gõ lại. Chữ sau đọc lại từ trước con trỏ (nếu còn chữ của từ)
+                    // rồi gõ như thường, như sau mọi ⌫ khi không còn từ đang gõ.
+                    let at = client.selectedRange()?.location
+                    reset()
+                    continueWordOnNextChar = true
+                    deletedAt = at
+                }
                 return false
             case .char, .other:
                 reset()
@@ -366,8 +382,8 @@ public final class Session {
                 if continueWordOnNextChar && !marked {
                     if let d = deleted, sel?.location == d {
                         log?("gõ trực tiếp: con trỏ chưa lùi sau ⌫ (\(d)) — không đọc lại từ trước con trỏ")
-                    } else {
-                        resync(client)
+                    } else if !resync(client), Self.continuesWord(ch) {
+                        return loseTrack("ngay trước con trỏ là chữ không nạp lại được")
                     }
                 }
                 continueWordOnNextChar = false
@@ -380,18 +396,27 @@ public final class Session {
                         log?("gõ trực tiếp: \(reason) — ô không cho biết con trỏ: từ sau soạn bằng InputMethodKit")
                         latchBlind(sel)
                     }
-                    log?("gõ trực tiếp: \(reason) — các chữ còn lại của từ \(engine.displayed.debugDescription) đi nguyên văn")
-                    engine.reset()
-                    untracked = true
-                    return false
+                    guard Self.continuesWord(ch) else {
+                        // Phím này kết thúc từ: không còn chữ nào của từ để đi nguyên văn. Bật `untracked` ở đây thì cả từ SAU
+                        // (gõ ngay sau dấu cách / dấu ngoặc này) đi nguyên văn theo.
+                        log?("gõ trực tiếp: \(reason) — bỏ từ \(engine.displayed.debugDescription), phím kết thúc từ đi thẳng")
+                        engine.reset()
+                        endDirectWord()
+                        return false
+                    }
+                    return loseTrack(reason)
                 }
-                if !inSync(sel) { resync(client) }     // con trỏ đã bị dời (vị trí không đổi trong keyDown này)
+                // Con trỏ đã bị dời (vị trí không đổi trong keyDown này): đọc lại từ ở chỗ mới.
+                if !inSync(sel), !resync(client), Self.continuesWord(ch) {
+                    return loseTrack("ngay trước con trỏ là chữ không nạp lại được")
+                }
             }
             let before = engine.displayed
             guard let action = engine.process(ch) else {
                 guard !engine.isEmpty else {
                     // Không có từ nào bắt đầu (End, mũi tên, dấu câu… ở đầu ô): không giữ chế độ gạch chân vừa chọn cho từ.
-                    if !forceMarked { marked = false }
+                    // (Ô mù — `blindLatched` — cũng vậy: giữ cờ thì đầu từ sau không còn xét gỡ cờ ô mù.)
+                    if !callerForcesMarked { marked = false }
                     return false
                 }
                 if combinedCommit, marked {
@@ -407,6 +432,15 @@ public final class Session {
             passedAt = handled || engine.isEmpty ? nil : sel?.location
             return handled
         }
+    }
+
+    /// Gõ trực tiếp: thôi theo dõi từ đang gõ — phím này và các chữ còn lại của từ đi nguyên văn (xem `untracked`).
+    private func loseTrack(_ reason: String) -> Bool {
+        log?("gõ trực tiếp: \(reason) — các chữ còn lại của từ \(engine.displayed.debugDescription) đi nguyên văn")
+        engine.reset()
+        untracked = true
+        untrackedLength = 1
+        return false
     }
 
     /// Ký tự còn nằm trong một từ (chữ, số — VNI dùng số làm dấu, `[ ] { }` — Telex dùng cho ư ơ).
@@ -598,7 +632,23 @@ public final class Session {
                 } else if printable == nil, let legacy {
                     // Gửi phím kèm lần sửa trong một lần ghi (không còn là ký tự điều khiển đứng riêng).
                     log?("deferred: gửi lần sửa kèm phím \(legacy.debugDescription)")
-                    client.insertText(text + legacy)
+                    // ⏎ ⇥ ⎋ chạy lệnh / hoàn thành ngay: từ không phải tiếng Việt được khôi phục trước phím, như khi không có
+                    // lần sửa nào còn chờ (`fixLineWithKey`) — không thì "user" + ⏎ gõ liền tay chạy lệnh "ủe".
+                    var fix = ""
+                    if case .char = key, gap == .none, suspect == nil, onLine == nil, !engine.isEmpty,
+                       legacy.unicodeScalars.count == 1 {
+                        let old = engine.displayed
+                        if case let .replace(_, new) = engine.finishWord().action, !Self.same(old, new) {
+                            var oi = old.startIndex, ni = new.startIndex
+                            while oi < old.endIndex, ni < new.endIndex, old[oi] == new[ni] {
+                                oi = old.index(after: oi)
+                                ni = new.index(after: ni)
+                            }
+                            fix = String(repeating: "\u{7f}", count: old[oi...].unicodeScalars.count) + String(new[ni...])
+                            log?("deferred: khôi phục \(old.debugDescription) → \(new.debugDescription) cùng phím")
+                        }
+                    }
+                    client.insertText(text + fix + legacy)
                     if key == .backspace, onLine == nil, !engine.isEmpty, case .passThrough = engine.backspace() {
                         // từ vẫn khớp: shell xoá đúng ký tự cuối
                     } else {
@@ -1221,6 +1271,8 @@ public final class Session {
             return false
         }
         engine.reset()              // không thay được: ứng dụng xoá ký tự cuối, bỏ từ
+        if untracked { untrackedLength = old.count - 1 }   // phần còn lại của từ trên màn hình
+        if untracked, untrackedLength <= 0 { untracked = false }
         return false
     }
 
@@ -1246,6 +1298,7 @@ public final class Session {
             insertMarkedTail(text, client)
         } else if case let .replace(old, new) = action {
             _ = replace(old, new, client)
+            untracked = false       // từ đã hết: cờ (bật khi ô chưa có lần thay trước) không kéo sang từ sau
         }
         endMarkedWord()
     }
@@ -1256,10 +1309,11 @@ public final class Session {
         if replace(old, new, client, typed: ch, sel: sel) { return true }
         if untracked {
             engine.reset()          // ô chưa cập nhật (xem `replace`): phím đi nguyên văn
+            untrackedLength = 1
             return false
         }
         // Không khớp với màn hình: đọc lại từ trước con trỏ rồi xử lý phím này tiếp từ đó.
-        resync(client)
+        guard resync(client) else { return loseTrack("ngay trước con trỏ là chữ không nạp lại được") }
         guard let ch else { engine.reset(); return false }
         if let a = engine.process(ch), case let .replace(o, n) = a {
             if replace(o, n, client, typed: ch) { return true }
@@ -1269,17 +1323,24 @@ public final class Session {
     }
 
     /// Bỏ trạng thái hiện tại, nạp lại từ đang nằm ngay trước con trỏ (nếu đọc được).
-    private func resync(_ client: TextClient) {
+    /// Trả về false khi ngay trước con trỏ là chữ của một từ mà không nạp lại được (từ dài quá, có chữ ngoài bảng tiếng
+    /// Việt — "responsibilit", "naïv"): gõ tiếp là gõ giữa từ đó, không được bắt đầu âm tiết mới ("responsibilitié") — nơi gọi
+    /// cho phần còn lại đi nguyên văn. Không đọc được ô thì coi như không có gì (true), như trước.
+    @discardableResult
+    private func resync(_ client: TextClient) -> Bool {
         engine.reset()
-        guard let sel = client.selectedRange() else { return }
+        guard let sel = client.selectedRange() else { return true }
         anchor = sel.location
-        guard sel.location > 0 else { return }
+        guard sel.location > 0 else { return true }
         let len = min(sel.location, 16)
-        guard let text = client.text(location: sel.location - len, length: len) else { return }
+        guard let text = client.text(location: sel.location - len, length: len) else { return true }
         let word = String(text.reversed().prefix(while: { $0.isLetter }).reversed())
+        guard !word.isEmpty else { return true }
         // Chỉ nạp khi thấy trọn từ (đứng sau ký tự không phải chữ, hoặc ở đầu văn bản).
-        guard !word.isEmpty, word.utf16.count < len || len == sel.location else { return }
-        if engine.seed(word) { anchor = sel.location - word.utf16.count }
+        guard word.utf16.count < len || len == sel.location else { return false }
+        guard engine.seed(word) else { return false }
+        anchor = sel.location - word.utf16.count
+        return true
     }
 
     /// Lý do mất dấu của `lostTrack` là do ô không cho biết con trỏ thật (không phải ô đã đổi chữ / dời con trỏ).
@@ -2295,10 +2356,13 @@ public final class Session {
             log?("thay \(old.debugDescription): trước con trỏ lại là \(current.debugDescription)")
             return false
         }
-        // Chỉ thay phần khác nhau để ứng dụng phải làm ít việc nhất.
+        // Chỉ thay phần khác nhau để ứng dụng phải làm ít việc nhất. "Giống" là trùng từng code point: chữ đọc lại từ màn hình
+        // ở dạng tổ hợp (NFD — tên file của Finder: "u" + U+031B) bằng chữ dựng sẵn theo so sánh của String nhưng dài khác —
+        // để nguyên nó thì từ trên màn hình dài khác từ bộ gõ nhớ, phím sau bị coi là "ô chưa cập nhật" và đi nguyên văn.
         var common = 0
         var oi = old.startIndex, ni = new.startIndex
-        while oi < old.endIndex, ni < new.endIndex, old[oi] == new[ni] {
+        while oi < old.endIndex, ni < new.endIndex,
+              old[oi].unicodeScalars.elementsEqual(new[ni].unicodeScalars) {
             common += old[oi].utf16.count
             oi = old.index(after: oi)
             ni = new.index(after: ni)

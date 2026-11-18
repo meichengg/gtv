@@ -2639,4 +2639,163 @@ final class SessionTests: XCTestCase {
         t.type("To6i ye6u tie61ng Vie65t, d9e5p la81m!")
         XCTAssertEqual(t.line, "Tôi yêu tiếng Việt, đẹp lắm!")
     }
+
+    // MARK: - Gõ trực tiếp: từ đi nguyên văn (`untracked`) không kéo sang từ sau, không sống qua ⌫
+
+    /// Mất dấu từ đang gõ đúng ở phím kết thúc từ (dấu cách, dấu ngoặc): từ SAU vẫn có dấu.
+    func testLostTrackAtTerminatorDoesNotLeakIntoNextWord() {
+        // Ô chat: gõ "ok", bấm nút Gửi bằng chuột (ô tự xoá, bộ gõ không thấy), tin sau mở đầu bằng dấu ngoặc / nháy.
+        for opener in ["(", "\"", "@", "#", " ", "-"] {
+            let f = Field()
+            f.options.method = .vni
+            f.type("ok")
+            f.units = []; f.sel = (0, 0)
+            f.type(opener + "d9a38ng tie61ng ")
+            XCTAssertEqual(f.text, opener + "đẳng tiếng ", "mở đầu \(opener.debugDescription)")
+        }
+        let g = Field()
+        g.type("ok")
+        g.units = []; g.sel = (0, 0)
+        g.type("(tieengs vieejt) ")
+        XCTAssertEqual(g.text, "(tiếng việt) ")
+        // Phím đi thẳng bị ô bỏ (con trỏ không nhích) rồi dấu cách.
+        let h = Field()
+        h.options.method = .vni
+        h.units = Array("abc ".utf16); h.sel = (4, 0)
+        h.type("x")
+        h.units.removeLast(); h.sel = (4, 0)
+        h.type(" d9a38ng ")
+        XCTAssertEqual(h.text, "abc  đẳng ")
+        // Ô chậm: "n" rồi dấu cách liền tay (ô chưa báo "n"), sau đó gõ chậm.
+        for (m, next, want) in [(InputMethod.vni, "d9a38ng", "đẳng"), (.telex, "tieengs", "tiếng")] {
+            let l = LaggyField()
+            l.options.method = m
+            l.flush()
+            l.type("xi")
+            l.autoFlush = false
+            l.type("n ")
+            l.flush()
+            l.autoFlush = true
+            l.type(next + " ")
+            XCTAssertEqual(l.text, "xin " + want + " ", "\(m)")
+        }
+    }
+
+    /// Từ đang đi nguyên văn bị xoá hết bằng ⌫ rồi gõ lại: gõ như thường (máy người dùng: xoá rồi gõ lại vẫn ra số).
+    func testUntrackedWordDeletedThenRetyped() {
+        let f = Field()
+        f.options.method = .vni
+        f.type("ok")
+        f.units = []; f.sel = (0, 0)                      // ứng dụng xoá ô giữa từ
+        f.type("d9a38ng")
+        XCTAssertEqual(f.text, "d9a38ng")                 // theo thiết kế: phần còn lại của từ đi nguyên văn
+        for _ in 0..<7 { f.backspace() }
+        XCTAssertEqual(f.text, "")
+        f.type("d9a38ng ")
+        XCTAssertEqual(f.text, "đẳng ")
+        // Con trỏ chưa nhích sau phím đi thẳng.
+        let g = Field()
+        g.options.method = .vni
+        g.units = Array("xin ".utf16); g.sel = (4, 0)
+        g.type("t")
+        g.units.removeLast(); g.sel = (4, 0)
+        g.type("ie61ng")
+        XCTAssertEqual(g.text, "xin ie61ng")
+        for _ in 0..<6 { g.backspace() }
+        g.type("tie61ng ")
+        XCTAssertEqual(g.text, "xin tiếng ")
+        // Ô chậm: "9" tới khi ô chưa báo "d".
+        let l = LaggyField()
+        l.options.method = .vni
+        l.real = Array("xin ".utf16); l.caret = 4
+        l.flush()
+        l.autoFlush = false
+        l.type("d9")
+        l.flush()
+        l.autoFlush = true
+        l.type("a38ng")
+        XCTAssertEqual(l.text, "xin d9a38ng")
+        for _ in 0..<7 { l.backspace() }
+        XCTAssertEqual(l.text, "xin ")
+        l.type("d9a38ng ")
+        XCTAssertEqual(l.text, "xin đẳng ")
+        // Xoá chưa hết (còn chữ đầu của từ) rồi gõ tiếp: đọc lại chữ còn lại trước con trỏ.
+        let m = LaggyField()
+        m.options.method = .vni
+        m.real = Array("xin ".utf16); m.caret = 4
+        m.flush()
+        m.autoFlush = false
+        m.type("d9")
+        m.flush()
+        m.autoFlush = true
+        m.type("a38ng")
+        for _ in 0..<6 { m.backspace() }
+        XCTAssertEqual(m.text, "xin d")
+        m.type("9a38ng ")
+        XCTAssertEqual(m.text, "xin đẳng ")
+    }
+
+    /// Chữ tổ hợp (NFD — tên file của Finder) ngay trước con trỏ: lần sửa đầu viết lại chữ đó, các phím sau vẫn ra dấu.
+    func testDecomposedTextBeforeCaret() {
+        for (m, keys, want) in [(InputMethod.vni, "o7i2 ", "người "), (.telex, "owif ", "người ")] {
+            let f = Field()
+            f.options.method = m
+            f.units = Array("ngu\u{31b}x".utf16); f.sel = (f.units.count, 0)
+            f.backspace()                                 // xoá "x": chữ sau đọc lại "ngư"
+            f.type(keys)
+            XCTAssertEqual(f.text, want, "\(m)")
+            XCTAssertEqual(Array(f.text.unicodeScalars), Array(want.unicodeScalars), "\(m): dựng sẵn")
+        }
+        let h = Field()
+        h.options.method = .vni
+        h.units = Array("Tie\u{302}\u{301}ng Vie\u{302}".utf16); h.sel = (h.units.count, 0)
+        h.type("t")
+        h.backspace()
+        h.type("5t ")
+        XCTAssertEqual(h.text, "Tiếng Việt ")
+    }
+
+    /// Ngay trước con trỏ là chữ của một từ không nạp lại được (dài quá, có chữ lạ): gõ tiếp đi nguyên văn, không bắt đầu
+    /// âm tiết mới giữa từ ("responsibilitié").
+    func testUnseedableWordBeforeCaretStaysRaw() {
+        for (word, cut, retype) in [("administrator", 2, "or"), ("vulnerabilities", 3, "ies"), ("authentication", 5, "ation"),
+                                    ("responsibilities", 2, "es"), ("communications", 3, "ons"), ("na\u{EF}ve", 1, "es")] {
+            let f = Field()
+            f.type(word + " ")
+            XCTAssertEqual(f.text, word + " ")
+            for _ in 0...cut { f.backspace() }            // xoá dấu cách + vài chữ cuối
+            f.type(retype + " ")
+            XCTAssertEqual(f.text, String(word.dropLast(cut)) + retype + " ", word)
+        }
+        let g = Field()
+        g.type("moderator ")
+        for _ in 0..<3 { g.backspace() }
+        g.type("or ")
+        XCTAssertEqual(g.text, "moderator ")
+        let v = Field()
+        v.options.method = .vni
+        v.type("authentication ")
+        for _ in 0..<3 { v.backspace() }
+        v.type("on2 ")
+        XCTAssertEqual(v.text, "authentication2 ")
+        // Sau đó từ kế tiếp gõ như thường.
+        v.type("tie61ng ")
+        XCTAssertEqual(v.text, "authentication2 tiếng ")
+    }
+
+    /// Ghostty: ⏎ tới khi lần sửa còn chờ gửi (gõ liền tay) vẫn khôi phục từ không phải tiếng Việt trước khi chạy lệnh.
+    func testGhosttyQuickEnterRestoresWord() {
+        for (m, keys, want) in [(InputMethod.telex, "user", "user"), (.vni, "iu7", "iu7"), (.telex, "nvm use", "nvm use"),
+                                (.telex, "tieengs", "tiếng")] {
+            let g = GhosttySim()
+            g.options = EngineOptions(method: m)
+            let k = Array(keys)
+            for (i, c) in k.enumerated() { g.press(.char(c), gap: i == k.count - 1 ? 0.001 : 0.04) }
+            g.press(.enter, gap: 0.001)
+            g.wait(0.5)
+            XCTAssertEqual(g.text, want, "\(m) \(keys)")
+            XCTAssertEqual(g.controls, ["\r"], keys)
+            XCTAssertTrue(g.mark.isEmpty, keys)
+        }
+    }
 }
