@@ -106,6 +106,9 @@ APP_TESTS = [
     # ⌥⌫ (xoá cả từ) rồi gõ tiếp: người dùng báo "ấn ⌥⌫ xong không gõ dấu được nữa". Chờ 1,3 s trước ⌥⌫: ô Java soạn từng từ
     # nuốt phím bấm ngay sau từ (xem vni-arrow).
     ("vni-optbs", "vni", "tie61ng vie65t{WAIT1300}{OPTBS}d9a38ng ca61p ", "tiếng đẳng cấp ", 45),
+    # Từ viết tắt có đ (đ đứng đầu không bị trả về phím gõ; đ không đứng đầu), tên riêng viết k trước a, số dính liền chữ.
+    ("vni-abbrev", "vni", "HD9 d9c ND9-CP Ba81c Ka5n i18n ", "HĐ đc NĐ-CP Bắc Kạn i18n ", 45),
+    ("telex-abbrev", "telex", "HDD ddc keeper Kanj ", "HĐ đc keeper Kạn ", 45),
 ]
 # Gõ sai, xoá cả từ (⌥⌫) hay cả dòng (⌘⌫) rồi gõ lại NGAY, không ngừng tay — người dùng báo: từ gõ lại ra số (VNI) thay vì ra
 # dấu, trong Claude desktop / Zalo (Chromium). Ô Chromium trả lời vị trí con trỏ từ một bộ đệm; ngay sau phím xoá bộ gõ chưa chắc
