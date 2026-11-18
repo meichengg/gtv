@@ -379,6 +379,7 @@ public final class Session {
                 if forceMarked {
                     marked = true            // gạch chân: không cần vị trí con trỏ (bớt một lần hỏi ứng dụng)
                     anchor = 0
+                    staleAt = nil
                 } else {
                     sel = client.selectedRange()
                     marked = sel == nil

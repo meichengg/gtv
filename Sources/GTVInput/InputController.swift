@@ -138,9 +138,6 @@ final class GTVInputController: IMKInputController {
     private let adapter = ClientAdapter()
     private var bundleID = ""
     private var hotkeyArmedAt: TimeInterval?
-    /// Trong lần giữ phím bổ trợ này đã có phím bổ trợ ngoài tổ hợp đổi Anh/Việt (⌥ của ⌥⌘⇧V): không phải nhấn tổ hợp
-    /// "trơn", kể cả khi nhả phím thừa trước rồi mới nhả tổ hợp. Khoá tới khi nhả hết.
-    private var hotkeyBlocked = false
     /// Ô đang gắn là ô văn bản hay view terminal (hỏi một lần lúc gắn); nil: chưa biết (ô tạm), hỏi lại ở phím kế tiếp.
     private var clientKind: ClientKind? {
         didSet { if clientKind == nil { chromiumWeb = false } }
@@ -374,9 +371,10 @@ final class GTVInputController: IMKInputController {
             // Phím tắt chuyển Anh/Việt: nhấn rồi nhả tổ hợp phím bổ trợ, không kèm phím nào khác.
             if let hotkey = settings.hotkey.flags {
                 if flags == hotkey {
-                    // Chỉ khi đi LÊN tới tổ hợp. Nhả ⌥ của ⌥⌘⇧V cũng về đúng ⌘⇧, nhưng chữ V đã bấm trước đó: tính từ lúc
-                    // này thì lần nhả ⌘⇧ sau đó trông như nhấn "trơn" và chế độ tự đổi (`hotkeyBlocked`).
-                    if hotkeyArmedAt == nil, !hotkeyBlocked {
+                    // Chỉ khi đi LÊN tới tổ hợp (phím vừa đổi là một phím của tổ hợp). Nhả ⌥ của ⌥⌘⇧V cũng về đúng ⌘⇧,
+                    // nhưng chữ V đã bấm trước đó: tính từ lúc này thì lần nhả ⌘⇧ sau đó trông như nhấn "trơn" và chế độ
+                    // tự đổi. Xét theo chính sự kiện (không nhớ trạng thái): phím nhả ở ứng dụng khác không làm kẹt gì.
+                    if hotkeyArmedAt == nil, Hotkey.changedKeyBelongs(to: hotkey, keyCode: event.keyCode) {
                         hotkeyArmedAt = ProcessInfo.processInfo.systemUptime
                         Hotkey.heldAtArm = LiveInput.shared.anyHeld()
                         LiveInput.shared.trackHID(for: 3)        // phím / click lúc đang giữ: xem `Hotkey.isCleanTap`
@@ -384,17 +382,15 @@ final class GTVInputController: IMKInputController {
                 } else if flags.isEmpty {
                     // Phím tắt như ⌘⇧Z được ứng dụng xử lý trước, bộ gõ không thấy phím Z:
                     // hỏi hệ thống xem có phím/click nào xen vào không.
-                    if let armed = hotkeyArmedAt, !hotkeyBlocked, Hotkey.isCleanTap(since: armed) {
+                    if let armed = hotkeyArmedAt, Hotkey.isCleanTap(since: armed) {
                         DebugLog.event("phím tắt đổi Anh/Việt (\(bundleID))")
                         commit(client)
                         // Chọn chế độ ngoài lúc đang xử lý sự kiện phím.
                         DispatchQueue.main.async { Modes.shared.toggle() }
                     }
                     hotkeyArmedAt = nil
-                    hotkeyBlocked = false
                 } else if !hotkey.isSuperset(of: flags) {
                     hotkeyArmedAt = nil
-                    hotkeyBlocked = true
                 }
             }
             return false

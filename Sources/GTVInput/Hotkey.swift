@@ -3,6 +3,22 @@ import CoreGraphics
 import Foundation
 
 enum Hotkey {
+    /// Sự kiện đổi phím bổ trợ này là của một phím thuộc tổ hợp `hotkey` (keyCode của ⇧ ⌃ ⌥ ⌘ trái / phải). Phím bổ trợ
+    /// khác (kể cả fn, Caps Lock) thì không: lần đổi đó là nhả / nhấn một phím ngoài tổ hợp. keyCode lạ (sự kiện do chương
+    /// trình tạo, điều khiển từ xa) thì coi như thuộc tổ hợp, như trước.
+    static func changedKeyBelongs(to hotkey: NSEvent.ModifierFlags, keyCode: UInt16) -> Bool {
+        let key: NSEvent.ModifierFlags
+        switch keyCode {
+        case 56, 60: key = .shift
+        case 59, 62: key = .control
+        case 58, 61: key = .option
+        case 55, 54: key = .command
+        case 63, 57: return false           // fn / 🌐, Caps Lock
+        default: return true
+        }
+        return hotkey.contains(key)
+    }
+
     /// Lúc nhấn tổ hợp, đang giữ sẵn phím đặc biệt hay nút chuột (vd. ⇧ nhấn sau ⌘ trong lúc giữ ←): không phải nhấn "trơn".
     static var heldAtArm = false
 
