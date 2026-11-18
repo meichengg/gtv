@@ -196,12 +196,37 @@ private final class ChromiumField: TextClient {
         if caret >= hi { caret += t.utf16.count - (hi - lo) } else if caret > lo { caret = lo + t.utf16.count }
         snapshot()
     }
+    /// Đang trong keyDown của một phím (bộ gõ đang xử lý nó).
+    var inKey = false
+    /// Chữ bộ gõ chèn không kèm vùng thay trong lúc xử lý phím: Chromium gom lại (`textToBeInserted`), hết keyDown mới gửi cho
+    /// trang — trong khi lần thay có vùng (ImeCommitText) đi NGAY. Bộ gõ chèn chữ rồi thay có vùng trong cùng một phím thì lần
+    /// thay tới trang trước chữ vừa chèn (IME Lab 44236364944: "d9" → thay 2 ký tự bằng "đ" → trang ra "đ9").
+    var queued: [String] = []
+
     func insertText(_ t: String) {
-        units.insert(contentsOf: Array(t.utf16), at: caret)
-        caret += t.utf16.count
+        // Bộ đệm đoán ngay lúc bộ gõ gọi (lab: con trỏ bộ đệm nhích ngay trong cùng phím).
         cUnits.insert(contentsOf: Array(t.utf16), at: min(base, cUnits.count))
         cCaret = base + t.utf16.count
+        if inKey {
+            queued.append(t)
+            return
+        }
+        send(t)
+    }
+    private func send(_ t: String) {
+        units.insert(contentsOf: Array(t.utf16), at: caret)
+        caret += t.utf16.count
         snapshot()
+    }
+    /// Bộ gõ xử lý một phím: chữ nó chèn không kèm vùng thay tới trang khi phím xong.
+    func key(_ handle: () -> Bool) -> Bool {
+        inKey = true
+        let handled = handle()
+        inKey = false
+        let q = queued
+        queued = []
+        q.forEach(send)
+        return handled
     }
     func setMarkedText(_ t: String) { XCTFail("ô web không dùng marked text") }
     func replaceViaMarkedText(location: Int, length: Int, with t: String) { XCTFail("ô web không dùng marked text") }
@@ -232,7 +257,7 @@ private final class ChromiumField: TextClient {
 
     func press(_ k: Character) {
         tick(stepMS)
-        if !session.handle(.char(k), self, options: options, forceMarked: false, web: true) {
+        if !key({ session.handle(.char(k), self, options: options, forceMarked: false, web: true) }) {
             insertText(String(k))
             for r in autoReplace where String(decoding: units[..<caret], as: UTF16.self).hasSuffix(r.from) {
                 let n = r.from.utf16.count
@@ -248,7 +273,7 @@ private final class ChromiumField: TextClient {
     /// `gap`: sổ phím báo có click / phím tắt bộ gõ không thấy trước phím này.
     func backspace(gap: KeyGap = .none) {
         tick(stepMS)
-        if !session.handle(.backspace, self, options: options, forceMarked: false, gap: gap, web: true), caret > 0 {
+        if !key({ session.handle(.backspace, self, options: options, forceMarked: false, gap: gap, web: true) }), caret > 0 {
             let n = graphemeBackspace ? (String(decoding: units[..<caret], as: UTF16.self).last.map { String($0).utf16.count } ?? 1) : 1
             units.removeSubrange((caret - n)..<caret)
             caret -= n
@@ -270,7 +295,7 @@ private final class ChromiumField: TextClient {
     /// ← (InputController đưa phím mũi tên như ký tự U+F702; bộ gõ cho đi, trang dời con trỏ).
     func arrowLeft() {
         tick(stepMS)
-        if !session.handle(.char("\u{F702}"), self, options: options, forceMarked: false, web: true), caret > 0 {
+        if !key({ session.handle(.char("\u{F702}"), self, options: options, forceMarked: false, web: true) }), caret > 0 {
             caret -= 1
             snapshot()
         }
@@ -280,7 +305,7 @@ private final class ChromiumField: TextClient {
     /// Phím không ra chữ mà bộ gõ thấy (⌥⌫, ⌘⌫, ⌥←…): bộ gõ cho đi, trang xử lý bằng `effect` rồi báo như mọi phím.
     func other(gap: KeyGap = .none, _ effect: () -> Void) {
         tick(stepMS)
-        XCTAssertFalse(session.handle(.other, self, options: options, forceMarked: false, gap: gap, web: true))
+        XCTAssertFalse(key({ session.handle(.other, self, options: options, forceMarked: false, gap: gap, web: true) }))
         effect()
         snapshot()
     }
@@ -308,7 +333,8 @@ private final class ChromiumField: TextClient {
         var gap = firstGap
         for k in keys {
             tick(stepMS)
-            if !session.handle(.char(k), self, options: options, forceMarked: false, gap: gap, web: true) { insertText(String(k)) }
+            let g = gap
+            if !key({ session.handle(.char(k), self, options: options, forceMarked: false, gap: g, web: true) }) { insertText(String(k)) }
             gap = .none
         }
     }
@@ -1513,7 +1539,7 @@ final class SessionTests: XCTestCase {
                 g.snapshot()
                 g.tick(200)
                 g.tick(g.stepMS)
-                if !g.session.handle(.char("s"), g, options: g.options, forceMarked: false, gap: .interrupted, web: true) {
+                if !g.key({ g.session.handle(.char("s"), g, options: g.options, forceMarked: false, gap: .interrupted, web: true) }) {
                     g.insertText("s")
                 }
                 g.type(" ")
@@ -1699,7 +1725,7 @@ final class SessionTests: XCTestCase {
                 for (i, k) in keys.enumerated() {
                     f.tick(f.stepMS)
                     let gap: KeyGap = i == 5 || i == 9 ? .bypassed : .none
-                    if !f.session.handle(.char(k), f, options: f.options, forceMarked: false, gap: gap, web: true) {
+                    if !f.key({ f.session.handle(.char(k), f, options: f.options, forceMarked: false, gap: gap, web: true) }) {
                         f.insertText(String(k))
                     }
                 }

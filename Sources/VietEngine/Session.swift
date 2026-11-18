@@ -197,6 +197,12 @@ public final class Session {
     private var webShadow: String?
     /// Chỗ bộ đệm cho thấy từ đó nằm (khác chỗ bộ gõ nhớ) ở lần đọc trước, và số đơn vị UTF-16 đã gõ lúc đó.
     private var webShadowSeen: (at: Int, length: Int)?
+    /// Đang trong lúc xử lý một phím của ô web (`handleWeb`).
+    private var webInKey = false
+    /// Trong phím đang xử lý, bộ gõ đã chèn chữ KHÔNG kèm vùng thay. Chromium gom chữ như vậy tới hết keyDown mới gửi cho
+    /// trang (`textToBeInserted`), còn lần thay có vùng thì gửi ngay: thay chữ theo vị trí trong cùng phím đó sẽ tới trang
+    /// TRƯỚC chữ vừa chèn (IME Lab 44236364944: chèn "9" rồi thay "d9" bằng "đ" — trang ra "đ9"). Xem `webShadowFix`.
+    private var webInsertedInKey = false
     private weak var webPendingClient: TextClient?
     private var webSerial = 0
 
@@ -1426,6 +1432,9 @@ public final class Session {
     }
 
     private func handleWeb(_ key: Key, _ client: TextClient, options: EngineOptions, gap: KeyGap) -> Bool {
+        webInKey = true
+        webInsertedInKey = false
+        defer { webInKey = false }
         if webPending != nil { flushWebPending(client, final: true) }   // lần sửa còn chờ: tới trang trước phím này
         webKeyCount += 1
         defer { webLastKeyAt = client.currentTime() }
@@ -1804,6 +1813,7 @@ public final class Session {
         webPending = nil
         webPendingClient = nil
         client.insertText(String(typed))
+        if webInKey { webInsertedInKey = true }
         webNoteInsert(String(typed))
         let page = old + String(typed)
         log?("ô web: chưa chắc vị trí — \(page.debugDescription) tạm đi nguyên văn, chờ trang báo để sửa thành \(engine.displayed.debugDescription)")
@@ -1831,6 +1841,9 @@ public final class Session {
     @discardableResult
     private func webShadowFix(_ client: TextClient) -> Bool {
         guard let page = webShadow, web != nil else { return false }
+        // Chữ vừa chèn trong phím này chưa tới trang (Chromium gửi nó khi hết keyDown): lần thay theo vị trí phải đợi sau phím —
+        // hẹn giờ (`webShadowWatch`) hay đầu phím kế tiếp.
+        if webInKey, webInsertedInKey { return false }
         switch webRead(client, word: page) {
         case .current, .lag:
             guard webEvident(client) else { return false }
