@@ -135,6 +135,14 @@ JAVA_DIRECT_TESTS = APP_TESTS + [
     ("java-focus", "vni", "tie61ng{FOCUS:title}d9a38ng ca61p", "tiếng|đẳng cấp", 45),
     ("java-focus-back", "vni", "{FOCUS:title}tuye65t{FOCUS:area}d9o61i ", "đối |tuyệt", 45),
     ("java-title-fast", "vni", "{FOCUS:title}d9a38ng ca61p tuye65t d9o61i", "|đẳng cấp tuyệt đối", 3),
+    # Ô Java gõ trực tiếp chỉ nhận trọn một lần sửa mỗi phím (JetBrains Runtime: chữ của phím đè mất chữ bộ gõ vừa đưa — lab
+    # 44247794337: "keeper " ra "ke "; AWT gốc + trợ thủ: phím không ra chữ sau lần sửa bị bỏ). Lần sửa cuối từ đi cùng chữ
+    # của phím kết thúc từ; ⌫ làm dời dấu thì bộ gõ tự xoá; phím kết thúc từ không ra chữ (⏎) thì không sửa, chữ để nguyên.
+    ("telex-wordend", "telex", "user thuwor huow, keeper ", "user thuở huơ, keeper ", 45),
+    ("vni-wordend", "vni", "thu7o3 hu7o tie61 d9a38ng ", "thuở huơ tie61 đẳng ", 45),
+    ("telex-bs-tone", "telex", "hoafn{BS} ", "hòa ", 45),
+    ("vni-bs-tone", "vni", "toa1n{BS} ", "tóa ", 45),
+    ("telex-wordend-enter", "telex", "thuwor{RET}x ", "thửo\nx ", 45),
 ]
 # Có trợ thủ: focus ở một nút (ô không nhận chữ, như bảng / cây của Burp) thì phím đi thẳng — không có gì được soạn; quay
 # lại ô văn bản thì gõ tiếp như thường.

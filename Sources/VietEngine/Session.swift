@@ -228,6 +228,16 @@ public final class Session {
     /// cho biết con trỏ" hay "ô chưa xử lý xong phím" như với ô có bộ đệm chậm.
     public var cursorReliable = false
 
+    /// Ô chỉ nhận trọn vẹn MỘT lần sửa của bộ gõ cho mỗi phím, và chỉ khi bộ gõ giữ phím đó (ô Java gõ trực tiếp):
+    /// - JetBrains Runtime giữ chữ của lần `insertText` CUỐI trong lúc xử lý phím làm chữ của chính phím đó. Bộ gõ sửa từ rồi để
+    ///   phím đi thẳng thì chữ của phím (dấu cách) đè mất chữ sửa, vùng đã chọn bị thay bằng dấu cách — IME Lab 44247794337:
+    ///   Telex "keeper " ra "ke " (lần khôi phục cuối từ), cũng như "thuở " / "huơ ";
+    /// - AWT gốc + trợ thủ Java: sau lần sửa, phím không ra chữ (⏎, ⌫, mũi tên) của chính lần bấm đó bị AWT bỏ.
+    /// Ở các ô này: lần sửa cuối từ gộp chung chữ của phím kết thúc từ trong một lần thay và bộ gõ giữ phím; phím kết thúc từ
+    /// không ra chữ thì bỏ lần sửa cuối từ (chữ để nguyên như đang hiện, không mất gì); ⌫ làm dời dấu thì bộ gõ tự xoá luôn ký
+    /// tự cuối trong cùng lần thay.
+    public var singleEditPerKey = false
+
     public func reset() {
         resetWeb()
         engine.reset()
@@ -360,7 +370,11 @@ public final class Session {
             if combinedCommit, marked, !engine.isEmpty {
                 return endMarkedWord(with: keyText, client, clear: clearAfterCommit)
             }
-            breakWord(client)
+            if singleEditPerKey, !marked {
+                dropWord()                      // phím không ra chữ: không sửa gì trong phím này
+            } else {
+                breakWord(client)
+            }
             return false
         case .backspace:
             staleAt = nil
@@ -441,6 +455,9 @@ public final class Session {
                 if combinedCommit, marked {
                     return endMarkedWord(with: Self.producesText(ch) ? keyText ?? String(ch) : nil, client,
                                          clear: clearAfterCommit)
+                }
+                if singleEditPerKey, !marked {
+                    return breakWord(with: Self.producesText(ch) ? keyText ?? String(ch) : nil, client)
                 }
                 breakWord(client)
                 return false
@@ -1281,6 +1298,15 @@ public final class Session {
             if !engine.isEmpty { passedAt = sel.location }
             return false
         }
+        if singleEditPerKey {
+            // Ô chỉ nhận một lần sửa mỗi phím: bộ gõ xoá luôn ký tự cuối trong cùng lần thay và giữ phím ⌫ (để ⌫ đi thẳng sau
+            // lần thay thì JetBrains Runtime xoá cả vùng vừa chọn, AWT gốc bỏ luôn phím ⌫).
+            if replace(old, new, client, sel: sel) { return true }
+            engine.reset()
+            if untracked { untrackedLength = old.count - 1 }
+            if untracked, untrackedLength <= 0 { untracked = false }
+            return false
+        }
         // Xoá lùi làm đổi chữ còn lại (kiểu dấu cũ: "hoàn" ⌫ → "hòa"): thay phần đổi nhưng GIỮ ký tự cuối, rồi để chính ứng
         // dụng xoá nó như mọi phím ⌫ — không trả lời "đã xử lý" cho ⌫. Chromium / Electron vẫn chạy ⌫ của nó sau lần thay
         // của bộ gõ (IME Lab: "hoafn⌫" ra "hò").
@@ -1308,6 +1334,30 @@ public final class Session {
         if !tail.isEmpty || hadPreedit { client.insertText(tail) }
         if clear { client.setMarkedText("") }
         return false
+    }
+
+    /// Hết từ mà không sửa gì (`singleEditPerKey`, phím không ra chữ): chữ của từ để nguyên như đang hiện.
+    private func dropWord() {
+        guard !engine.isEmpty else { return }
+        if case let .replace(old, new) = engine.finishWord().action {
+            log?("hết từ bằng phím không ra chữ: không sửa \(old.debugDescription) → \(new.debugDescription) (ô chỉ nhận một lần sửa mỗi phím)")
+        }
+        untracked = false
+        endMarkedWord()
+    }
+
+    /// Hết từ ở ô chỉ nhận một lần sửa mỗi phím (`singleEditPerKey`): lần sửa cuối từ (khôi phục từ không phải tiếng Việt, "thửo"
+    /// → "thuở") đi cùng chữ `text` của phím kết thúc từ trong một lần thay — bộ gõ giữ phím (true). Không có gì để sửa thì
+    /// phím đi thẳng như thường (false).
+    private func breakWord(with text: String?, _ client: TextClient) -> Bool {
+        guard !engine.isEmpty else { return false }
+        guard let text, !text.isEmpty else { dropWord(); return false }
+        let action = engine.finishWord().action
+        defer { endMarkedWord() }
+        guard case let .replace(old, new) = action else { return false }
+        let done = replace(old, new + text, client)
+        untracked = false
+        return done
     }
 
     private func breakWord(_ client: TextClient) {

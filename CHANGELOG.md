@@ -87,6 +87,12 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   (cập nhật) lúc đang ở ứng dụng loại trừ thì kẹt tiếng Anh ở mọi ứng dụng.
 - Màn hình khoá hiện quá 2 phút mà thông báo mở khoá không tới (macOS 27): mở khoá xong máy ở lại ABC. Nay GTV tự dò tới khi
   hết khoá.
+- **Java gõ trực tiếp (IntelliJ / Android Studio và các ứng dụng JetBrains Runtime; Burp Suite / Ghidra có trợ thủ): từ được
+  sửa lúc hết từ bị mất chữ.** Telex gõ từ tiếng Anh rồi dấu cách (`keeper ` ra "ke ", `user ` ra "u "), `thuwor ` / VNI
+  `thu7o3 ` ("thuở" ra "th "), ⌫ làm dời dấu (`hoafn` ⌫ ra "hòan"). JetBrains Runtime chỉ giữ chữ của lần chèn cuối trong mỗi
+  phím — dấu cách đè mất chữ bộ gõ vừa đưa và xoá luôn vùng đã chọn; AWT gốc thì bỏ phím ⌫ / ⏎ bấm cùng lần sửa. Nay ở các ô
+  này lần sửa cuối từ đi chung với chữ của phím kết thúc từ trong một lần thay, ⌫ dời dấu do bộ gõ tự xoá. Phím kết thúc từ
+  không ra chữ (⏎, ⇥, mũi tên) thì không sửa gì trong phím đó: chữ để nguyên như đang hiện.
 - Trợ thủ Java: máy ảo Java 8–10 có dòng `-javaagent` không còn chết lúc khởi động (trợ thủ tự thôi ở đó); ô từ chối chữ có
   dấu (ô chỉ nhận số / hex) không còn bị bôi đen vùng vừa định thay — phím sau không xoá mất chữ; ô đang giữ focus chuyển
   từ chỉ đọc sang sửa được thì gõ có dấu ngay, không phải click sang ô khác rồi quay lại.

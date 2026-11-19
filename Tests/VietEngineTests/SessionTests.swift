@@ -884,6 +884,78 @@ private final class SharedGPUIView: TextClient {
     }
 }
 
+/// Ô Java gõ trực tiếp, mỗi phím chỉ nhận trọn vẹn một lần sửa của bộ gõ (`Session.singleEditPerKey`).
+/// - `jbr` (JetBrains Runtime, AWTView.insertText): vùng cần thay được chọn ngay; chữ của lần chèn CUỐI trong lúc xử lý phím
+///   thành chữ của chính phím đó (kể cả lần chèn của hệ thống cho phím đi thẳng: dấu cách đè mất chữ bộ gõ vừa đưa). Phím
+///   luôn được phát cho Java: ⌫ xoá vùng đang chọn (hay ký tự trước con trỏ), ⏎ thay vùng chọn bằng dòng mới, rồi mới tới chữ.
+/// - AWT gốc + trợ thủ: mỗi lần sửa của bộ gõ được áp dụng ngay; sau đó phím không ra chữ của chính lần bấm đó bị AWT bỏ.
+private final class JavaDirectField: TextClient {
+    var units: [UInt16] = []
+    var sel = (location: 0, length: 0)
+    let jbr: Bool
+    private var typed: String?        // JetBrains Runtime: actualCharacters
+    private var edited = false        // AWT gốc: đã có lần chèn của bộ gõ trong phím này
+    let session = Session()
+    var options = EngineOptions()
+
+    init(jbr: Bool, _ method: InputMethod) {
+        self.jbr = jbr
+        options.method = method
+        session.cursorReliable = true
+        session.singleEditPerKey = true
+    }
+
+    var text: String { String(decoding: units, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { sel }
+    func text(location: Int, length: Int) -> String? {
+        guard location >= 0, length >= 0, location + length <= units.count else { return nil }
+        return String(decoding: units[location..<location + length], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with s: String) {
+        guard location >= 0, location + length <= units.count else { XCTFail("thay ngoài văn bản"); return }
+        if jbr {
+            if length > 0 { sel = (location, length) }
+            typed = s
+        } else {
+            sel = (location, length)
+            over(s)
+            edited = true
+        }
+    }
+    func insertText(_ s: String) {
+        if jbr { typed = s } else { over(s); edited = true }
+    }
+    func setMarkedText(_ text: String) { XCTFail("ô Java gõ trực tiếp: không soạn") }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("không phải Qt") }
+
+    private func over(_ s: String) {
+        units.replaceSubrange(sel.location..<sel.location + sel.length, with: Array(s.utf16))
+        sel = (sel.location + s.utf16.count, 0)
+    }
+
+    /// "<" = ⌫, "\n" = ⏎.
+    func type(_ keys: String) {
+        for k in keys {
+            typed = nil
+            edited = false
+            if k == "<" {
+                let handled = session.handle(.backspace, self, options: options, forceMarked: false)
+                if jbr || !(handled || edited) {
+                    if sel.length == 0, sel.location > 0 { sel = (sel.location - 1, 1) }
+                    over("")
+                }
+            } else if k == "\n" {
+                let handled = session.handle(.char("\r"), self, options: options, forceMarked: false)
+                if jbr || !(handled || edited) { over("\n") }
+            } else if !session.handle(.char(k), self, options: options, forceMarked: false) {
+                if jbr { typed = String(k) } else { over(String(k)) }       // hệ thống chèn chữ của phím
+            }
+            if jbr, let t = typed { over(t) }
+        }
+    }
+}
+
 final class SessionTests: XCTestCase {
     func testTypingThroughSession() {
         let f = Field()
@@ -2809,6 +2881,48 @@ final class SessionTests: XCTestCase {
             XCTAssertEqual(g.text, want, "\(m) \(keys)")
             XCTAssertEqual(g.controls, ["\r"], keys)
             XCTAssertTrue(g.mark.isEmpty, keys)
+        }
+    }
+
+    // MARK: - Ô Java gõ trực tiếp: mỗi phím một lần sửa
+
+    /// Lần sửa cuối từ (khôi phục từ tiếng Anh, "thửo" → "thuở") đi cùng chữ của phím kết thúc từ (IME Lab: "keeper " ra "ke ").
+    func testJavaDirectWordEndFixupGoesWithTerminator() {
+        for jbr in [true, false] {
+            for (m, keys, want) in [
+                (InputMethod.telex, "keeper user thuwor huow, khuow.", "keeper user thuở huơ, khuơ."),
+                (.telex, "HDD ddc keeper Kanj ", "HĐ đc keeper Kạn "),
+                (.telex, "tieengs vieejt users ", "tiếng việt users "),
+                (.vni, "thu7o3 hu7o tie61 d9a38ng ", "thuở huơ tie61 đẳng "),
+                (.vni, "Vie65t Nam, d9a5i ho5c.", "Việt Nam, đại học."),
+            ] {
+                let f = JavaDirectField(jbr: jbr, m)
+                f.type(keys)
+                XCTAssertEqual(f.text, want, "\(jbr ? "JetBrains Runtime" : "trợ thủ") \(m) \(keys)")
+            }
+        }
+    }
+
+    /// ⌫ làm dời dấu ("hoàn" ⌫ → "hòa"): bộ gõ xoá luôn ký tự cuối trong cùng lần thay.
+    func testJavaDirectBackspaceMovesTone() {
+        for jbr in [true, false] {
+            for (m, keys, want) in [
+                (InputMethod.telex, "hoafn< ", "hòa "), (.vni, "toa1n< ", "tóa "), (.telex, "hoafn<<<", "h"),
+                (.vni, "tie61ng<<<e65t ", "tiệt "), (.telex, "tooi<<oi ", "toi "), (.vni, "d9a38ng<<<ang ", "đang "),
+            ] {
+                let f = JavaDirectField(jbr: jbr, m)
+                f.type(keys)
+                XCTAssertEqual(f.text, want, "\(jbr ? "JetBrains Runtime" : "trợ thủ") \(m) \(keys)")
+            }
+        }
+    }
+
+    /// Phím kết thúc từ không ra chữ (⏎): không sửa gì trong phím đó — chữ để nguyên như đang hiện, phím vẫn có tác dụng.
+    func testJavaDirectNonTextTerminatorLeavesWord() {
+        for jbr in [true, false] {
+            let f = JavaDirectField(jbr: jbr, .telex)
+            f.type("thuwor\nuser\nvieejt\nx ")
+            XCTAssertEqual(f.text, "thửo\nủe\nviệt\nx ", jbr ? "JetBrains Runtime" : "trợ thủ")
         }
     }
 }
