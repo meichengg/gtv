@@ -40,13 +40,15 @@ enum DebugLog {
                 try? fm.removeItem(at: old)
                 try? fm.moveItem(at: url, to: old)
             }
-            if let handle = try? FileHandle(forWritingTo: url) {
-                defer { try? handle.close() }
-                guard (try? handle.seekToEnd()) != nil else { return }
-                try? handle.write(contentsOf: data)
-            } else {
-                try? data.write(to: url, options: .atomic)
+            if !fm.fileExists(atPath: url.path) {
+                fm.createFile(atPath: url.path, contents: data)
+                return
             }
+            // File có mà không mở được (lỗi thoáng qua): bỏ dòng này — ghi đè cả file thì mất hết nhật ký trước đó.
+            guard let handle = try? FileHandle(forWritingTo: url) else { return }
+            defer { try? handle.close() }
+            guard (try? handle.seekToEnd()) != nil else { return }
+            try? handle.write(contentsOf: data)
         }
     }
 }

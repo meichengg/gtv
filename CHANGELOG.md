@@ -65,6 +65,21 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   của Chromium nên bỏ hẳn việc thêm dấu cho từ đó — và cho mọi từ sau, tới khi ngừng gõ hơn 1 s. Nay từ đó tạm đi nguyên văn
   rồi được thay bằng chữ có dấu ngay khi trang cho thấy nó nằm ở đâu (thường ở phím thứ hai, thứ ba), các từ sau gõ như
   thường. Chữ chèn trong một phím chưa tới trang thì không thay theo vị trí ngay trong phím đó (IME Lab: "đ9ẳng").
+- **VS Code (và mọi ô web dùng EditContext): gõ dở một từ, xoá bằng ⌥⌫ / ⌘⌫ rồi gõ lại thì ra số, các từ sau cũng vậy tới khi
+  ⏎ / ⌘Tab.** Ô EditContext chỉ báo lại chữ cho phía trình duyệt khi con trỏ đổi chỗ; phím dấu thay một chữ bằng chữ cùng độ
+  dài (ê → ế) nên bộ gõ đọc thấy chữ cũ hơn một lần sửa. Bấm phím xoá đúng lúc đó thì bản trước kết luận "không biết trang đã
+  báo gì" và mọi từ sau đi nguyên văn — không còn đường nào lấy lại bằng chứng vị trí khi gõ liền tay. Nay:
+  - bộ gõ nhận ra bộ đệm đang ở một trạng thái cũ của chính chuỗi vừa gõ (chậm vài phím / lần sửa cũng được) và biết chắc
+    khi nào trang đã báo tác dụng của phím xoá — từ gõ lại được sửa dấu ngay như thường;
+  - đầu chuỗi chưa đáng tin (có click / phím tắt bộ gõ không thấy ngay trước) thì bộ gõ lấy bằng chứng từ chính nội dung:
+    bộ đệm cho thấy trọn chữ đang gõ ở cùng một chỗ qua hai phím liền (hoặc sau khi ngừng gõ 1 s) là đủ;
+  - từ lỡ đi nguyên văn trong lúc chờ bằng chứng không bị bỏ nữa: có bằng chứng thì nó và các từ sau nó được thay lại bằng
+    chữ có dấu trong một lần sửa;
+  - phím dấu đầu tiên của một chuỗi chưa đáng tin chỉ bị giữ tối đa 70 ms (trước: 250 ms).
+  Bằng chứng kiểu cũ "bộ đệm khớp một trạng thái cũ của chuỗi, dài từ hai ký tự" bị siết thành "khớp trọn chuỗi": dạng cũ có
+  thể trùng hợp với đuôi của từ vừa gõ lại và sửa nhầm chỗ.
+- Bật nhật ký (`trace`): ghi thêm quyết định của bộ gõ ở ô web (chuỗi mới đáng tin hay chưa, phím đi nguyên văn chờ trang, sửa
+  lại khi có bằng chứng) — vẫn không ghi chữ đã gõ. File nhật ký có sẵn mà không mở được thì bỏ dòng đó, không ghi đè cả file.
 - Ô thường (gõ trực tiếp): mất dấu từ đang gõ đúng ở phím kết thúc từ (ô chat tự xoá sau khi bấm Gửi rồi tin sau mở đầu bằng
   dấu ngoặc / nháy; ô báo chậm lúc bấm dấu cách liền tay) không còn làm cả từ SAU đi nguyên văn. Từ đang đi nguyên văn bị
   ⌫ hết rồi gõ lại thì gõ như thường.

@@ -161,10 +161,24 @@ JAVA_COMPOSE_TESTS = APP_TESTS + [
 # Gõ ngay khi cửa sổ vừa được kích hoạt (như TinyCast: ⌘Space rồi gõ liền): phím đầu có thể tới trước lời gọi setValue mà
 # InputMethodKit gửi sau mỗi lần gắn bộ gõ — lỗi cũ: "d9a38ng" ra "d9ẳng".
 RACE = ("vni", "d9a38ng", "đẳng", 10)
+# Gõ dở một từ (phím cuối là phím dấu — lần thay cùng độ dài), xoá bằng ⌥⌫ / ⌘⌫ rồi gõ lại: nhật ký máy người dùng 2026-11-19
+# (VS Code 1.147, Zalo) — từ gõ lại ra số, các từ sau cũng vậy tới khi ⏎ / ⌘Tab. Ô EditContext (VS Code) chỉ báo lại cho bộ đệm
+# của Chromium khi con trỏ đổi chỗ: sau phím dấu bộ đệm còn chữ cũ.
+WEB_PARTIAL_TESTS = [
+    ("vni-optbs-partial", "vni", "d9a38ng tie61{WAIT400}{OPTBS}{WAIT250}tie61ng vie65t ", "đẳng tiếng việt ", 100),
+    ("vni-optbs-partial-fast", "vni", "d9a38ng tie61{OPTBS}tie61ng vie65t ", "đẳng tiếng việt ", 35),
+    ("vni-cmdbs-partial", "vni", "xin d9a38ng tie61{WAIT400}{CMDBS}{WAIT250}tie61ng vie65t ", "tiếng việt ", 100),
+    ("telex-optbs-partial", "telex", "ddawngr tiees{WAIT400}{OPTBS}{WAIT250}tieengs vieejt ", "đẳng tiếng việt ", 100),
+    ("vni-optbs-partial-loop", "vni", "xin tie61{OPTBS}tie61{OPTBS}tie61ng vie65{OPTBS}vie65t ", "xin tiếng việt ", 60),
+]
+# Ô EditContext / contenteditable: không có ⏎ / mũi tên / ⌘A của các bài chung (trang thử tự xử lý phím theo cách riêng).
+WEB_EDIT_TESTS = [t for t in APP_TESTS if t[0] in ("vni-words", "vni-fast", "telex-words", "vni-backspace", "vni-punct",
+                                                    "vni-bs-burst", "vni-fast3", "vni-abbrev", "telex-abbrev")] \
+    + DELETE_RETYPE_TESTS + WEB_PARTIAL_TESTS
 # Chrome (Chromium: cũng là Electron, VS Code, Claude desktop…): gõ rất nhanh (bộ đệm văn bản phía trình duyệt cập nhật
 # chậm sau lần thay của bộ gõ: có thể mất dấu) và ⌫ làm dời dấu thanh (kiểu cũ: "hoàn" ⌫ → "hòa"; Chromium có thể vừa
 # nhận lần thay của bộ gõ vừa tự xoá).
-CHROME_TESTS = APP_TESTS + DELETE_RETYPE_TESTS + [
+CHROME_TESTS = APP_TESTS + DELETE_RETYPE_TESTS + WEB_PARTIAL_TESTS + [
     ("telex-fast8", "telex", "Vieetj Nam ddaij hocj tieengs Vieetj nguwowif ", "Việt Nam đại học tiếng Việt người ", 8),
     ("vni-fast6", "vni", "Vie65t Nam d9a5i ho5c tie61ng Vie65t ngu7o72i ", "Việt Nam đại học tiếng Việt người ", 6),
     ("telex-bs-tone", "telex", "hoafn{BS} ", "hòa ", 45),
@@ -608,16 +622,78 @@ class _Web:
 <textarea id=t autofocus spellcheck=false autocomplete=off autocorrect=off
  style="width:640px;height:160px;font-size:18px"></textarea>
 <script>
+const q = new URLSearchParams(location.search);
 const t = document.getElementById('t');
-const send = () => fetch('/t', {method: 'POST', body: t.value});
+let value = () => t.value, clear = () => { t.value = ''; }, focus = () => t.focus();
+const send = () => fetch('/t', {method: 'POST', body: value()});
 // ?slow=N: trang bận N ms ở mỗi phím (như VS Code / Zalo lúc nặng) — bộ đệm của Chromium chậm vài phím.
-const slow = +(new URLSearchParams(location.search).get('slow') || 0);
-if (slow) t.addEventListener('keydown', () => { const e = performance.now() + slow; while (performance.now() < e) {} });
-t.addEventListener('input', send);
+const slow = +(q.get('slow') || 0);
+const box = 'width:640px;height:160px;font:18px monospace;border:1px solid #888;white-space:pre-wrap;outline:none';
+if (q.get('ec')) {
+  // ?ec=1: ô dùng EditContext như VS Code (từ 1.101): trang tự giữ chữ + con trỏ, tự xử lý ⌫ / ⌥⌫ / ⌘⌫ / ⏎ ở keydown, rồi
+  // đặt lại chữ và vùng chọn của EditContext theo mô hình. Chromium chỉ báo lại cho phía trình duyệt khi vùng chọn đổi:
+  // lần thay cùng độ dài của bộ gõ (phím dấu) để bộ đệm giữ chữ cũ.
+  const e = document.createElement('div');
+  e.tabIndex = 0; e.style = box;
+  t.replaceWith(e);
+  const ec = new EditContext();
+  e.editContext = ec;
+  let text = '', caret = 0;
+  const sync = () => {
+    ec.updateText(0, ec.text.length, text);
+    ec.updateSelection(caret, caret);
+    e.textContent = text;
+    send();
+  };
+  ec.addEventListener('textupdate', ev => {
+    text = text.slice(0, ev.updateRangeStart) + ev.text + text.slice(ev.updateRangeEnd);
+    caret = ev.selectionStart;
+    setTimeout(sync, 0);
+  });
+  window.gtvState = () => ({text, caret});
+  e.addEventListener('keydown', ev => {
+    let i = caret;
+    if (ev.key === 'Backspace' && ev.altKey) {
+      while (i > 0 && text[i - 1] === ' ') i--;
+      while (i > 0 && text[i - 1] !== ' ' && text[i - 1] !== '\\n') i--;
+      text = text.slice(0, i) + text.slice(caret); caret = i;
+    } else if (ev.key === 'Backspace' && ev.metaKey) {
+      while (i > 0 && text[i - 1] !== '\\n') i--;
+      text = text.slice(0, i) + text.slice(caret); caret = i;
+    } else if (ev.key === 'Backspace') {
+      if (caret > 0) { text = text.slice(0, caret - 1) + text.slice(caret); caret--; }
+    } else if (ev.key === 'Enter') {
+      text = text.slice(0, caret) + '\\n' + text.slice(caret); caret++;
+    } else if (ev.key === 'ArrowLeft') {
+      if (caret > 0) caret--;
+    } else if (ev.key === 'ArrowRight') {
+      if (caret < text.length) caret++;
+    } else {
+      return;
+    }
+    ev.preventDefault();
+    sync();
+  });
+  value = () => text;
+  clear = () => { text = ''; caret = 0; sync(); };
+  focus = () => e.focus();
+} else if (q.get('ce')) {
+  // ?ce=1: ô contenteditable như ô chat của Zalo / Claude / Slack.
+  const e = document.createElement('div');
+  e.contentEditable = 'true'; e.spellcheck = false; e.style = box;
+  t.replaceWith(e);
+  value = () => e.innerText.replace(/\\u00a0/g, ' ').replace(/\\n$/, '');
+  clear = () => { e.textContent = ''; };
+  focus = () => e.focus();
+  e.addEventListener('input', send);
+} else {
+  if (slow) t.addEventListener('keydown', () => { const e = performance.now() + slow; while (performance.now() < e) {} });
+  t.addEventListener('input', send);
+}
 setInterval(async () => {
-  t.focus();
+  focus();
   const c = await (await fetch('/cmd')).text();
-  if (c === 'clear') { t.value = ''; send(); }
+  if (c === 'clear') { clear(); send(); }
 }, 100);
 fetch('/ready', {method: 'POST', body: '1'});
 </script>"""
@@ -683,15 +759,15 @@ def run_app_suite(app, only=None, tag=None):
                 tests = BLIND_TESTS
             else:
                 tests = APP_TESTS + DELETE_RETYPE_TESTS
-        elif app in ("chrome", "chromeslow"):
+        elif app in ("chrome", "chromeslow", "chromeec", "chromece"):
             if not pathlib.Path(CHROME).exists():
                 return [{"terminal": app, "test": "-", "error": "chưa cài Chrome"}]
             # Chrome cài bằng Homebrew cask có cờ quarantine: hộp thoại Gatekeeper "downloaded from the Internet" chặn lab.
             if sh(["xattr", "-dr", "com.apple.quarantine", CHROME]).returncode:
                 sh(["sudo", "-n", "xattr", "-dr", "com.apple.quarantine", CHROME])
             web = _Web(out_file, ready)
-            tests = CHROME_TESTS if app == "chrome" else CHROME_SLOW_TESTS
-            query = "" if app == "chrome" else "?slow=100"
+            tests = {"chrome": CHROME_TESTS, "chromeslow": CHROME_SLOW_TESTS}.get(app, WEB_EDIT_TESTS)
+            query = {"chrome": "", "chromeslow": "?slow=100", "chromeec": "?ec=1", "chromece": "?ce=1"}[app]
             sh(["open", "-na", CHROME, "--args", "--user-data-dir=/tmp/l/chrome-profile", "--no-first-run",
                 "--no-default-browser-check", "--disable-features=Translate", "--new-window",
                 f"http://127.0.0.1:{web.port}/{query}"])
@@ -716,7 +792,7 @@ def run_app_suite(app, only=None, tag=None):
             shot(f"{app}-not-ready")
             return [{"terminal": app, "test": "-", "error": f"ô {app} không sẵn sàng (front={front()}, pid={front_pid()})"}]
         time.sleep(1.0)
-        if app in ("chrome", "chromeslow"):
+        if app.startswith("chrome"):
             # Chrome vừa mở còn ì (phím tới trễ cả giây): gõ nháp rồi xoá trước khi chấm.
             time.sleep(3)
             configure("vni", "auto")
@@ -761,6 +837,8 @@ def run_app_suite(app, only=None, tag=None):
                         r["info"] = "có phím soạn bằng marked text"
                 if got != expect:
                     r["trace"] = ime_trace(mark)
+                    if app.startswith("chrome"):
+                        r["session"] = [l.split(" ", 1)[-1][:200] for l in log_since(mark).splitlines() if "session:" in l][:60]
             except Exception as e:  # noqa: BLE001
                 r["error"] = str(e)
                 shot(f"{app}-{name}-error")
@@ -782,12 +860,92 @@ def run_app_suite(app, only=None, tag=None):
                 r["info"] = "ô nhận: " + " | ".join(seen)[:300]
         if proc:
             proc.terminate()
-        elif app in ("chrome", "chromeslow"):
+        elif app.startswith("chrome"):
             sh(["pkill", "-f", "chrome-profile"])
         else:
             sh(["pkill", "-f", str(FIELD_APP / "Contents/MacOS/field")])
         if web:
             web.close()
+        time.sleep(1)
+    return results
+
+
+VSCODE = "/Applications/Visual Studio Code.app"
+VSCODE_ID = "com.microsoft.VSCode"
+
+
+def run_vscode():
+    """VS Code thật (ô soạn thảo dùng EditContext): gõ vào một file văn bản, đọc lại qua file (tự lưu sau 0,2 s)."""
+    app = "vscode"
+    if not pathlib.Path(VSCODE).exists():
+        return [{"terminal": app, "test": "-", "error": "chưa cài VS Code"}]
+    sh(["xattr", "-dr", "com.apple.quarantine", VSCODE])
+    profile = L / "vscode-profile"
+    (profile / "User").mkdir(parents=True, exist_ok=True)
+    (profile / "User" / "settings.json").write_text(json.dumps({
+        "files.autoSave": "afterDelay", "files.autoSaveDelay": 200, "workbench.startupEditor": "none",
+        "security.workspace.trust.enabled": False, "telemetry.telemetryLevel": "off", "update.mode": "none",
+        "editor.quickSuggestions": {"other": "off", "comments": "off", "strings": "off"},
+        "editor.wordBasedSuggestions": "off", "editor.acceptSuggestionOnEnter": "off", "editor.autoClosingBrackets": "never",
+        "editor.autoClosingQuotes": "never", "chat.commandCenter.enabled": False, "window.restoreWindows": "none",
+        "workbench.tips.enabled": False, "extensions.ignoreRecommendations": True, "files.insertFinalNewline": False,
+        "window.commandCenter": False, "workbench.secondarySideBar.defaultVisibility": "hidden",
+    }))
+    out_file = L / "vscode.txt"
+    out_file.write_text("")
+    sh(["open", "-na", VSCODE, "--args", f"--user-data-dir={profile}", "--disable-extensions", "--skip-welcome",
+        "--skip-release-notes", "--disable-workspace-trust", "--new-window", str(out_file)])
+    results = []
+    try:
+        for _ in range(120):
+            if front() == VSCODE_ID:
+                break
+            time.sleep(0.5)
+        else:
+            shot("vscode-not-ready")
+            return [{"terminal": app, "test": "-", "error": f"VS Code không ra phía trước (front={front()})"}]
+        time.sleep(10)
+        shot("vscode-opened")
+        bid = VSCODE_ID
+
+        def clear():
+            for attempt in range(6):
+                drv(bid, "{CMDA}{BS}", 60)
+                for _ in range(40):
+                    if read_text(out_file) == "":
+                        return
+                    time.sleep(0.05)
+            raise RuntimeError(f"không xoá được ô VS Code (còn {read_text(out_file)!r})")
+
+        configure("vni", "auto")
+        ensure_mode(bid, "vi")
+        drv(bid, "khoi dong ", 60)
+        time.sleep(2)
+        clear()
+        for name, method, keys, expect, ms in WEB_EDIT_TESTS:
+            r = {"terminal": app, "style": "-", "test": name, "expect": expect}
+            try:
+                if front() != VSCODE_ID:
+                    raise RuntimeError(f"VS Code không ở phía trước (front={front()})")
+                configure(method, "auto")
+                ensure_mode(bid, "vi")
+                clear()
+                time.sleep(1.2)                     # ngừng gõ quá 1 s: từ đầu của bài bắt đầu như sau một lúc nghỉ
+                mark = log_mark()
+                drv(bid, keys, ms)
+                time.sleep(1.2)
+                got = read_text(out_file)
+                r.update({"final": got, "pass": got == expect, "shot": shot(f"{app}-{name}")})
+                r.update(ime_seen(mark, bid))
+                if got != expect:
+                    r["trace"] = [l[:200] for l in log_since(mark).splitlines() if "session:" in l or " phím " in l][:80]
+            except Exception as e:  # noqa: BLE001
+                r["error"] = str(e)
+                shot(f"{app}-{name}-error")
+            results.append(r)
+            print(f"{app}/{name}", json.dumps(r, ensure_ascii=False), flush=True)
+    finally:
+        sh(["pkill", "-f", "vscode-profile"])
         time.sleep(1)
     return results
 
@@ -1018,7 +1176,7 @@ def main():
         suffix = set_counter_mode(counter_mode)
         for app in os.environ.get("APPS", "field blind swing chrome").split():
             try:
-                part = run_app_suite(app)
+                part = run_vscode() if app == "vscode" else run_app_suite(app)
             except Exception as e:  # noqa: BLE001
                 part = [{"terminal": app, "test": "-", "error": str(e)}]
                 shot(f"{app}{suffix}-fatal")

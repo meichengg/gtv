@@ -132,6 +132,9 @@ final class GTVInputController: IMKInputController {
         let s = Session()
         #if DEBUG
         s.log = { DebugLog.write("session: \($0)") }
+        #else
+        // Bản phát hành: chỉ các quyết định của bộ gõ ở ô web, không kèm chữ người dùng gõ (ghi khi bật `trace`).
+        s.trace = { DebugLog.event("ô web: \($0)") }
         #endif
         return s
     }()

@@ -189,11 +189,18 @@ private final class ChromiumField: TextClient {
         guard lo < hi else { return length == 0 ? "" : nil }
         return String(decoding: cUnits[lo..<hi], as: UTF16.self)
     }
+    /// Ô dùng EditContext (VS Code từ 1.101): trang chỉ báo lại cho bộ đệm khi CON TRỎ đổi chỗ (edit_context.cc: `SetSelection`
+    /// thoát sớm nếu vùng chọn không đổi, không gọi `DidChangeSelection`). Lần thay của bộ gõ bằng chữ cùng độ dài (hầu hết
+    /// phím dấu: "ê" → "ế") để con trỏ nguyên chỗ: bộ đệm còn giữ chữ CŨ tới lần đổi con trỏ kế tiếp.
+    var editContext = false
+
     func replaceText(location: Int, length: Int, with t: String) {
         guard location <= units.count else { return }
         let lo = location, hi = min(location + length, units.count)
+        let before = caret
         units.replaceSubrange(lo..<hi, with: Array(t.utf16))
         if caret >= hi { caret += t.utf16.count - (hi - lo) } else if caret > lo { caret = lo + t.utf16.count }
+        if editContext, caret == before { return }
         snapshot()
     }
     /// Đang trong keyDown của một phím (bộ gõ đang xử lý nó).
@@ -1533,7 +1540,7 @@ final class SessionTests: XCTestCase {
             (.telex, { f in f.graphemeBackspace = true; f.type("haha "); f.idle(); f.pageSet("haha 🤦‍♂️"); f.finish(); f.idle()
                        f.type("xy⌫⌫⌫⌫aa ") }, ["hahaâ ", "hahaaa "]),
             (.vni, { f in f.graphemeBackspace = true; f.type("ban "); f.idle(); f.pageSet("ban 🏳️‍🌈"); f.finish(); f.idle()
-                       f.type("xy⌫⌫⌫⌫a1 ") }, ["bána ", "bana1 ", "bán "]),
+                       f.type("xy⌫⌫⌫⌫a1 ") }, ["bána ", "bana1 ", "bán ", "baná "]),
         ]
         for (i, (method, run, ok)) in cases.enumerated() {
             for lag in 0...6 {
@@ -2924,5 +2931,119 @@ final class SessionTests: XCTestCase {
             f.type("thuwor\nuser\nvieejt\nx ")
             XCTAssertEqual(f.text, "thửo\nủe\nviệt\nx ", jbr ? "JetBrains Runtime" : "trợ thủ")
         }
+    }
+
+    // MARK: - Ô web dùng EditContext (VS Code): bộ đệm còn chữ cũ sau lần sửa cùng độ dài
+
+    /// Nhật ký máy người dùng (VS Code 1.147, 2026-11-19): gõ "tie61" (phím cuối là phím dấu — lần thay cùng độ dài, EditContext
+    /// không báo lại chữ mới), ⌥⌫, gõ lại "tie61…" thì số 6 bị giữ 250 ms rồi ra thô, số 1 đi thẳng, các từ sau cũng thô tới
+    /// khi ⏎ / ⌘Tab. Bộ đệm lúc bấm ⌥⌫ là trạng thái ngay trước lần sửa cuối của chính chuỗi đó: vẫn biết trang còn gì chưa báo.
+    func testEditContextRetypeAfterDeleteWord() {
+        for (method, first, again, want) in [
+            (InputMethod.vni, "d9a38ng tie61", "tie61ng vie65t ", "đẳng tiếng việt "),
+            (.vni, "xin tuye65", "tuye65t d9o61i ", "xin tuyệt đối "),
+            (.vni, "to6i ye6u", "ye6u tie61ng Vie65t ", "tôi yêu tiếng Việt "),
+            (.telex, "ddawngr tiees", "tieengs vieejt ", "đẳng tiếng việt "),
+            (.telex, "xin tuyeetj", "tuyeetj ddoois ", "xin tuyệt đối "),
+        ] {
+            for step in [40.0, 100, 250] {
+                let f = web(method, step: step)
+                f.editContext = true
+                f.type(first)
+                f.deleteWord()
+                f.type(again)
+                f.finish()
+                XCTAssertEqual(f.text, want, "\(method) \(first) ⌥⌫ \(again), \(step) ms")
+            }
+        }
+    }
+
+    func testEditContextRetypeAfterDeleteLine() {
+        for (method, first, again, want) in [
+            (InputMethod.vni, "xin d9a38ng tie61", "tie61ng vie65t d9a38ng ca61p ", "tiếng việt đẳng cấp "),
+            (.vni, "d9a38ng ca61p", "d9a38ng ca61p tuye65t d9o61i ", "đẳng cấp tuyệt đối "),
+            (.telex, "xin ddawngr tiees", "tieengs vieejt ddawngr caaps ", "tiếng việt đẳng cấp "),
+        ] {
+            for step in [40.0, 100, 250] {
+                let f = web(method, step: step)
+                f.editContext = true
+                f.type(first)
+                f.deleteLine()
+                f.type(again)
+                f.finish()
+                XCTAssertEqual(f.text, want, "\(method) \(first) ⌘⌫ \(again), \(step) ms")
+            }
+        }
+    }
+
+    /// Xoá rồi gõ lại nhiều lượt liền, kể cả ⌥⌫ hai lần, ở ô EditContext.
+    func testEditContextRepeatedDeleteAndRetype() {
+        for method in [InputMethod.vni, .telex] {
+            let f = web(method)
+            f.editContext = true
+            let word = method == .vni ? "tie61" : "tiees"
+            let full = method == .vni ? "tie61ng vie65t" : "tieengs vieejt"
+            f.type("xin ")
+            for _ in 0..<5 {
+                f.type(word)
+                f.deleteWord()
+                f.type(full)
+                XCTAssertEqual(f.text, "xin tiếng việt", "\(method)")
+                f.deleteWord()
+                f.deleteWord()
+                XCTAssertEqual(f.text, "xin ", "\(method)")
+            }
+            f.type(full + " ")
+            XCTAssertEqual(f.text, "xin tiếng việt ", "\(method)")
+        }
+    }
+
+    /// Gõ thường ở ô EditContext (không xoá gì): như mọi ô web.
+    func testEditContextPlainTyping() {
+        let v = web(.vni, step: 60)
+        v.editContext = true
+        v.type("To6i ye6u tie61ng Vie65t, d9e5p la81m! Ngu7o7i2 ta ba3o ra82ng… d9u7o7ng2 xa. ")
+        XCTAssertEqual(v.text, "Tôi yêu tiếng Việt, đẹp lắm! Người ta bảo rằng… đường xa. ")
+        let t = web(.telex, step: 60)
+        t.editContext = true
+        t.type("Tooi yeeu tieengs Vieejt, ddepj lawms! Nguwowif ta baor rawngf dduwowngf xa. ")
+        XCTAssertEqual(t.text, "Tôi yêu tiếng Việt, đẹp lắm! Người ta bảo rằng đường xa. ")
+    }
+
+    // MARK: - Ô web: đầu chuỗi chưa đáng tin vẫn lấy lại được bằng chứng khi trang báo kịp
+
+    /// Phím xoá tới kèm dấu hiệu có click / phím tắt bộ gõ không thấy (sổ phím): đầu chuỗi sau đó chưa đáng tin. Trang báo kịp
+    /// thì bộ đệm cho thấy trọn chữ đang gõ ở cùng một chỗ qua hai phím liền — đủ bằng chứng: từ đang đi nguyên văn và từ còn
+    /// nợ đều được sửa, không từ nào ở lại dạng thô tới ⏎ / ⌘Tab như trước.
+    func testChromiumUntrustedStartRecovers() {
+        for gap in [KeyGap.bypassed, .interrupted] {
+            for (method, first, again, want) in [
+                (InputMethod.vni, "xin tie61", "tie61ng vie65t d9a38ng ", "xin tiếng việt đẳng "),
+                (.vni, "xin tie61", "d9a38ng ca61p tuye65t ", "xin đẳng cấp tuyệt "),
+                (.telex, "xin tiees", "tieengs vieejt ddawngr ", "xin tiếng việt đẳng "),
+            ] {
+                for step in [40.0, 100] {
+                    let f = web(method, step: step)
+                    f.type(first)
+                    f.deleteWord(gap: gap)
+                    f.type(again)
+                    f.finish()
+                    XCTAssertEqual(f.text, want, "\(method) \(gap) \(again), \(step) ms")
+                }
+            }
+        }
+    }
+
+    /// Từ còn nằm nguyên văn lúc ngừng gõ: quá `webIdleBreak` mà bộ đệm cho thấy trọn nó thì được sửa, không cần gõ tiếp.
+    func testChromiumRawWordFixedAfterIdle() {
+        let f = web(.vni, step: 60)
+        f.type("xin tie61")
+        f.deleteWord(gap: .bypassed)
+        f.type("d9a")
+        f.idle()
+        f.idle()
+        XCTAssertEqual(f.text, "xin đa")
+        f.type("38ng ")
+        XCTAssertEqual(f.text, "xin đẳng ")
     }
 }
