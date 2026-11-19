@@ -78,6 +78,15 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   - phím dấu đầu tiên của một chuỗi chưa đáng tin chỉ bị giữ tối đa 70 ms (trước: 250 ms).
   Bằng chứng kiểu cũ "bộ đệm khớp một trạng thái cũ của chuỗi, dài từ hai ký tự" bị siết thành "khớp trọn chuỗi": dạng cũ có
   thể trùng hợp với đuôi của từ vừa gõ lại và sửa nhầm chỗ.
+- **Ô web (VS Code, Claude, Zalo, Chrome…): gõ lại sau ⌘⌫ / ⌥⌫ / click thì thấy chữ thô ("d9…") hiện ra rồi mới nhảy thành chữ
+  có dấu.** Sau một phím bộ gõ không biết tác dụng mà con trỏ của bộ đệm không đổi (⌘⌫ bấm hai lần — lần sau không còn gì để
+  xoá, nhiều phím tắt liền nhau, click) thì không có gì cho biết trang đã xử lý nó chưa; bản trước cho phím dấu đi nguyên
+  văn rồi sửa lại khi có bằng chứng — đúng chữ nhưng thấy nhảy. Nay ngay sau phím ĐẦU của một chuỗi chưa có bằng chứng, bộ
+  gõ hỏi ô một câu mà Chromium phải hỏi sang trang rồi chờ trả lời ("ký tự ở điểm này trên màn hình" — câu bộ gõ có cửa sổ
+  gợi ý vẫn hỏi; không gửi phím, không đổi gì trong trang). Có trả lời nghĩa là trang đã xử lý xong mọi phím / click trước
+  đó; một nhịp sau, con trỏ của bộ đệm là con trỏ thật. Việc này nằm gọn giữa hai phím (chừng 15 ms), nên phím dấu kế tiếp
+  sửa đúng chỗ ngay — không chữ thô nào ra trang. Cũng nhờ vậy phím dấu là phím thứ hai của từ ("đ", "á") sau một lúc nghỉ
+  ra dấu ngay, không còn bị giữ tới phím kế tiếp. Trang treo không trả lời thì bộ gõ về cách cũ (không bao giờ sửa nhầm chỗ).
 - Bật nhật ký (`trace`): ghi thêm quyết định của bộ gõ ở ô web (chuỗi mới đáng tin hay chưa, phím đi nguyên văn chờ trang, sửa
   lại khi có bằng chứng) — vẫn không ghi chữ đã gõ. File nhật ký có sẵn mà không mở được thì bỏ dòng đó, không ghi đè cả file.
 - Ô thường (gõ trực tiếp): mất dấu từ đang gõ đúng ở phím kết thúc từ (ô chat tự xoá sau khi bấm Gửi rồi tin sau mở đầu bằng

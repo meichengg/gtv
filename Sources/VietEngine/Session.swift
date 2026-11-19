@@ -1618,8 +1618,10 @@ public final class Session {
         defer {
             let now = client.currentTime()
             webLastKeyAt = now
-            if case .char = key {} else { webUnknownAt = now }
-            if dropped { webUnknownAt = now }
+            // Phím ra chữ thường thì bộ gõ biết tác dụng; ⏎ / ⇥ / mũi tên / ⌫ / phím tắt / click thì không.
+            var known = false
+            if case let .char(ch) = key, Self.producesText(ch), !"\r\n\t".contains(ch) { known = true }
+            if !known || dropped { webUnknownAt = now }
             // Chuỗi chưa có bằng chứng vị trí: hỏi trang ngay sau phím này, để phím kế tiếp đã biết chắc vị trí.
             if case .char = key, let chain = web, !chain.proven { webSettleSoon(client) }
         }
@@ -2132,6 +2134,7 @@ public final class Session {
         webWitness = nil
         web = chain
         webNoteSuffix(client, at: sel.location)
+        log?("ô web: trang đã trả lời — vị trí chắc chắn\(delta == 0 ? "" : " (lệch \(delta))")")
         trace?("trang đã trả lời: vị trí chắc chắn")
         return true
     }

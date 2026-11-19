@@ -361,7 +361,7 @@ def web_flash(mark):
         if us:
             out["settle"]["probe_us"] = [min(us), sorted(us)[len(us) // 2], max(us)]
         out["settle"]["sample"] = probes[:3]
-    out["anchored"] = sum("vị trí chắc chắn" in l or "trang cho thấy chuỗi bắt đầu" in l for l in lines)
+    out["anchored"] = sum("trang đã trả lời — vị trí chắc chắn" in l for l in lines)
     return out
 
 
