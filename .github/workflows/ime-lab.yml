@@ -192,6 +192,16 @@ jobs:
           DRIVER_VERBOSE=1 /tmp/l/drv - 10 "" || true
           /tmp/l/is list | grep -q "com.gtv.inputmethod.GTV.vi enabled=true" || { echo "::error::GTV chưa được bật"; exit 1; }
 
+      # VS Code thật (ô soạn thảo dùng EditContext) — chỉ khi lab.env có "vscode" trong APPS.
+      - name: Install VS Code
+        if: env.MODE == 'full'
+        run: |
+          if grep -qE '^APPS=.*vscode' tools/lab/lab.env 2>/dev/null; then
+            brew install --cask visual-studio-code >/dev/null || echo "::warning::không cài được VS Code"
+            xattr -dr com.apple.quarantine "/Applications/Visual Studio Code.app" 2>/dev/null || true
+            defaults read "/Applications/Visual Studio Code.app/Contents/Info.plist" CFBundleShortVersionString || true
+          fi
+
       - name: Run lab
         if: env.MODE == 'full'
         env:
