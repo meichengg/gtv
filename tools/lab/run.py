@@ -356,22 +356,33 @@ def web_flash(mark):
         ms = [int(m.group(1)) for l in asked for m in [re.search(r"sau (\d+) ms", l)] if m]
         out["settle"] = {"ok": sum(") được sau" in l for l in asked), "fail": sum("không được" in l for l in asked),
                          "max_ms": max(ms) if ms else None}
-        probes = [l.split(" hỏi đồng bộ: ", 1)[1][:120] for l in lines if " hỏi đồng bộ: " in l]
-        us = [int(m.group(1)) for l in probes for m in [re.search(r"(\d+) µs", l)] if m]
-        if us:
-            out["settle"]["probe_us"] = [min(us), sorted(us)[len(us) // 2], max(us)]
+        # Hai câu hỏi của một lần hỏi đồng bộ, đo riêng: chỗ con trỏ trên màn hình, rồi "ký tự ở điểm này" (câu Chromium phải
+        # hỏi sang trang). Câu nào mất cỡ thời gian trang đang bận thì chính câu đó chờ trang.
+        probes = [l.split(" hỏi đồng bộ: ", 1)[1][:160] for l in lines if " hỏi đồng bộ: " in l]
+        both = [m for l in probes for m in [re.search(r"\) (\d+) µs; ký tự ở điểm=(-?\d+) (\d+) µs", l)] if m]
+        if both:
+            line_us = sorted(int(m.group(1)) for m in both)
+            index_us = sorted(int(m.group(3)) for m in both)
+            out["settle"]["line_us"] = [line_us[0], line_us[len(line_us) // 2], line_us[-1]]
+            out["settle"]["index_us"] = [index_us[0], index_us[len(index_us) // 2], index_us[-1]]
+            out["settle"]["index_values"] = sorted({int(m.group(2)) for m in both})[:8]
         out["settle"]["sample"] = probes[:3]
     out["anchored"] = sum("trang đã trả lời — vị trí chắc chắn" in l for l in lines)
     return out
 
 
-def set_settle(on):
-    """Lượt đối chứng: bản Debug bỏ câu hỏi đồng bộ (`labNoSettle`) — bộ gõ gõ như trước khi có nó."""
+def set_settle(on, probe=None):
+    """Lượt đối chứng: bản Debug bỏ câu hỏi đồng bộ (`labNoSettle`) — bộ gõ gõ như trước khi có nó. `probe`: thứ tự hai câu hỏi
+    ("index-first": hỏi "ký tự ở điểm này" trước, để đo riêng câu đó có chờ trang không)."""
     d = "com.gtv.inputmethod.GTV"
     if on:
         sh(["defaults", "delete", d, "labNoSettle"])
     else:
         sh(["defaults", "write", d, "labNoSettle", "-bool", "true"])
+    if probe:
+        sh(["defaults", "write", d, "labSettleProbe", "-string", probe])
+    else:
+        sh(["defaults", "delete", d, "labSettleProbe"])
     sh(["notifyutil", "-p", "com.gtv.lab.reload"])
     time.sleep(0.6)
 
@@ -1260,6 +1271,21 @@ def main():
             r["expect_final"] = r.get("expect")
             r["expect"] = None
             r.pop("pass", None)
+        results += part
+
+    # Đo riêng câu hỏi "ký tự ở điểm này": hỏi nó TRƯỚC câu hỏi chỗ con trỏ. Ở trang chậm (chromeslow) câu nào chờ trang thì mất
+    # cỡ 100 ms — biết chắc câu nào là rào thật. Chấm như thường.
+    for app in os.environ.get("INDEXFIRST_APPS", "").split():
+        set_counter_mode(counter_modes[0])
+        set_settle(True, probe="index-first")
+        try:
+            part = run_vscode(only=FLASH_NAMES, tag="idx") if app == "vscode" else run_app_suite(app, tag="idx")
+        except Exception as e:  # noqa: BLE001
+            part = [{"terminal": app, "test": "-", "error": str(e)}]
+        finally:
+            set_settle(True)
+        for r in part:
+            r["terminal"] = r.get("terminal", app) + "-idx"
         results += part
 
     # Đo: bộ gõ gắn thuộc tính kiểu nào cho phần đang soạn thì ô nhận được gì (bản Debug, `labComposing`). "plain" = chuỗi thường.

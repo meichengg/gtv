@@ -116,32 +116,61 @@ private final class ClientAdapter: TextClient {
 
     /// Ô web của Chromium trả lời vị trí con trỏ / chữ từ một bộ đệm phía trình duyệt, nhưng câu hỏi "ký tự nào nằm ở điểm
     /// này trên màn hình" (`characterIndexForPoint:` — bộ gõ có cửa sổ gợi ý, tra từ điển vẫn hỏi) thì Chromium phải hỏi sang
-    /// trang và chờ trả lời (text_input_client_mac.mm: `SyncGetCharacterIndexAtPoint`). Trang chỉ trả lời sau khi xử lý xong
-    /// các phím / click đã nhận trước đó — nên có câu trả lời là biết chắc trang không còn phím nào chưa xử lý. Không gửi
-    /// phím, không đổi gì trong trang; điểm hỏi là chỗ con trỏ (để chắc chắn nằm trong trang).
+    /// trang và chờ trả lời (text_input_client_mac.mm: `SyncGetCharacterIndexAtPoint`, hết hạn sau 1,5 s). Trang chỉ trả lời
+    /// sau khi xử lý xong các phím / click đã nhận trước đó — nên có câu trả lời là biết chắc trang không còn phím nào chưa xử
+    /// lý. Không gửi phím, không đổi gì trong trang; điểm hỏi là chỗ con trỏ (để chắc chắn nằm trong trang).
     func settle() -> Bool {
         guard let client, !javaHelper else { return false }
         #if DEBUG
         if UserDefaults.standard.bool(forKey: "labNoSettle") { return false }      // lượt đối chứng của IME Lab
+        let indexFirst = UserDefaults.standard.string(forKey: "labSettleProbe") == "index-first"
+        #else
+        let indexFirst = false
         #endif
         let sel = client.selectedRange()
         guard sel.location != NSNotFound else { return false }
-        let start = ProcessInfo.processInfo.systemUptime
-        var actual = notFound
-        let rect = client.firstRect(forCharacterRange: NSRange(location: sel.location, length: 0), actualRange: &actual)
-        // Trang không cho biết con trỏ ở đâu trên màn hình: không có điểm nào chắc chắn nằm trong trang để hỏi.
-        guard rect.origin != .zero || rect.size != .zero, rect.origin.x.isFinite, rect.origin.y.isFinite else {
-            DebugLog.write("hỏi đồng bộ: ô không cho biết chỗ con trỏ trên màn hình")
-            return false
+        let clock = { ProcessInfo.processInfo.systemUptime }
+        let start = clock()
+        var line = NSRect.zero
+        var index = NSNotFound
+        var lineTook = 0.0, indexTook = 0.0
+        func askLine() {
+            // Chỗ con trỏ trên màn hình (cách bộ gõ có cửa sổ gợi ý vẫn hỏi).
+            let t = clock()
+            var r = NSRect.zero
+            _ = client.attributes(forCharacterIndex: sel.location, lineHeightRectangle: &r)
+            line = r
+            lineTook = clock() - t
         }
-        var inMarked: ObjCBool = false
-        let index = client.characterIndex(for: NSPoint(x: rect.midX, y: rect.midY), tracking: kIMKNearestBoundaryMode,
-                                          inMarkedRange: &inMarked)
-        let took = ProcessInfo.processInfo.systemUptime - start
-        DebugLog.write("hỏi đồng bộ: sel=\(sel) rect=\(rect) index=\(index == NSNotFound ? -1 : index) \(Int(took * 1_000_000)) µs")
+        func askIndex(_ point: NSPoint) {
+            let t = clock()
+            var inMarked: ObjCBool = false
+            index = client.characterIndex(for: point, tracking: kIMKNearestBoundaryMode, inMarkedRange: &inMarked)
+            indexTook = clock() - t
+        }
+        func usable(_ r: NSRect) -> Bool {
+            [r.origin.x, r.origin.y, r.size.width, r.size.height].allSatisfy { $0.isFinite && abs($0) < 1e7 }
+                && (r.origin != .zero || r.size != .zero)
+        }
+        if indexFirst, let last = lastLine {
+            // Lượt đo của IME Lab: hỏi "ký tự ở điểm này" TRƯỚC (bằng điểm của lần hỏi trước) để biết chính câu đó có chờ trang.
+            askIndex(NSPoint(x: last.midX, y: last.midY))
+            askLine()
+        } else {
+            askLine()
+            guard usable(line) else {
+                DebugLog.write("hỏi đồng bộ: ô không cho biết chỗ con trỏ trên màn hình (\(line)) \(Int(lineTook * 1_000_000)) µs")
+                return false
+            }
+            askIndex(NSPoint(x: line.midX, y: line.midY))
+        }
+        if usable(line) { lastLine = line }
+        let took = clock() - start
+        DebugLog.write("hỏi đồng bộ: sel=\(sel.location) dòng=(\(Int(line.origin.x)),\(Int(line.origin.y)),\(Int(line.width)),\(Int(line.height))) \(Int(lineTook * 1_000_000)) µs; ký tự ở điểm=\(index == NSNotFound ? -1 : index) \(Int(indexTook * 1_000_000)) µs\(indexFirst ? " [hỏi điểm trước]" : "")")
         // Chromium bỏ cuộc sau 1,5 s nếu trang treo: câu trả lời tới muộn vậy không nói được gì.
-        return took < 1.0
+        return usable(line) && took < 1.0
     }
+    private var lastLine: NSRect?
 }
 
 /// Một controller cho mỗi ô nhập liệu.
