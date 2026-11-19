@@ -3046,4 +3046,93 @@ final class SessionTests: XCTestCase {
         f.type("38ng ")
         XCTAssertEqual(f.text, "xin đẳng ")
     }
+
+    /// Gõ – gõ dở – ⌥⌫ / ⌘⌫ – gõ lại, lặp ngẫu nhiên, ở ô web thường và ô EditContext, trang báo kịp hay chậm vài phím, có lúc
+    /// sổ phím báo có click / phím tắt bộ gõ không thấy ngay ở phím xoá. Không bao giờ sửa nhầm chỗ (mỗi từ hoặc đúng dấu hoặc
+    /// đúng các phím đã gõ, không mất / thừa từ nào); trang báo kịp và không có dấu hiệu click thì mọi từ phải ra đúng dấu (có
+    /// dấu hiệu click thì bộ gõ cần thấy trang báo thêm vài phím mới đủ bằng chứng — từ rất ngắn ngay sau đó có thể còn thô).
+    func testChromiumFuzzDeleteAndRetype() {
+        var seed: UInt64 = 20261119
+        func rnd(_ n: Int) -> Int { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Int((seed >> 33) % UInt64(n)) }
+        let words: [(raw: String, ideal: String)] = [
+            ("tie61ng", "tiếng"), ("vie65t", "việt"), ("d9a38ng", "đẳng"), ("ca61p", "cấp"), ("tuye65t", "tuyệt"),
+            ("d9o61i", "đối"), ("xin", "xin"), ("ngu7o7i2", "người"), ("la2", "là"), ("to6i", "tôi"), ("ban", "ban"),
+            ("d9i", "đi"), ("a1", "á"), ("ho5c", "học"),
+        ]
+        let partials = ["tie61", "vie65", "tuye6", "d9a3", "ngu7o7", "d9", "to6", "ca6"]
+        enum Op { case word(Int), partial(Int), deleteWord(Bool), deleteLine(Bool) }
+        var corrupt = 0, inexact = 0, total = 0
+        for _ in 0..<250 {
+            var ops: [Op] = []
+            for _ in 0..<(4 + rnd(8)) {
+                switch rnd(10) {
+                case 0, 1:
+                    ops.append(.partial(rnd(partials.count)))
+                    ops.append(rnd(3) == 0 ? .deleteLine(rnd(4) == 0) : .deleteWord(rnd(4) == 0))
+                case 2: ops.append(.deleteWord(rnd(4) == 0))
+                case 3: ops.append(.deleteLine(rnd(4) == 0))
+                default: ops.append(.word(rnd(words.count)))
+                }
+            }
+            ops.append(.word(rnd(words.count)))
+            ops.append(.word(rnd(words.count)))
+            for lag in 0...3 {
+                for editContext in [false, true] {
+                    for step in [40.0, 100.0] {
+                        total += 1
+                        let f = web(.vni, lag: lag, step: step)
+                        f.editContext = editContext
+                        var model: [(raw: String, ideal: String)] = []
+                        var script = ""
+                        var flagged = false
+                        for op in ops {
+                            switch op {
+                            case let .word(i):
+                                f.type(words[i].raw + " ")
+                                model.append(words[i])
+                                script += words[i].raw + " "
+                            case let .partial(i):
+                                f.type(partials[i])
+                                model.append((partials[i], partials[i]))
+                                script += partials[i]
+                            case let .deleteWord(gap):
+                                f.deleteWord(gap: gap ? .bypassed : .none)
+                                flagged = flagged || gap
+                                if !model.isEmpty { model.removeLast() }
+                                script += gap ? "⌥⌫* " : "⌥⌫ "
+                            case let .deleteLine(gap):
+                                f.deleteLine(gap: gap ? .bypassed : .none)
+                                flagged = flagged || gap
+                                model.removeAll()
+                                script += gap ? "⌘⌫* " : "⌘⌫ "
+                            }
+                        }
+                        f.finish(); f.idle(); f.idle()
+                        let got = f.text.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+                        let note = "trang chậm \(lag) phím, \(editContext ? "EditContext" : "ô thường"), \(step) ms: \(script.debugDescription) ra \(f.text.debugDescription)"
+                        guard got.count == model.count + 1, got.last == "" else {
+                            corrupt += 1
+                            if corrupt <= 6 { XCTFail("mất / thừa từ — " + note) }
+                            continue
+                        }
+                        var exact = true
+                        var ok = true
+                        for (i, w) in model.enumerated() {
+                            if got[i] != w.ideal { exact = false }
+                            if got[i] != w.ideal, got[i] != w.raw { ok = false }
+                        }
+                        if !ok {
+                            corrupt += 1
+                            if corrupt <= 6 { XCTFail("sửa nhầm chỗ — " + note) }
+                        } else if lag == 0, !flagged, !exact {
+                            inexact += 1
+                            if inexact <= 6 { XCTFail("trang báo kịp mà còn từ nguyên văn — " + note) }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(corrupt, 0, "sửa nhầm chỗ / mất từ trong \(total) lượt")
+        XCTAssertEqual(inexact, 0, "trang báo kịp mà còn từ nguyên văn trong \(total) lượt")
+    }
 }

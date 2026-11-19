@@ -1596,6 +1596,7 @@ public final class Session {
             // như chưa có bằng chứng vị trí: lần sửa đầu chờ bộ đệm xác nhận; không gõ tiếp từ trước sau ⌫.
             web?.proven = false
             web?.evidenceFrom = (webHistory.last?.text ?? webBefore).utf16.count
+            webWitness = nil                // lần thấy trước click không còn là bằng chứng
             webResumeArmed = false
         }
         if dropped, web != nil { webGapSerial = webStateCount }
@@ -1610,6 +1611,7 @@ public final class Session {
                 web?.proven = false
                 web?.trusted = false
                 web?.evidenceFrom = (webHistory.last?.text ?? webBefore).utf16.count
+                webWitness = nil
             }
         }
         if case .backspace = key {
@@ -1651,10 +1653,7 @@ public final class Session {
             // Chuỗi chưa có bằng chứng vị trí (đầu chuỗi đọc lúc bộ đệm có thể còn cũ, có từ đang nằm nguyên văn): xem bộ đệm
             // đã cho thấy chữ của chuỗi ở đâu chưa — trước cả khi quyết định chuỗi còn tiếp hay không.
             if webNeedsProof { webCatchUp(client, settled: idle) }
-            if engine.isEmpty {
-                engine.options = options
-                startWebWord(client, options: options, resume: resume, dropped: dropped, left: left)
-            }
+            if engine.isEmpty { startWebWord(client, options: options, resume: resume, dropped: dropped, left: left) }
             if webShadow != nil {
                 // Vẫn chưa biết từ nằm đâu: phím này cũng đi nguyên văn, `engine` gõ tiếp từ định gõ.
                 guard engine.process(ch) != nil else {
@@ -1770,8 +1769,10 @@ public final class Session {
            !webCacheIsOlder(client, sel.location, chain: chain, model: text) {
             webNextExpect = nil
             // Bộ đệm không còn là một trạng thái của chuỗi cũ: trang đã báo một việc bộ gõ không biết — mà trang báo theo thứ tự,
-            // nên mọi phím của chuỗi cũ đã được báo trước đó (không còn phím cũ nào chưa báo: `clean`).
-            startWebChain(at: sel.location, trusted: chain.trusted && !dropped, clean: true)
+            // nên mọi phím của chuỗi cũ đã được báo trước đó (không còn phím cũ nào chưa báo: `clean`). Chỉ đúng khi vị trí của
+            // chuỗi cũ là thật: chuỗi cũ chưa đáng tin, chưa xác minh thì "không khớp" có thể chỉ vì chính nó nằm sai chỗ, bộ
+            // đệm vẫn còn đang báo dần các phím cũ (trang chậm vài phím: "la2 a1" ra "lá a1" — dấu rơi vào từ trước).
+            startWebChain(at: sel.location, trusted: chain.trusted && !dropped, clean: chain.proven || chain.trusted)
             webNoteSuffix(client, at: sel.location)
             return
         }
@@ -2068,8 +2069,8 @@ public final class Session {
     /// Bằng chứng vị trí bằng NỘI DUNG, cho chuỗi mà đầu chuỗi đọc được lúc bộ đệm có thể còn cũ (ngay sau ⌥⌫ / ⌘⌫ / click khi
     /// trang chưa kịp báo): TRỌN chữ của chuỗi trên trang (`raw`, từ đầu chuỗi tới con trỏ — toàn phím đi thẳng) nằm ngay trước
     /// con trỏ của bộ đệm, và
-    /// - thấy vậy ở CÙNG một chỗ trong hai lần đọc mà giữa đó chuỗi đã dài thêm: trang đang báo kịp chính các phím của chuỗi ở
-    ///   đó — chỗ đó là thật. Bộ đệm cũ đứng yên không làm được vậy (Chromium tự đoán chỉ chèn chữ của lần chèn gần nhất vào
+    /// - thấy vậy ở CÙNG một chỗ trong hai lần đọc mà giữa đó trang đã báo thêm chữ của chuỗi (phần chắc chắn do trang báo ở
+    ///   lần sau dài hơn mọi thứ đã thấy ở lần trước): trang đang báo kịp chính các phím của chuỗi ở đó — chỗ đó là thật. Bộ đệm cũ đứng yên không làm được vậy (Chromium tự đoán chỉ chèn chữ của lần chèn gần nhất vào
     ///   vị trí báo lần cuối), bộ đệm đang "phát lại" một từ cũ giống hệt (trang chậm cả từ) cũng không: nó chỉ trùng trọn
     ///   chuỗi được một lần; hoặc
     /// - (`settled`) đã ngừng gõ quá `webIdleBreak` — trang đã có thời gian báo hết. Không dùng mốc ngắn hơn: trang chậm thì bộ
@@ -2086,7 +2087,10 @@ public final class Session {
             if settled {
                 proven = true
             } else if let seen = webWitness, seen.at == s.at {
-                proven = length > seen.length
+                // Phần chắc chắn do trang báo ở lần này phải dài hơn TOÀN BỘ những gì đã thấy ở lần trước: chuỗi dài thêm chỉ
+                // nhờ chữ Chromium tự đoán (trang chưa báo gì mới) thì chưa là gì — bộ đệm đang dừng ở một từ cũ giống hệt
+                // cũng "dài thêm" kiểu đó ("a1 " của từ trước + "c" tự đoán trùng "a1 c" của chuỗi này).
+                proven = s.reported > seen.length
             } else {
                 webWitness = (s.at, length)
             }
@@ -2430,12 +2434,11 @@ public final class Session {
         }
         trace?("hết chuỗi: bộ đệm ở trạng thái cách cuối \(webHistory.count - 1 - first) bước")
         let final = chain.start + text.utf16.count
+        // Bộ đệm chỉ đi tới: từ đây nó còn có thể cho thấy con trỏ hiện tại (có thể kèm chữ tự đoán) rồi lần lượt các trạng
+        // thái SAU trạng thái đó (trang báo thì chữ tự đoán mất). Không tính con trỏ của chính trạng thái cũ nhất ấy: xoá một
+        // từ một ký tự ("d9" rồi ⌥⌫) đưa con trỏ về đúng chỗ đó — tính vào thì tác dụng của phím xoá trông như chưa được báo.
         var pending: Set<Int> = [final, sel.location]
-        for state in webHistory[first...] {
-            let at = chain.start + state.text.utf16.count
-            pending.insert(at)
-            if !g.isEmpty { pending.insert(at + g.count) }
-        }
+        for state in webHistory[(first + 1)...] { pending.insert(chain.start + state.text.utf16.count) }
         webLeft = (pending, final)
     }
 
