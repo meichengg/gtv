@@ -113,6 +113,35 @@ private final class ClientAdapter: TextClient {
     func currentTime() -> Double { ProcessInfo.processInfo.systemUptime }
 
     func lateEditSafe() -> Bool { KeyWatch.shared.lateEditSafe() }
+
+    /// Ô web của Chromium trả lời vị trí con trỏ / chữ từ một bộ đệm phía trình duyệt, nhưng câu hỏi "ký tự nào nằm ở điểm
+    /// này trên màn hình" (`characterIndexForPoint:` — bộ gõ có cửa sổ gợi ý, tra từ điển vẫn hỏi) thì Chromium phải hỏi sang
+    /// trang và chờ trả lời (text_input_client_mac.mm: `SyncGetCharacterIndexAtPoint`). Trang chỉ trả lời sau khi xử lý xong
+    /// các phím / click đã nhận trước đó — nên có câu trả lời là biết chắc trang không còn phím nào chưa xử lý. Không gửi
+    /// phím, không đổi gì trong trang; điểm hỏi là chỗ con trỏ (để chắc chắn nằm trong trang).
+    func settle() -> Bool {
+        guard let client, !javaHelper else { return false }
+        #if DEBUG
+        if UserDefaults.standard.bool(forKey: "labNoSettle") { return false }      // lượt đối chứng của IME Lab
+        #endif
+        let sel = client.selectedRange()
+        guard sel.location != NSNotFound else { return false }
+        let start = ProcessInfo.processInfo.systemUptime
+        var actual = notFound
+        let rect = client.firstRect(forCharacterRange: NSRange(location: sel.location, length: 0), actualRange: &actual)
+        // Trang không cho biết con trỏ ở đâu trên màn hình: không có điểm nào chắc chắn nằm trong trang để hỏi.
+        guard rect.origin != .zero || rect.size != .zero, rect.origin.x.isFinite, rect.origin.y.isFinite else {
+            DebugLog.write("hỏi đồng bộ: ô không cho biết chỗ con trỏ trên màn hình")
+            return false
+        }
+        var inMarked: ObjCBool = false
+        let index = client.characterIndex(for: NSPoint(x: rect.midX, y: rect.midY), tracking: kIMKNearestBoundaryMode,
+                                          inMarkedRange: &inMarked)
+        let took = ProcessInfo.processInfo.systemUptime - start
+        DebugLog.write("hỏi đồng bộ: sel=\(sel) rect=\(rect) index=\(index == NSNotFound ? -1 : index) \(Int(took * 1_000_000)) µs")
+        // Chromium bỏ cuộc sau 1,5 s nếu trang treo: câu trả lời tới muộn vậy không nói được gì.
+        return took < 1.0
+    }
 }
 
 /// Một controller cho mỗi ô nhập liệu.

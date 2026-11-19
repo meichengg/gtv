@@ -171,14 +171,30 @@ WEB_PARTIAL_TESTS = [
     ("telex-optbs-partial", "telex", "ddawngr tiees{WAIT400}{OPTBS}{WAIT250}tieengs vieejt ", "đẳng tiếng việt ", 100),
     ("vni-optbs-partial-loop", "vni", "xin tie61{OPTBS}tie61{OPTBS}tie61ng vie65{OPTBS}vie65t ", "xin tiếng việt ", 60),
 ]
+# Không chữ thô nào được ra trang rồi mới được sửa lại (người dùng báo 2026-11-19, VS Code + Claude desktop: gõ "đẳng cấp",
+# ⌘⌫, gõ lại thì thấy "d9…" hiện ra rồi nhảy thành chữ có dấu). Nhật ký máy đó: ⌘⌫ bấm hai lần (lần sau không còn gì để xoá —
+# con trỏ đứng yên, bộ đệm không cho biết trang đã xử lý nó chưa), nhiều phím tắt liền nhau, ⌫ rồi ⌘⌫. Gõ ở tốc độ người
+# (110 ms / phím). Chấm cả chữ cuối cùng lẫn số lần bộ gõ phải cho chữ đi nguyên văn (`raw_flash`, đọc từ GTV-debug.log).
+WEB_FLASH_TESTS = [
+    ("flash-cmdbs", "vni", "d9a38ng ca61p{CMDBS}{WAIT300}d9a38ng ca61p ", "đẳng cấp ", 110),
+    ("flash-cmdbs-twice", "vni", "d9a38ng ca61p{CMDBS}{WAIT120}{CMDBS}{WAIT280}d9a38ng ca61p ", "đẳng cấp ", 110),
+    ("flash-cmdbs-many", "vni", "d9a38ng ca61p{CMDBS}{WAIT600}{CMDBS}{WAIT900}{CMDBS}{WAIT160}{CMDBS}{WAIT300}d9a38ng ca61p ",
+     "đẳng cấp ", 110),
+    ("flash-bs-cmdbs", "vni", "d9a38ng ca61p{WAIT500}{BS}{WAIT700}{CMDBS}{WAIT450}d9a38ng ca61p ", "đẳng cấp ", 110),
+    ("flash-optbs-twice", "vni", "xin chao tuye65t{OPTBS}{WAIT150}{OPTBS}{WAIT300}d9a38ng ca61p ", "xin đẳng cấp ", 110),
+    ("flash-telex-cmdbs-twice", "telex", "ddawngr caaps{CMDBS}{WAIT120}{CMDBS}{WAIT280}ddawngr caaps ", "đẳng cấp ", 110),
+    # Bắt đầu gõ sau một lúc nghỉ, phím dấu là phím thứ hai của từ.
+    ("flash-first-tone", "vni", "{WAIT1300}d9i a1 o6ng d9a38ng ", "đi á ông đẳng ", 120),
+]
+FLASH_NAMES = {t[0] for t in WEB_FLASH_TESTS}
 # Ô EditContext / contenteditable: không có ⏎ / mũi tên / ⌘A của các bài chung (trang thử tự xử lý phím theo cách riêng).
 WEB_EDIT_TESTS = [t for t in APP_TESTS if t[0] in ("vni-words", "vni-fast", "telex-words", "vni-backspace", "vni-punct",
                                                     "vni-bs-burst", "vni-fast3", "vni-abbrev", "telex-abbrev")] \
-    + DELETE_RETYPE_TESTS + WEB_PARTIAL_TESTS
+    + DELETE_RETYPE_TESTS + WEB_PARTIAL_TESTS + WEB_FLASH_TESTS
 # Chrome (Chromium: cũng là Electron, VS Code, Claude desktop…): gõ rất nhanh (bộ đệm văn bản phía trình duyệt cập nhật
 # chậm sau lần thay của bộ gõ: có thể mất dấu) và ⌫ làm dời dấu thanh (kiểu cũ: "hoàn" ⌫ → "hòa"; Chromium có thể vừa
 # nhận lần thay của bộ gõ vừa tự xoá).
-CHROME_TESTS = APP_TESTS + DELETE_RETYPE_TESTS + WEB_PARTIAL_TESTS + [
+CHROME_TESTS = APP_TESTS + DELETE_RETYPE_TESTS + WEB_PARTIAL_TESTS + WEB_FLASH_TESTS + [
     ("telex-fast8", "telex", "Vieetj Nam ddaij hocj tieengs Vieetj nguwowif ", "Việt Nam đại học tiếng Việt người ", 8),
     ("vni-fast6", "vni", "Vie65t Nam d9a5i ho5c tie61ng Vie65t ngu7o72i ", "Việt Nam đại học tiếng Việt người ", 6),
     ("telex-bs-tone", "telex", "hoafn{BS} ", "hòa ", 45),
@@ -328,6 +344,36 @@ def log_since(mark):
     with open(GTV_LOG, "rb") as f:
         f.seek(mark)
         return f.read().decode("utf-8", "replace")
+
+
+def web_flash(mark):
+    """Ô web kể từ `mark` (GTV-debug.log): số lần bộ gõ phải cho chữ đi nguyên văn rồi sửa lại sau (`raw_flash` — người dùng
+    thấy "d9" nhảy thành "đ"), và các lần hỏi trang đồng bộ (số lần được / không, lần lâu nhất)."""
+    lines = log_since(mark).splitlines()
+    out = {"raw_flash": sum("tạm đi nguyên văn" in l for l in lines)}
+    asked = [l for l in lines if "hỏi trang (đồng bộ)" in l]
+    if asked:
+        ms = [int(m.group(1)) for l in asked for m in [re.search(r"sau (\d+) ms", l)] if m]
+        out["settle"] = {"ok": sum(") được sau" in l for l in asked), "fail": sum("không được" in l for l in asked),
+                         "max_ms": max(ms) if ms else None}
+        probes = [l.split(" hỏi đồng bộ: ", 1)[1][:120] for l in lines if " hỏi đồng bộ: " in l]
+        us = [int(m.group(1)) for l in probes for m in [re.search(r"(\d+) µs", l)] if m]
+        if us:
+            out["settle"]["probe_us"] = [min(us), sorted(us)[len(us) // 2], max(us)]
+        out["settle"]["sample"] = probes[:3]
+    out["anchored"] = sum("vị trí chắc chắn" in l or "trang cho thấy chuỗi bắt đầu" in l for l in lines)
+    return out
+
+
+def set_settle(on):
+    """Lượt đối chứng: bản Debug bỏ câu hỏi đồng bộ (`labNoSettle`) — bộ gõ gõ như trước khi có nó."""
+    d = "com.gtv.inputmethod.GTV"
+    if on:
+        sh(["defaults", "delete", d, "labNoSettle"])
+    else:
+        sh(["defaults", "write", d, "labNoSettle", "-bool", "true"])
+    sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+    time.sleep(0.6)
 
 
 def ime_seen(mark, bid):
@@ -828,6 +874,11 @@ def run_app_suite(app, only=None, tag=None):
                 if underline:
                     r["underline"] = underline
                 r.update(ime_seen(mark, None if app.startswith("swing") else bid))
+                if app.startswith("chrome"):
+                    r.update(web_flash(mark))
+                    if name in FLASH_NAMES and r["raw_flash"] and tag != "nosettle":
+                        r["pass"] = False
+                        r["info"] = f"chữ thô ra trang {r['raw_flash']} lần rồi mới được sửa"
                 if app == "swinghelper":
                     # Phím nào cũng phải đi đường thay chữ qua trợ thủ (không phím nào soạn bằng marked text).
                     lines = [l for l in log_since(mark).splitlines() if " phím " in l]
@@ -835,10 +886,11 @@ def run_app_suite(app, only=None, tag=None):
                     if any("soạn (marked)" in l for l in lines):
                         r["pass"] = False
                         r["info"] = "có phím soạn bằng marked text"
-                if got != expect:
+                if got != expect or (app.startswith("chrome") and r.get("raw_flash") and name in FLASH_NAMES):
                     r["trace"] = ime_trace(mark)
                     if app.startswith("chrome"):
-                        r["session"] = [l.split(" ", 1)[-1][:200] for l in log_since(mark).splitlines() if "session:" in l][:60]
+                        r["session"] = [l.split(" ", 1)[-1][:200] for l in log_since(mark).splitlines()
+                                        if "session:" in l or "hỏi đồng bộ" in l][:80]
             except Exception as e:  # noqa: BLE001
                 r["error"] = str(e)
                 shot(f"{app}-{name}-error")
@@ -874,7 +926,7 @@ VSCODE = "/Applications/Visual Studio Code.app"
 VSCODE_ID = "com.microsoft.VSCode"
 
 
-def run_vscode():
+def run_vscode(only=None, tag=None):
     """VS Code thật (ô soạn thảo dùng EditContext): gõ vào một file văn bản, đọc lại qua file (tự lưu sau 0,2 s)."""
     app = "vscode"
     if not pathlib.Path(VSCODE).exists():
@@ -922,7 +974,7 @@ def run_vscode():
         drv(bid, "khoi dong ", 60)
         time.sleep(2)
         clear()
-        for name, method, keys, expect, ms in WEB_EDIT_TESTS:
+        for name, method, keys, expect, ms in [t for t in WEB_EDIT_TESTS if not only or t[0] in only]:
             r = {"terminal": app, "style": "-", "test": name, "expect": expect}
             try:
                 if front() != VSCODE_ID:
@@ -935,10 +987,16 @@ def run_vscode():
                 drv(bid, keys, ms)
                 time.sleep(1.2)
                 got = read_text(out_file)
-                r.update({"final": got, "pass": got == expect, "shot": shot(f"{app}-{name}")})
+                r.update({"final": got, "pass": got == expect, "shot": shot(f"{app}{'-' + tag if tag else ''}-{name}")})
                 r.update(ime_seen(mark, bid))
-                if got != expect:
-                    r["trace"] = [l[:200] for l in log_since(mark).splitlines() if "session:" in l or " phím " in l][:80]
+                r.update(web_flash(mark))
+                flashed = name in FLASH_NAMES and r["raw_flash"]
+                if flashed and tag != "nosettle":
+                    r["pass"] = False
+                    r["info"] = f"chữ thô ra trang {r['raw_flash']} lần rồi mới được sửa"
+                if got != expect or flashed:
+                    r["trace"] = [l[:200] for l in log_since(mark).splitlines()
+                                  if "session:" in l or " phím " in l or "hỏi đồng bộ" in l][:100]
             except Exception as e:  # noqa: BLE001
                 r["error"] = str(e)
                 shot(f"{app}-{name}-error")
@@ -1184,6 +1242,26 @@ def main():
                 r["terminal"] = r.get("terminal", app) + suffix
             results += part
 
+    # Đối chứng cho các bài "không chữ thô ra trang": cùng bài đó với bộ gõ KHÔNG hỏi trang đồng bộ (cách cũ) — phải thấy chữ thô
+    # ra trang (`raw_flash` > 0) thì bài thử mới thật sự bắt được lỗi người dùng báo. Chỉ ghi lại, không chấm.
+    for app in os.environ.get("NOSETTLE_APPS", "").split():
+        set_counter_mode(counter_modes[0])
+        set_settle(False)
+        try:
+            part = run_vscode(only=FLASH_NAMES, tag="nosettle") if app == "vscode" \
+                else run_app_suite(app, only=FLASH_NAMES, tag="nosettle")
+        except Exception as e:  # noqa: BLE001
+            part = [{"terminal": app, "test": "-", "error": str(e)}]
+        finally:
+            set_settle(True)
+        for r in part:
+            r["terminal"] = r.get("terminal", app) + "-nosettle"
+            r["control"] = True
+            r["expect_final"] = r.get("expect")
+            r["expect"] = None
+            r.pop("pass", None)
+        results += part
+
     # Đo: bộ gõ gắn thuộc tính kiểu nào cho phần đang soạn thì ô nhận được gì (bản Debug, `labComposing`). "plain" = chuỗi thường.
     d = "com.gtv.inputmethod.GTV"
     for recipe in os.environ.get("COMPOSE_RECIPES", "").split():
@@ -1218,7 +1296,7 @@ def main():
     (OUT / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1))
     rows = ["| terminal | kiểu | bài | kết quả | shell nhận | xoá tách rời | ghi chú |", "|---|---|---|---|---|---|---|"]
     for r in results:
-        ok = "lỗi" if "error" in r else ("✅" if r.get("pass") else "❌")
+        ok = "lỗi" if "error" in r else "ghi" if r.get("control") else ("✅" if r.get("pass") else "❌")
         split = f"{r.get('edits_split', '')}/{r.get('edits', '')}" if "edits" in r else ""
         note = r.get("error", "") or ("mong đợi: " + r["expect"] if not r.get("pass") and r.get("expect") is not None
                                       and r.get("final") != r["expect"] else "")

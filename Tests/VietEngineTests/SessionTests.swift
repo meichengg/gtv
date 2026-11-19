@@ -200,8 +200,26 @@ private final class ChromiumField: TextClient {
         let before = caret
         units.replaceSubrange(lo..<hi, with: Array(t.utf16))
         if caret >= hi { caret += t.utf16.count - (hi - lo) } else if caret > lo { caret = lo + t.utf16.count }
-        if editContext, caret == before { return }
+        if editContext, caret == before {
+            shown.append(text)
+            return
+        }
         snapshot()
+    }
+    /// Mọi trạng thái chữ trang từng có (người dùng nhìn thấy): chữ thô ("d9") ra trang rồi mới được sửa lại là thấy ở đây.
+    var shown: [String] = []
+    /// Ô trả lời được câu hỏi đồng bộ (`TextClient.settle`, Chromium thật: `characterIndexForPoint` đi một vòng sang trang):
+    /// trang phải xử lý xong mọi thứ đã nhận rồi mới trả lời; các báo cáo nó đã gửi tới bộ đệm khi ứng dụng quay lại vòng lặp.
+    var canSettle = false
+    var settleCalls = 0
+    private var forced: [(units: [UInt16], caret: Int, due: Int)] = []
+    func settle() -> Bool {
+        guard canSettle else { return false }
+        XCTAssertFalse(inKey, "không hỏi đồng bộ trong lúc xử lý phím (chữ của phím chưa tới trang)")
+        settleCalls += 1
+        forced += snapshots
+        snapshots = []
+        return true
     }
     /// Đang trong keyDown của một phím (bộ gõ đang xử lý nó).
     var inKey = false
@@ -240,7 +258,10 @@ private final class ChromiumField: TextClient {
     func schedule(after delay: Double, _ work: @escaping () -> Void) { timers.append((now + delay, work)) }
     func currentTime() -> Double { now }
 
-    func snapshot() { snapshots.append((units, caret, lag)) }
+    func snapshot() {
+        snapshots.append((units, caret, lag))
+        shown.append(text)
+    }
     func report(_ s: (units: [UInt16], caret: Int, due: Int)) { cUnits = s.units; cCaret = s.caret; base = s.caret }
 
     /// Thời gian trôi tới phím kế tiếp: trang báo những gì tới hạn, timer tới hạn chạy.
@@ -249,6 +270,11 @@ private final class ChromiumField: TextClient {
         while steps > 0 {
             steps -= 1
             now += 0.01
+            if !forced.isEmpty {
+                let f = forced
+                forced = []
+                f.forEach(report)
+            }
             let due = timers.filter { $0.at <= now + 1e-9 }
             timers.removeAll { $0.at <= now + 1e-9 }
             due.forEach { $0.work() }
@@ -2976,6 +3002,129 @@ final class SessionTests: XCTestCase {
         }
     }
 
+    // MARK: Ô web trả lời được câu hỏi đồng bộ: không chữ thô nào ra trang rồi mới được sửa lại
+
+    /// Các trạng thái trang từng hiện (từ `from`) có chữ số — chữ thô VNI đã ra trang.
+    private func rawShown(_ f: ChromiumField, from: Int = 0) -> [String] {
+        f.shown[from...].filter { $0.contains(where: { $0.isASCII && $0.isNumber }) }
+    }
+
+    /// Nhật ký máy người dùng 2026-11-19 (VS Code, Claude desktop): gõ "đẳng cấp", ⌘⌫ (hai lần — lần sau không còn gì để xoá, con
+    /// trỏ đứng yên nên bộ đệm không cho biết trang đã xử lý nó chưa), gõ lại: thấy "d9…" hiện ra rồi mới nhảy thành chữ có
+    /// dấu. Ô trả lời được câu hỏi đồng bộ thì bộ gõ biết chắc vị trí ngay sau phím đầu của từ: không chữ thô nào ra trang.
+    func testWebSettleNoRawFlashAfterDeleteLineTwice() {
+        for editContext in [false, true] {
+            for lag in 0...2 {
+                for step in [60.0, 110, 160] {
+                    for deletes in 1...3 {
+                        let f = web(.vni, lag: lag, step: step)
+                        f.editContext = editContext
+                        f.canSettle = true
+                        f.type("d9a38ng ca61p")
+                        for _ in 0..<deletes { f.deleteLine() }
+                        let from = f.shown.count
+                        f.type("d9a38ng ca61p ")
+                        f.finish()
+                        let note = "\(editContext ? "EditContext" : "ô thường"), trang chậm \(lag) phím, \(step) ms, ⌘⌫ ×\(deletes)"
+                        XCTAssertEqual(f.text, "đẳng cấp ", note)
+                        XCTAssertEqual(rawShown(f, from: from), [], "chữ thô ra trang — " + note)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Đối chứng: ô KHÔNG trả lời được câu hỏi đồng bộ thì đúng kịch bản trên có chữ thô ra trang rồi mới được sửa (bài thử
+    /// trên bắt được lỗi người dùng báo), chữ cuối cùng vẫn đúng.
+    func testWebWithoutSettleShowsRawThenFixes() {
+        let f = web(.vni)
+        f.editContext = true
+        f.type("d9a38ng ca61p")
+        f.deleteLine()
+        f.deleteLine()
+        let from = f.shown.count
+        f.type("d9a38ng ca61p ")
+        f.finish()
+        XCTAssertEqual(f.text, "đẳng cấp ")
+        XCTAssertFalse(rawShown(f, from: from).isEmpty, "không có rào đồng bộ: từ đầu phải đi nguyên văn rồi mới được sửa")
+        XCTAssertEqual(f.settleCalls, 0)
+    }
+
+    /// Nhiều phím tắt liền nhau không làm đổi con trỏ (⌘S, ⌘⌫ ở ô trống…), rồi gõ: không chữ thô.
+    func testWebSettleNoRawFlashAfterShortcuts() {
+        for editContext in [false, true] {
+            for step in [60.0, 120] {
+                for count in 1...4 {
+                    let f = web(.vni, step: step)
+                    f.editContext = editContext
+                    f.canSettle = true
+                    f.type("xin chao ")
+                    for _ in 0..<count { f.other {} }
+                    let from = f.shown.count
+                    f.type("d9a38ng tie61ng a1 ")
+                    f.finish()
+                    XCTAssertEqual(f.text, "xin chao đẳng tiếng á ", "\(count) phím tắt, \(step) ms")
+                    XCTAssertEqual(rawShown(f, from: from), [], "chữ thô ra trang — \(count) phím tắt, \(step) ms")
+                }
+            }
+        }
+    }
+
+    /// Claude desktop (nhật ký 2026-11-19): ⌫ lùi vào chữ cũ sau một lúc nghỉ (chuỗi dựng lại từ bộ đệm), gõ tiếp, nghỉ, ⌥⌫ rồi
+    /// gõ lại ngay — từ gõ lại không được ra chữ thô.
+    func testWebSettleNoRawFlashAfterRebuildAndDeleteWord() {
+        let f = web(.vni)
+        f.canSettle = true
+        f.type("xin chao ban ")
+        f.idle()
+        f.backspace()
+        f.type(" tie61ng vie65")
+        f.idle()
+        f.deleteWord()
+        let from = f.shown.count
+        f.type("d9a38ng ca61p ")
+        f.finish()
+        XCTAssertEqual(f.text, "xin chao ban tiếng đẳng cấp ")
+        XCTAssertEqual(rawShown(f, from: from), [])
+    }
+
+    /// Click chỗ khác (bộ gõ không thấy click, chỉ được sổ phím báo ở phím kế tiếp) rồi gõ: từ đầu ra dấu ngay, đúng chỗ click.
+    func testWebSettleNoRawFlashAfterClick() {
+        for lag in 0...2 {
+            let f = web(.vni, lag: lag, step: 90)
+            f.canSettle = true
+            f.type("mot hai ba ")
+            f.click(at: 4)
+            let from = f.shown.count
+            f.type("d9a38ng ", firstGap: .bypassed)
+            f.finish()
+            XCTAssertEqual(f.text, "mot đẳng hai ba ", "trang chậm \(lag) phím")
+            XCTAssertEqual(rawShown(f, from: from), [], "trang chậm \(lag) phím")
+        }
+    }
+
+    /// Bắt đầu gõ sau một lúc nghỉ, phím dấu là phím thứ hai ("đ", "á"): dấu ra ngay ở phím đó — không đợi tới phím kế tiếp.
+    func testWebSettleFirstToneKeyAppliesAtOnce() {
+        for (keys, want) in [("d9", "đ"), ("a1", "á"), ("o6", "ô")] {
+            let f = web(.vni, step: 100)
+            f.canSettle = true
+            f.idle()
+            f.type(keys)
+            XCTAssertEqual(f.text, want, "\(keys): dấu phải ra ngay trong phím dấu")
+            XCTAssertEqual(rawShown(f), [])
+        }
+    }
+
+    /// Trang treo (không trả lời câu hỏi đồng bộ): bộ gõ về cách cũ — chữ cuối cùng vẫn đúng, không sửa nhầm chỗ.
+    func testWebSettleUnavailableFallsBack() {
+        let f = web(.vni)
+        f.type("d9a38ng ca61p")
+        f.deleteLine()
+        f.type("tie61ng vie65t ")
+        f.finish()
+        XCTAssertEqual(f.text, "tiếng việt ")
+    }
+
     /// Xoá rồi gõ lại nhiều lượt liền, kể cả ⌥⌫ hai lần, ở ô EditContext.
     func testEditContextRepeatedDeleteAndRetype() {
         for method in [InputMethod.vni, .telex] {
@@ -3061,7 +3210,7 @@ final class SessionTests: XCTestCase {
         ]
         let partials = ["tie61", "vie65", "tuye6", "d9a3", "ngu7o7", "d9", "to6", "ca6"]
         enum Op { case word(Int), partial(Int), deleteWord(Bool), deleteLine(Bool) }
-        var corrupt = 0, inexact = 0, total = 0
+        var corrupt = 0, inexact = 0, total = 0, settleInexact = 0, flashed = 0, settleRuns = 0
         for _ in 0..<250 {
             var ops: [Op] = []
             for _ in 0..<(4 + rnd(8)) {
@@ -3079,12 +3228,17 @@ final class SessionTests: XCTestCase {
             for lag in 0...3 {
                 for editContext in [false, true] {
                     for step in [40.0, 100.0] {
+                      for settle in [false, true] {
                         total += 1
                         let f = web(.vni, lag: lag, step: step)
                         f.editContext = editContext
+                        f.canSettle = settle
                         var model: [(raw: String, ideal: String)] = []
                         var script = ""
                         var flagged = false
+                        // Trạng thái trang sinh ra trong chính phím xoá (từ gõ dở được trả về chữ gốc ngay trước khi bị xoá)
+                        // không tính là "chữ thô ra trang".
+                        var inDelete = Set<Int>()
                         for op in ops {
                             switch op {
                             case let .word(i):
@@ -3096,12 +3250,16 @@ final class SessionTests: XCTestCase {
                                 model.append((partials[i], partials[i]))
                                 script += partials[i]
                             case let .deleteWord(gap):
+                                let a = f.shown.count
                                 f.deleteWord(gap: gap ? .bypassed : .none)
+                                inDelete.formUnion(a..<f.shown.count)
                                 flagged = flagged || gap
                                 if !model.isEmpty { model.removeLast() }
                                 script += gap ? "⌥⌫* " : "⌥⌫ "
                             case let .deleteLine(gap):
+                                let a = f.shown.count
                                 f.deleteLine(gap: gap ? .bypassed : .none)
+                                inDelete.formUnion(a..<f.shown.count)
                                 flagged = flagged || gap
                                 model.removeAll()
                                 script += gap ? "⌘⌫* " : "⌘⌫ "
@@ -3109,7 +3267,7 @@ final class SessionTests: XCTestCase {
                         }
                         f.finish(); f.idle(); f.idle()
                         let got = f.text.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
-                        let note = "trang chậm \(lag) phím, \(editContext ? "EditContext" : "ô thường"), \(step) ms: \(script.debugDescription) ra \(f.text.debugDescription)"
+                        let note = "trang chậm \(lag) phím, \(editContext ? "EditContext" : "ô thường"), \(step) ms\(settle ? ", hỏi đồng bộ được" : ""): \(script.debugDescription) ra \(f.text.debugDescription)"
                         guard got.count == model.count + 1, got.last == "" else {
                             corrupt += 1
                             if corrupt <= 6 { XCTFail("mất / thừa từ — " + note) }
@@ -3127,12 +3285,26 @@ final class SessionTests: XCTestCase {
                         } else if lag == 0, !flagged, !exact {
                             inexact += 1
                             if inexact <= 6 { XCTFail("trang báo kịp mà còn từ nguyên văn — " + note) }
+                        } else if settle, !exact {
+                            settleInexact += 1
+                            if settleInexact <= 6 { XCTFail("hỏi đồng bộ được mà còn từ nguyên văn — " + note) }
                         }
+                        if settle {
+                            settleRuns += 1
+                            let raw = f.shown.enumerated().first { !inDelete.contains($0.offset) && $0.element.contains(where: { $0.isASCII && $0.isNumber }) }
+                            if let raw {
+                                flashed += 1
+                                if flashed <= 6 { XCTFail("chữ thô ra trang (\(raw.element.debugDescription)) — " + note) }
+                            }
+                        }
+                      }
                     }
                 }
             }
         }
         XCTAssertEqual(corrupt, 0, "sửa nhầm chỗ / mất từ trong \(total) lượt")
         XCTAssertEqual(inexact, 0, "trang báo kịp mà còn từ nguyên văn trong \(total) lượt")
+        XCTAssertEqual(settleInexact, 0, "hỏi đồng bộ được mà còn từ nguyên văn trong \(settleRuns) lượt")
+        XCTAssertEqual(flashed, 0, "chữ thô ra trang rồi mới được sửa trong \(settleRuns) lượt hỏi đồng bộ được")
     }
 }
