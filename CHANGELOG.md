@@ -4,7 +4,7 @@ Mỗi phiên bản là một mục `## <phiên bản> — <ngày>`. Nội dung c
 note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớp `MARKETING_VERSION` trong
 `project.yml`.
 
-## 1.14 — 2026-11-17
+## 1.14 — 2026-11-26
 
 ### Thay đổi
 - **Bộ gõ InputMethodKit thuần — bỏ hẳn phím ⌫ giả.** Từ 1.13, ở Java / Qt 5 / GTK / winit / LibreOffice và các ô tự vẽ, GTV
@@ -43,6 +43,9 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   không khởi động được nếu file mất. Xoá dòng đó trước rồi mới xoá file.
 - Ô tự vẽ không cho biết con trỏ mà GTV chưa biết (không còn phím ⌫ giả để sửa): từ đầu tiên sau khi ô nhận focus / sau
   click ra nguyên văn, các từ sau được soạn bằng marked text.
+- Firefox / Zen không cho bộ gõ hỏi đồng bộ sang trang (Chromium thì được): sau ba phím xoá / phím tắt liền nhau mà con trỏ
+  không đổi, từ đầu gõ lại có thể hiện nguyên văn một thoáng rồi mới thành chữ có dấu. Trang đang rất chậm mà bấm ⌘-phím tắt
+  ngay sau phím dấu thì phím tắt đó có thể bị bỏ qua một lần.
 
 ### Sửa lỗi
 - **Gõ ra số / chữ không dấu như đang ở tiếng Anh** sau ⌘Tab, ⌥⌫ hay lúc gõ nhanh, tới lần đổi ứng dụng kế tiếp mới hết
@@ -87,8 +90,31 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   đó; một nhịp sau, con trỏ của bộ đệm là con trỏ thật. Việc này nằm gọn giữa hai phím (chừng 15 ms), nên phím dấu kế tiếp
   sửa đúng chỗ ngay — không chữ thô nào ra trang. Cũng nhờ vậy phím dấu là phím thứ hai của từ ("đ", "á") sau một lúc nghỉ
   ra dấu ngay, không còn bị giữ tới phím kế tiếp. Trang treo không trả lời thì bộ gõ về cách cũ (không bao giờ sửa nhầm chỗ).
+- **Telegram (và mọi ô chat tự xử lý ⏎ trước bộ gõ): từ đầu của tin kế tiếp ra nguyên văn, gõ lại ở đầu ô thì bị gạch chân.**
+  ⏎ gửi tin không tới bộ gõ; ô bị xoá trắng, bộ gõ còn giữ từ cuối của tin vừa gửi mà con trỏ đã về 0 — và kết luận nhầm "ô
+  không cho biết con trỏ" (ô mù): phần còn lại của từ đi nguyên văn, từ sau gõ ở đầu ô được soạn bằng marked text. Nay ô đã
+  từng báo con trỏ ở vị trí khác 0 thì không bao giờ bị coi là ô mù: con trỏ về đầu ô là chữ đã bị xoá thật, phím kế tiếp bắt
+  đầu từ mới ở đó. (IME Lab, ô chat thử: bản trước ra `tiếng việt⏎d9a38ng cấp`.)
+- **Firefox, Zen và các trình duyệt Gecko: gõ nhanh — nhất là ngay sau khi chuyển ứng dụng — hay trang chậm thì có từ không
+  nhận dấu.** Gecko trả lời bộ gõ từ một bộ đệm ở tiến trình cha, chỉ cập nhật khi trang báo về; phím sau tới trước lúc đó thì
+  bộ gõ thấy con trỏ "chưa nhích" và cho phần còn lại của từ đi nguyên văn (IME Lab, Firefox thật: `đo61i` khi gõ 3 ms / phím,
+  `d9a38ng` / `ho5c` khi trang bận). Nay ô web của Gecko đi cùng đường với Chromium — bộ gõ tự giữ vị trí chuỗi đang gõ, bộ đệm
+  chỉ để đối chiếu — với các khác biệt của Gecko: bộ đệm không tự đoán (thấy một ký tự của chuỗi là trang đã báo), không hỏi
+  đồng bộ sang trang được, và bước "đặt vùng chọn" của một lần thay bị bỏ qua khi vùng thay trùng vùng chọn trình duyệt đang
+  nhớ (bộ gõ nới vùng thay một ký tự để nó không trùng).
+- Firefox / Zen: gõ dở một từ rồi bấm ⌘⌫ thì ⌘⌫ không xoá gì — bộ gõ khôi phục từ gõ dở ngay trong keyDown của ⌘⌫ làm Gecko
+  nuốt chính phím tắt đó. Ở Gecko bộ gõ không sửa chữ trong keyDown của phím không ra chữ.
+- **Ô web có gợi ý tự điền bôi đen sau con trỏ** (thanh địa chỉ, ô tìm kiếm có gợi ý — Chrome, Electron, Firefox): phím dấu
+  mất hẳn (`tie61ng` ra "tieng") hay gợi ý dính lại thành chữ thật. Nay phím dấu thay luôn cả phần gợi ý đang bôi đen, như
+  khi gõ đè lên nó.
+- Gõ ngay lúc ô vừa được gắn (vừa mở Raycast, vừa chuyển ứng dụng): ô còn trả lời tạm "con trỏ ở 0" làm từ đầu tiên mất dấu
+  và bị coi là ô mù. Nay phím được giữ lại tối đa 70 ms chờ ô trả lời thật rồi mới sửa; ô mù thật thì như trước.
+- Ô thường báo chậm hơn phím (bộ đệm phía ứng dụng): bộ gõ có thể đọc lại từ theo bản chụp cũ rồi sửa lệch một ký tự
+  (`ca61p` ra "cáp" và thừa "6"). Nay không bắt đầu từ ở vị trí mà dấu cách vừa gõ chưa hiện trước con trỏ, không đọc lại từ
+  khi ô đang cho thấy một trạng thái cũ của chính từ đó, và trong một đợt ô báo chậm thì các từ gõ liền tay đi nguyên văn.
 - Bật nhật ký (`trace`): ghi thêm quyết định của bộ gõ ở ô web (chuỗi mới đáng tin hay chưa, phím đi nguyên văn chờ trang, sửa
-  lại khi có bằng chứng) — vẫn không ghi chữ đã gõ. File nhật ký có sẵn mà không mở được thì bỏ dòng đó, không ghi đè cả file.
+  lại khi có bằng chứng) và ở ô thường (ô báo chậm, giữ phím chờ ô trả lời, ô mù) — vẫn không ghi chữ đã gõ. File nhật ký có
+  sẵn mà không mở được thì bỏ dòng đó, không ghi đè cả file.
 - Ô thường (gõ trực tiếp): mất dấu từ đang gõ đúng ở phím kết thúc từ (ô chat tự xoá sau khi bấm Gửi rồi tin sau mở đầu bằng
   dấu ngoặc / nháy; ô báo chậm lúc bấm dấu cách liền tay) không còn làm cả từ SAU đi nguyên văn. Từ đang đi nguyên văn bị
   ⌫ hết rồi gõ lại thì gõ như thường.

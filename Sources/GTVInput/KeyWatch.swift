@@ -238,8 +238,8 @@ final class KeyWatch {
                 }
             }
             publishedPending.removeAll { a in takenClicks.contains { $0.at == a } }
-            // Click còn chờ (đọc thấy sau hay gần lúc tạo phím này: còn xếp sau nó — phím sửa vẫn hoãn tới khi phím tạo sau nó
-            // tới, sổ lấy nó ra và báo ngắt lúc đó): đã công bố thì ghi lại, không bao giờ thành credit.
+            // Click còn chờ (đọc thấy sau hay gần lúc tạo phím này: còn xếp sau nó — phím tạo sau nó tới thì sổ lấy nó ra và báo
+            // ngắt lúc đó): đã công bố thì ghi lại, không bao giờ thành credit.
             let waiting = live.withLog { log in log.pending.filter { $0.key == nil } }
             for c in waiting where !publishedPending.contains(c.at) {
                 if surely(c.at) && !maybeBefore(c.after) {
@@ -251,7 +251,7 @@ final class KeyWatch {
             }
             published -= min(published, explained)
             // Còn lại là click bộ gõ không thấy (chạm trackpad, click rất nhanh): báo ngắt ở phím này. Click đó có thể xảy ra sau
-            // lúc tạo phím này (ô của nó kết thúc sau): ghi như một click chờ ở cuối ô — phím sửa hoãn, phím tạo sau ô đó báo ngắt.
+            // lúc tạo phím này (ô của nó kết thúc sau): ghi như một click chờ ở cuối ô — phím tạo sau ô đó báo ngắt.
             if published > 0, cellAfter + 0.5 + 0.02 > event.timestamp {
                 let at = cellAfter + 0.5
                 live.withLog { $0.notePublishedClick(at: at, after: cellAfter) }

@@ -36,12 +36,12 @@ enum AppToolkit {
         var swiftTerm = false
         var gtk = false
         var winit = false
-        /// Firefox, Zen, LibreWolf, Thunderbird (Gecko, XUL): ô web khai báo đúng 4 thuộc tính như Chromium nhưng không phải
-        /// Chromium — không đi đường `Session.handleWeb`.
+        /// Firefox, Zen, LibreWolf, Thunderbird (Gecko, XUL): ô web khai báo đúng 4 thuộc tính như Chromium và cũng trả lời bộ gõ
+        /// từ một bộ đệm phía trình duyệt — đi đường `Session.handleWeb` với các khác biệt của Gecko (`Session.webGuessFree`).
         var gecko = false
 
         var description: String {
-            "qt=\(qt) gtk=\(gtk) winit=\(winit) markedOnly=\(markedOnly) combined=\(combinedCommit) flutter=\(flutter)/\(flutterTerminal) swiftTerm=\(swiftTerm)"
+            "qt=\(qt) gtk=\(gtk) winit=\(winit) gecko=\(gecko) markedOnly=\(markedOnly) combined=\(combinedCommit) flutter=\(flutter)/\(flutterTerminal) swiftTerm=\(swiftTerm)"
         }
     }
 

@@ -1469,67 +1469,6 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(k.text, "Tôi yêu tiếng Việt ")
     }
 
-    /// Review 6ea6328: giữ ⌫ ở ứng dụng giao phím chậm (Burp bận) — các lần lặp nằm trong hàng đợi của ứng dụng, chưa lần nào tới
-    /// bộ gõ: vẫn hoãn lần sửa (gửi bây giờ thì ⌫ giả tới sau các lần lặp, xoá lố vào chữ có sẵn); nhả trước khi lần lặp đầu tới
-    /// bộ gõ cũng vậy. Không dựa vào đồng hồ: lần lặp tới trễ hơn 0,5 s vẫn là đang lặp.
-    func testHeldKeyInLaggyApp() {
-        var log = PressLog()
-        log.repeatDelay = 0.225
-        log.repeatInterval = 0.03
-        var t = 10.0
-        log.sample(at: t, held: [], button: false, flags: 0)
-        for _ in 0..<5 { t += 0.008; log.sample(at: t, held: [], button: false, flags: 0) }
-        let pressAt = t + 0.008
-        for _ in 0..<50 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0) }      // giữ ⌫ 0,4 s
-        log.keyReceived(9, at: pressAt - 0.05, isRepeat: false)                                       // "v" bấm trước ⌫ tới
-        XCTAssertTrue(log.userKeysPending(now: t, since: pressAt - 0.05), "⌫ chưa tới")
-        log.keyReceived(51, at: pressAt, isRepeat: false)                                             // ⌫ đầu tới, trễ 0,4 s
-        XCTAssertTrue(log.userKeysPending(now: t, since: pressAt), "các lần lặp còn trong hàng đợi của ứng dụng")
-        for i in 0..<100 { t += 0.008; log.sample(at: t, held: [51], button: false, flags: 0); _ = i }   // giữ tiếp 0,8 s
-        log.keyReceived(51, at: pressAt + 0.225, isRepeat: true)                                      // lần lặp đầu tới, trễ 0,9 s
-        XCTAssertTrue(log.userKeysPending(now: t, since: pressAt), "lần lặp tới trễ vẫn là đang lặp")
-        // Nhả trước khi lần lặp đầu tới bộ gõ.
-        var r = PressLog()
-        r.repeatDelay = 0.225
-        var u = 30.0
-        r.sample(at: u, held: [], button: false, flags: 0)
-        for _ in 0..<5 { u += 0.008; r.sample(at: u, held: [], button: false, flags: 0) }
-        let press = u + 0.008
-        for _ in 0..<50 { u += 0.008; r.sample(at: u, held: [51], button: false, flags: 0) }        // giữ 0,4 s
-        u += 0.008
-        r.sample(at: u, held: [], button: false, flags: 0)                                            // nhả
-        r.keyReceived(51, at: press, isRepeat: false)                                                 // ⌫ đầu tới sau lúc nhả
-        XCTAssertTrue(r.userKeysPending(now: u + 0.1, since: press), "lần lặp tạo trước lúc nhả có thể chưa tới")
-        r.keyReceived(0, at: u + 0.05, isRepeat: false)                                               // phím bấm sau lúc nhả tới
-        XCTAssertFalse(r.userKeysPending(now: u + 0.1, since: u + 0.05))
-    }
-
-    /// Sổ nhấn phím: lần nhấn phím không bao giờ tới bộ gõ (phím tắt toàn hệ thống) thôi được coi là đang chờ khi phím tạo sau
-    /// nó đã tới bộ gõ (không theo đồng hồ); phím đang giữ sau khoảng không đọc không làm lần nhấn thật kế tiếp bị coi là đã nhận.
-    func testPressLogUserKeysPending() {
-        var log = PressLog()
-        var t = 50.0
-        log.sample(at: t, held: [], button: false, flags: 0)
-        t += 0.008
-        log.sample(at: t, held: [123], button: false, flags: 0)
-        XCTAssertTrue(log.userKeysPending(now: t, since: t - 0.02))
-        t += 0.008
-        log.sample(at: t, held: [], button: false, flags: 0)
-        XCTAssertTrue(log.userKeysPending(now: t + 0.5, since: t - 0.03))
-        XCTAssertTrue(log.userKeysPending(now: t + 1.5, since: t - 0.03))
-        XCTAssertFalse(log.userKeysPending(now: t + 1.5, since: t + 0.02))
-        var g = PressLog()
-        var u = 10.0
-        g.sample(at: u, held: [51], button: false, flags: 0)        // lần đọc đầu sau khoảng hở: đang giữ ⌫, không ghi lần nhấn
-        g.keyReceived(51, at: u, isRepeat: false)
-        u += 0.008
-        g.sample(at: u, held: [], button: false, flags: 0)
-        for _ in 0..<20 { u += 0.008; g.sample(at: u, held: [], button: false, flags: 0) }
-        u += 0.008
-        g.sample(at: u, held: [51], button: false, flags: 0)        // lần nhấn thật kế tiếp
-        XCTAssertTrue(g.pending.contains { $0.key == 51 })
-    }
-
     /// Electron / Chrome khi trang chậm (bộ đệm chậm 0–3 phím, phím cách nhau 10–120 ms): không bao giờ bỏ dấu, không sửa sai
     /// chỗ (người dùng: "d9a38ng" ra "đa38ng" / "đả8ng").
     func testChromiumLagNeverDropsTones() {
@@ -2470,7 +2409,7 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(v.text, "đẳng tuyệt ")
     }
 
-    /// Ô mù khi chưa có quyền gửi phím (Trợ năng): từ đầu tiên lộ ra là ô mù đi nguyên văn phần còn lại, các từ sau gạch chân
+    /// Ô mù (view tự vẽ không cho biết con trỏ): từ đầu tiên lộ ra là ô mù đi nguyên văn phần còn lại, các từ sau gạch chân
     /// (không đi nguyên văn mãi).
     func testBlindViewWithoutPermissionFallsBackToMarked() {
         let f = CustomView(blind: true)
