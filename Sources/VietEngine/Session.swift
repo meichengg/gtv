@@ -185,8 +185,9 @@ public final class Session {
     private var laggyUntil = -Double.infinity
     /// Chữ ô cho đọc ở lần thay vừa hỏng (đúng vị trí mà khác chữ bộ gõ nhớ), xem `perform`.
     private var replaceMismatch: String?
-    /// Chữ của phím vừa đi thẳng ngay trước phím này (dấu cách, dấu câu, chữ) — ô đã báo kịp thì nó nằm ngay trước con trỏ.
-    private var lastPassed: Character?
+    /// Phím ngay trước là dấu cách kết thúc một từ đang theo dõi (dấu cách đó đi thẳng): ô đã báo kịp thì ngay trước con trỏ là
+    /// chính dấu cách ấy. (Chỉ sau một TỪ: "- ", "1. ", "# " ở đầu dòng thì ô có thể tự đổi thành dấu đầu dòng / đề mục.)
+    private var spaceMark = false
     /// Lần thay gần nhất của bộ gõ trong từ đang gõ: từ trước (`from`) và sau (`to`) lần thay. Bộ đệm phía ứng dụng chưa có
     /// lần thay đó thì vẫn cho đọc `from` (xem `staleWord`).
     private var lastEdit: (from: String, to: String)?
@@ -426,8 +427,8 @@ public final class Session {
             }
         }
         let sinceKey = client.currentTime() - directKeyAt
-        let passedBefore = lastPassed
-        lastPassed = nil
+        let spaceBefore = spaceMark
+        spaceMark = false
         defer { directKeyAt = client.currentTime() }
         if hold != nil, !holdRelease(client) {
             // Ô vẫn chưa báo kịp: chữ kế tiếp của từ cũng được giữ; phím khác thì trả các phím đã giữ cho ô trước nó.
@@ -456,8 +457,10 @@ public final class Session {
                 reset()          // ô nhập liệu tự xử lý (xem bên dưới)
             }
         }
+        var endedWord = false
         if untracked {
             // Từ không theo dõi được (xem `untracked`): chữ trong từ đi nguyên văn, phím khác kết thúc từ.
+            endedWord = untrackedLength > 0
             switch key {
             case let .char(ch) where Self.continuesWord(ch):
                 untrackedLength += 1
@@ -528,15 +531,14 @@ public final class Session {
                         let now = client.currentTime()
                         // Ô đang trong một đợt báo chậm và từ này gõ liền sau dấu cách của từ trước: vị trí đầu từ đọc được không
                         // tin được. (Sau ⌫ / phím khác thì không: xoá từ đi nguyên văn rồi gõ lại phải ra dấu.)
-                        if now < laggyUntil, passedBefore == " ", sinceKey < Self.lagPause {
+                        if now < laggyUntil, spaceBefore, sinceKey < Self.lagPause {
                             laggyUntil = now + Self.lagEpisode
                             continueWordOnNextChar = false
                             return loseTrack("ô đang báo chậm (con trỏ \(sel.location))")
                         }
-                        // Dấu cách vừa đi thẳng mà ô chưa cho thấy nó trước con trỏ: ô đang báo chậm, vị trí đầu từ đọc được là
-                        // của bản chụp cũ — từ bắt đầu ở đó sẽ bị sửa lệch một ký tự ("ca61p" ra "cáp…6"). (Chỉ dấu cách: ô có thể
-                        // tự đổi dấu câu vừa gõ — nháy kép thành nháy cong, "--" thành gạch dài.)
-                        if passedBefore == " ", sinceKey < Self.directLag, sel.location > 0,
+                        // Dấu cách của từ trước vừa đi thẳng mà ngay trước con trỏ ô báo không phải dấu cách: ô chưa báo nó — vị
+                        // trí đầu từ đọc được là của bản chụp cũ, từ bắt đầu ở đó sẽ bị sửa lệch ("ca61p" ra "cáp…6").
+                        if spaceBefore, sinceKey < Self.directLag, sel.location > 0,
                            let shown = client.text(location: sel.location - 1, length: 1), shown != " ", shown != "\u{a0}" {
                             laggyUntil = now + Self.lagEpisode
                             continueWordOnNextChar = false
@@ -604,7 +606,7 @@ public final class Session {
                     // Không có từ nào bắt đầu (End, mũi tên, dấu câu… ở đầu ô): không giữ chế độ gạch chân vừa chọn cho từ.
                     // (Ô mù — `blindLatched` — cũng vậy: giữ cờ thì đầu từ sau không còn xét gỡ cờ ô mù.)
                     if !callerForcesMarked { marked = false }
-                    if !marked, Self.producesText(ch), !"\r\n\t".contains(ch) { lastPassed = ch }
+                    spaceMark = endedWord && !marked && ch == " "      // dấu cách kết thúc một từ vừa đi nguyên văn
                     return false
                 }
                 if combinedCommit, marked {
@@ -614,9 +616,8 @@ public final class Session {
                 if singleEditPerKey, !marked {
                     return breakWord(with: Self.producesText(ch) ? keyText ?? String(ch) : nil, client)
                 }
-                let direct = !marked
+                spaceMark = !marked && ch == " "          // dấu cách kết thúc một từ đang theo dõi: mốc cho đầu từ sau
                 breakWord(client)
-                if direct, Self.producesText(ch), !"\r\n\t".contains(ch) { lastPassed = ch }
                 return false
             }
             if marked { return showMarked(ch, action, before: before, client) }
@@ -624,7 +625,6 @@ public final class Session {
             // Phím đi thẳng: ứng dụng tự chèn chữ, con trỏ phải nhích ở phím sau (`lostTrack`).
             passedAt = handled || engine.isEmpty ? nil : sel?.location
             passedWhen = client.currentTime()
-            if !handled, !untracked { lastPassed = ch }
             return handled
         }
     }
