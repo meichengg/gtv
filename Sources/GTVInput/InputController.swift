@@ -12,6 +12,9 @@ private final class ClientAdapter: TextClient {
     /// Ô Java (JDK gốc) có trợ thủ GTV trong máy ảo: vùng cần thay đi trong chính chuỗi gửi (`JavaWire`), vì AWT bỏ qua
     /// `replacementRange`.
     var javaHelper = false
+    /// Ô trả lời được câu hỏi đồng bộ (`settle`): ô web của Chromium. Gecko trả lời mọi câu hỏi từ bộ đệm ở tiến trình cha — câu
+    /// trả lời có về cũng không nói được gì về trang.
+    var canSettle = false
     /// Ô Java trả lời mỗi câu hỏi qua luồng sự kiện của nó (một vòng đi-về). Trong lúc xử lý một phím, vị trí con trỏ chỉ đổi
     /// khi chính bộ gõ gửi chữ: nhớ câu trả lời tới lúc đó.
     var remembersSelection = false {
@@ -120,7 +123,7 @@ private final class ClientAdapter: TextClient {
     /// sau khi xử lý xong các phím / click đã nhận trước đó — nên có câu trả lời là biết chắc trang không còn phím nào chưa xử
     /// lý. Không gửi phím, không đổi gì trong trang; điểm hỏi là chỗ con trỏ (để chắc chắn nằm trong trang).
     func settle() -> Bool {
-        guard let client, !javaHelper else { return false }
+        guard let client, canSettle, !javaHelper else { return false }
         #if DEBUG
         if UserDefaults.standard.bool(forKey: "labNoSettle") { return false }      // lượt đối chứng của IME Lab
         let indexFirst = UserDefaults.standard.string(forKey: "labSettleProbe") == "index-first"
@@ -167,8 +170,9 @@ private final class ClientAdapter: TextClient {
         if usable(line) { lastLine = line }
         let took = clock() - start
         DebugLog.write("hỏi đồng bộ: sel=\(sel.location) dòng=(\(Int(line.origin.x)),\(Int(line.origin.y)),\(Int(line.width)),\(Int(line.height))) \(Int(lineTook * 1_000_000)) µs; ký tự ở điểm=\(index == NSNotFound ? -1 : index) \(Int(indexTook * 1_000_000)) µs\(indexFirst ? " [hỏi điểm trước]" : "")")
-        // Chromium bỏ cuộc sau 1,5 s nếu trang treo: câu trả lời tới muộn vậy không nói được gì.
-        return usable(line) && took < 1.0
+        // Chromium bỏ cuộc sau 1,5 s nếu trang treo (trả về "không tìm thấy"), và trả về ngay "không tìm thấy" khi điểm hỏi không
+        // rơi vào trang nào: cả hai đều không phải câu trả lời của trang.
+        return usable(line) && index != NSNotFound && took < 1.0
     }
     private var lastLine: NSRect?
 }
@@ -191,8 +195,8 @@ final class GTVInputController: IMKInputController {
         #if DEBUG
         s.log = { DebugLog.write("session: \($0)") }
         #else
-        // Bản phát hành: chỉ các quyết định của bộ gõ ở ô web, không kèm chữ người dùng gõ (ghi khi bật `trace`).
-        s.trace = { DebugLog.event("ô web: \($0)") }
+        // Bản phát hành: chỉ các quyết định của bộ gõ (ô web, ô báo chậm), không kèm chữ người dùng gõ (ghi khi bật `trace`).
+        s.trace = { DebugLog.event($0) }
         #endif
         return s
     }()
@@ -518,6 +522,7 @@ final class GTVInputController: IMKInputController {
 
         adapter.client = client
         adapter.javaHelper = false
+        adapter.canSettle = false
         defer {
             adapter.client = nil
             adapter.remembersSelection = false
@@ -569,7 +574,14 @@ final class GTVInputController: IMKInputController {
             s.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f && !(0xF700...0xF8FF).contains($0.value) } ? s : nil
         } : nil
         let repeatDelay = Settings.repeatBypassTerminals.contains(bundleID) ? settings.keyRepeatDelay : nil
-        let web = chromiumWeb && !toolkit.gecko && !forceMarked && terminal == nil
+        // Ô web của Chromium (Chrome, Electron) và của Gecko (Firefox, Zen — cùng khai báo 4 thuộc tính đó): trình duyệt trả lời
+        // bộ gõ từ một bộ đệm chỉ cập nhật khi trang báo về, nên bộ gõ tự giữ vị trí chuỗi đang gõ (`Session.handleWeb`).
+        var web = chromiumWeb && !forceMarked && terminal == nil
+        #if DEBUG
+        if toolkit.gecko, UserDefaults.standard.bool(forKey: "labGeckoDirect") { web = false }   // lượt đối chứng của IME Lab
+        #endif
+        session.webGuessFree = web && toolkit.gecko
+        adapter.canSettle = web && !toolkit.gecko
         let handled = session.handle(key, adapter, options: settings.options, forceMarked: forceMarked,
                                      qtApp: toolkit.qt, terminal: terminal, repeatDelay: repeatDelay,
                                      earlyCommit: earlyCommit, gap: gap, legacy: Self.legacyBytes(event, flags),

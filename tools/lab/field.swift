@@ -3,11 +3,24 @@
 //   field <file> --blind: thay NSTextView bằng một view tự vẽ như view terminal của GPUI (Herdr, Zed) / ứng dụng Rust: không
 //   khai báo thuộc tính marked text, con trỏ báo bằng độ dài marked text (0 khi không gõ dở), insertText bỏ qua vùng thay và
 //   ghi chữ vào dòng như shell (DEL xoá lùi) — GTV chưa biết ứng dụng này: phải gõ đúng mà không từ nào đi nguyên văn.
+//   field <file> --chat: ô chat kiểu Telegram — ứng dụng tự bắt phím ⏎ TRƯỚC khi nó tới ô văn bản / bộ gõ (gửi tin, xoá
+//   trắng ô). Bộ gõ không thấy ⏎, không được gắn lại, chỉ thấy con trỏ về 0. <file> ghi các tin đã gửi (cách nhau bằng "⏎")
+//   rồi tới chữ đang có trong ô; <file>.marked khi ô nhận phần đang soạn (marked text — ô sẽ vẽ gạch chân).
 // Mỗi lần ứng dụng bị rời đi (lab chuyển sang Finder rồi mở lại) thì xoá chữ, như bảng tìm kiếm kiểu
 // TinyCast / Spotlight: lab gõ ngay khi cửa sổ vừa hiện (phím đầu có thể tới trước lời gọi setValue của InputMethodKit).
 import Cocoa
 
 let blindMode = CommandLine.arguments.contains("--blind")
+let chatMode = CommandLine.arguments.contains("--chat")
+
+/// Ô văn bản thường, ghi lại mỗi lần nhận phần đang soạn (marked text): ô văn bản thật vẽ gạch chân cho nó.
+final class FieldText: NSTextView {
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        if !text.isEmpty { try? "1".write(toFile: CommandLine.arguments[1] + ".marked", atomically: true, encoding: .utf8) }
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+    }
+}
 
 /// View tự vẽ "mù con trỏ" (xem đầu file). Văn bản là một dòng lệnh: `line` + vị trí `cursor`.
 final class BlindView: NSView, NSTextInputClient {
@@ -113,12 +126,14 @@ final class Delegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     var window: NSWindow!
     var text: NSTextView!
     var blind: BlindView?
+    /// Chế độ --chat: các tin đã gửi.
+    var sent: [String] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 240, y: 360, width: 640, height: 160),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "GTV Lab field"
-        text = NSTextView(frame: window.contentView!.bounds)
+        text = FieldText(frame: window.contentView!.bounds)
         text.autoresizingMask = [.width, .height]
         text.isRichText = false
         text.isAutomaticQuoteSubstitutionEnabled = false
@@ -137,6 +152,19 @@ final class Delegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             window.contentView!.addSubview(v)
             blind = v
         }
+        if chatMode {
+            // Như Telegram: ⏎ được xử lý ở mức ứng dụng (trước cửa sổ, trước ô văn bản, trước bộ gõ).
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, [36, 76].contains(event.keyCode),
+                      event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return event }
+                if !self.text.string.isEmpty {
+                    self.sent.append(self.text.string)
+                    self.text.string = ""
+                }
+                self.dump()
+                return nil
+            }
+        }
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(blind ?? text)
         NSApp.mainMenu = Self.menu()
@@ -145,6 +173,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             guard let self, FileManager.default.fileExists(atPath: clear.path) else { return }
             try? FileManager.default.removeItem(at: clear)
             self.text.string = ""
+            self.sent = []
             self.blind?.line = []
             self.blind?.cursor = 0
             self.blind?.marked = ""
@@ -180,6 +209,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     func applicationDidResignActive(_ notification: Notification) {
         try? FileManager.default.removeItem(at: ready)
         text.string = ""
+        sent = []
         blind?.line = []
         blind?.cursor = 0
         blind?.marked = ""
@@ -188,7 +218,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) { dump() }
 
-    func dump() { try? (blind?.text ?? text.string).write(to: out, atomically: true, encoding: .utf8) }
+    func dump() {
+        let shown = blind?.text ?? ((sent + [text.string]).joined(separator: "⏎"))
+        try? shown.write(to: out, atomically: true, encoding: .utf8)
+    }
 }
 
 let app = NSApplication.shared

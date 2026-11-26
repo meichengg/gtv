@@ -202,6 +202,21 @@ jobs:
             defaults read "/Applications/Visual Studio Code.app/Contents/Info.plist" CFBundleShortVersionString || true
           fi
 
+      # Firefox / Zen thật (Gecko) — chỉ khi lab.env có "firefox" / "zen" trong APPS.
+      - name: Install Firefox / Zen
+        if: env.MODE == 'full'
+        run: |
+          if grep -qE '^APPS=.*firefox' tools/lab/lab.env 2>/dev/null; then
+            brew install --cask firefox >/dev/null || echo "::warning::không cài được Firefox"
+            xattr -dr com.apple.quarantine "/Applications/Firefox.app" 2>/dev/null || true
+            defaults read "/Applications/Firefox.app/Contents/Info.plist" CFBundleShortVersionString || true
+          fi
+          if grep -qE '^APPS=.*zen' tools/lab/lab.env 2>/dev/null; then
+            brew install --cask zen >/dev/null || brew install --cask zen-browser >/dev/null || echo "::warning::không cài được Zen"
+            xattr -dr com.apple.quarantine "/Applications/Zen.app" 2>/dev/null || true
+            defaults read "/Applications/Zen.app/Contents/Info.plist" CFBundleShortVersionString || true
+          fi
+
       - name: Run lab
         if: env.MODE == 'full'
         env:

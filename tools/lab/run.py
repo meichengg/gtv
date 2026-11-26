@@ -187,6 +187,29 @@ WEB_FLASH_TESTS = [
     ("flash-first-tone", "vni", "{WAIT1300}d9i a1 o6ng d9a38ng ", "đi á ông đẳng ", 120),
 ]
 FLASH_NAMES = {t[0] for t in WEB_FLASH_TESTS}
+# Ô chat kiểu Telegram (field --chat): ứng dụng tự xử lý ⏎ trước bộ gõ rồi xoá trắng ô — bộ gõ còn giữ từ cuối của tin vừa gửi
+# mà con trỏ đã về 0. Nhật ký máy người dùng 2026-11-26: từ đầu của tin kế tiếp đi nguyên văn ("d9a38ng"), rồi xoá gõ lại ở đầu ô
+# thì bị soạn có gạch chân. Kết quả: các tin đã gửi cách nhau bằng "⏎", rồi chữ còn trong ô.
+CHAT_TESTS = [
+    ("chat-send", "vni", "tie61ng vie65t{RET}d9a38ng ca61p ", "tiếng việt⏎đẳng cấp ", 45),
+    ("chat-send-fast", "vni", "tie61ng vie65t{RET}d9a38ng ca61p ", "tiếng việt⏎đẳng cấp ", 8),
+    ("chat-send-telex", "telex", "tieengs vieetj{RET}ddawngr caaps ", "tiếng việt⏎đẳng cấp ", 45),
+    ("chat-send-many", "vni", "xin chao{RET}tie61ng{RET}vie65t{RET}d9a38ng ca61p{RET}tuye65t ",
+     "xin chao⏎tiếng⏎việt⏎đẳng cấp⏎tuyệt ", 45),
+    # Từ đầu của tin kế tiếp gõ dở, xoá bằng ⌥⌫ rồi gõ lại ở đầu ô: không được gạch chân, phải ra dấu.
+    ("chat-send-retype", "vni", "tie61ng{RET}d9a3{OPTBS}d9a38ng ca61p ", "tiếng⏎đẳng cấp ", 60),
+    ("chat-send-retype2", "vni", "tie61ng{RET}d9{OPTBS}{WAIT300}d9{OPTBS}d9a38ng ", "tiếng⏎đẳng ", 60),
+    ("chat-words", "vni", "Vie65t Nam, to6i ye6u tie61ng Vie65t d9a5i ho5c.", "Việt Nam, tôi yêu tiếng Việt đại học.", 45),
+]
+# Ô có gợi ý tự điền bôi đen sau con trỏ (?ac=1: như thanh địa chỉ của Firefox / Zen, ô tìm kiếm có gợi ý): phím dấu phải thay
+# cả phần gợi ý đang bôi đen, không để nó dính lại thành chữ thật ("áxyz").
+WEB_AC_TESTS = [
+    ("ac-tone", "vni", "a1 ", "á ", 80),
+    ("ac-tone-word", "vni", "tie61ng ", "tiếng ", 80),
+    ("ac-words", "vni", "a1 tie61ng to6i a2 ", "á tiếng tôi à ", 80),
+    ("ac-telex", "telex", "as tieengs tooi af ", "á tiếng tôi à ", 80),
+    ("ac-fast", "vni", "a1 tie61ng to6i a2 ", "á tiếng tôi à ", 15),
+]
 # Ô EditContext / contenteditable: không có ⏎ / mũi tên / ⌘A của các bài chung (trang thử tự xử lý phím theo cách riêng).
 WEB_EDIT_TESTS = [t for t in APP_TESTS if t[0] in ("vni-words", "vni-fast", "telex-words", "vni-backspace", "vni-punct",
                                                     "vni-bs-burst", "vni-fast3", "vni-abbrev", "telex-abbrev")] \
@@ -220,6 +243,59 @@ CHROME_SLOW_TESTS = [
 ]
 CHROME = "/Applications/Google Chrome.app"
 CHROME_ID = "com.google.Chrome"
+# Trình duyệt cho các bài ô web: <trình duyệt><kiểu trang> — "chrome", "chromeslow", "firefoxce"…
+BROWSERS = {
+    "chrome": (CHROME, CHROME_ID),
+    # Gecko (Firefox, Zen): trả lời bộ gõ từ một bộ đệm chỉ cập nhật khi trang báo về, không hỏi đồng bộ sang trang được.
+    "firefox": ("/Applications/Firefox.app", "org.mozilla.firefox"),
+    "zen": ("/Applications/Zen.app", "app.zen-browser.zen"),
+}
+PAGE_KINDS = {"": "", "slow": "?slow=100", "ec": "?ec=1", "ce": "?ce=1", "ac": "?ac=1"}
+FIREFOX_PREFS = {
+    "browser.shell.checkDefaultBrowser": False, "browser.aboutwelcome.enabled": False,
+    "browser.startup.homepage_override.mstone": "ignore", "startup.homepage_welcome_url": "",
+    "startup.homepage_welcome_url.additional": "", "browser.startup.firstrunSkipsHomepage": True,
+    "datareporting.policy.dataSubmissionPolicyBypassNotification": True, "datareporting.policy.firstRunURL": "",
+    "datareporting.healthreport.uploadEnabled": False, "toolkit.telemetry.reportingpolicy.firstRun": False,
+    "browser.tabs.warnOnClose": False, "browser.warnOnQuit": False, "browser.sessionstore.resume_from_crash": False,
+    "app.update.enabled": False, "app.update.auto": False, "browser.translations.automaticallyPopup": False,
+    "browser.startup.page": 0, "signon.rememberSignons": False, "browser.search.suggest.enabled": False,
+    "layout.spellcheckDefault": 0, "browser.preonboarding.enabled": False, "termsofuse.bypassNotification": True,
+    "browser.uitour.enabled": False, "trailhead.firstrun.didSeeAboutWelcome": True, "browser.tabs.firefox-view": False,
+    "zen.welcome-screen.seen": True, "zen.welcome-screen.enabled": False, "zen.updates.show-update-notification": False,
+    # Hộp "Update available" của Zen chiếm focus (lab 45776448337: chữ không tới trang).
+    "app.update.disabledForTesting": True, "app.update.doorhanger": False, "app.update.silent": True,
+    "app.update.badge": False, "app.update.checkInstallTime": False,
+    "browser.newtabpage.activity-stream.showSponsoredTopSites": False, "extensions.pocket.enabled": False,
+}
+
+
+def browser_of(app):
+    """(trình duyệt, kiểu trang) của một tên ứng dụng lab, hay None."""
+    for name in BROWSERS:
+        if app.startswith(name) and app[len(name):] in PAGE_KINDS:
+            return name, app[len(name):]
+    return None
+
+
+def open_browser(name, url):
+    path, _ = BROWSERS[name]
+    # Cài bằng Homebrew cask có cờ quarantine: hộp thoại Gatekeeper "downloaded from the Internet" chặn lab.
+    if sh(["xattr", "-dr", "com.apple.quarantine", path]).returncode:
+        sh(["sudo", "-n", "xattr", "-dr", "com.apple.quarantine", path])
+    if name == "chrome":
+        sh(["open", "-na", path, "--args", "--user-data-dir=/tmp/l/chrome-profile", "--no-first-run",
+            "--no-default-browser-check", "--disable-features=Translate", "--new-window", url])
+        return
+    profile = L / f"{name}-profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "user.js").write_text("".join(
+        f"user_pref({json.dumps(k)}, {json.dumps(v)});\n" for k, v in FIREFOX_PREFS.items()))
+    sh(["open", "-na", path, "--args", "-profile", str(profile), "-no-remote", "-new-instance", url])
+
+
+def close_browser(name):
+    sh(["pkill", "-f", f"{name}-profile"])
 FIELD_APP = L / "GTVField.app"
 FIELD_ID = "com.gtv.lab.field"
 
@@ -383,6 +459,17 @@ def set_settle(on, probe=None):
         sh(["defaults", "write", d, "labSettleProbe", "-string", probe])
     else:
         sh(["defaults", "delete", d, "labSettleProbe"])
+    sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+    time.sleep(0.6)
+
+
+def set_gecko_direct(on):
+    """Lượt đối chứng: bản Debug cho ô web của Gecko đi đường gõ trực tiếp như trước (`labGeckoDirect`)."""
+    d = "com.gtv.inputmethod.GTV"
+    if on:
+        sh(["defaults", "write", d, "labGeckoDirect", "-bool", "true"])
+    else:
+        sh(["defaults", "delete", d, "labGeckoDirect"])
     sh(["notifyutil", "-p", "com.gtv.lab.reload"])
     time.sleep(0.6)
 
@@ -634,7 +721,7 @@ def used_underline(app, out_file, name):
     - Swing: InputMethodEvent có phần chữ chưa chốt mang INPUT_METHOD_HIGHLIGHT (hl=1) sau dòng "=== <bài>" — AWT của JDK gốc
       luôn gắn; JetBrains Runtime thì bộ gõ thay chữ trực tiếp, không có phần đang soạn.
     - Ô --blind: file <file>.marked (phần đang soạn tới ô là chuỗi thường hay có kiểu gạch chân nhìn thấy được)."""
-    if app == "blind":
+    if app in ("blind", "chat", "field"):
         return "gạch chân" if pathlib.Path(str(out_file) + ".marked").exists() else ""
     if not app.startswith("swing"):
         return ""
@@ -743,6 +830,25 @@ if (q.get('ec')) {
   clear = () => { e.textContent = ''; };
   focus = () => e.focus();
   e.addEventListener('input', send);
+} else if (q.get('ac')) {
+  // ?ac=1: gợi ý tự điền kiểu thanh địa chỉ — sau mỗi lần gõ, nếu từ cuối là phần đầu của một gợi ý thì điền nốt và bôi đen
+  // phần điền thêm. Lab chấm phần chữ KHÔNG bôi đen cộng với gợi ý nào bị dính lại (đã mất bôi đen).
+  const list = ['axyz', 'tiendo', 'toolbar', 'tieuhoc'];
+  t.addEventListener('input', ev => {
+    if (ev.inputType && ev.inputType.startsWith('delete')) { send(); return; }
+    const v = t.value, at = t.selectionStart;
+    if (at === v.length) {
+      const word = v.slice(v.lastIndexOf(' ') + 1);
+      const hit = word && list.find(x => x.startsWith(word) && x !== word);
+      if (hit) {
+        t.value = v + hit.slice(word.length);
+        t.setSelectionRange(v.length, t.value.length);
+      }
+    }
+    send();
+  });
+  value = () => t.selectionStart !== t.selectionEnd && t.selectionEnd === t.value.length
+    ? t.value.slice(0, t.selectionStart) : t.value;
 } else {
   if (slow) t.addEventListener('keydown', () => { const e = performance.now() + slow; while (performance.now() < e) {} });
   t.addEventListener('input', send);
@@ -808,27 +914,25 @@ def run_app_suite(app, only=None, tag=None):
     try:
         web = None
         tests = APP_TESTS
-        if app in ("field", "blind"):
+        browser = browser_of(app)
+        if app in ("field", "blind", "chat"):
             build_field_app()
-            sh(["open", "-a", str(FIELD_APP), "--args", str(out_file)] + (["--blind"] if app == "blind" else []))
+            sh(["open", "-a", str(FIELD_APP), "--args", str(out_file)] + {"blind": ["--blind"], "chat": ["--chat"]}.get(app, []))
             bid, pid = FIELD_ID, None
             if app == "blind":
                 tests = BLIND_TESTS
+            elif app == "chat":
+                tests = CHAT_TESTS
             else:
                 tests = APP_TESTS + DELETE_RETYPE_TESTS
-        elif app in ("chrome", "chromeslow", "chromeec", "chromece"):
-            if not pathlib.Path(CHROME).exists():
-                return [{"terminal": app, "test": "-", "error": "chưa cài Chrome"}]
-            # Chrome cài bằng Homebrew cask có cờ quarantine: hộp thoại Gatekeeper "downloaded from the Internet" chặn lab.
-            if sh(["xattr", "-dr", "com.apple.quarantine", CHROME]).returncode:
-                sh(["sudo", "-n", "xattr", "-dr", "com.apple.quarantine", CHROME])
+        elif browser:
+            name, kind = browser
+            if not pathlib.Path(BROWSERS[name][0]).exists():
+                return [{"terminal": app, "test": "-", "error": f"chưa cài {name}"}]
             web = _Web(out_file, ready)
-            tests = {"chrome": CHROME_TESTS, "chromeslow": CHROME_SLOW_TESTS}.get(app, WEB_EDIT_TESTS)
-            query = {"chrome": "", "chromeslow": "?slow=100", "chromeec": "?ec=1", "chromece": "?ce=1"}[app]
-            sh(["open", "-na", CHROME, "--args", "--user-data-dir=/tmp/l/chrome-profile", "--no-first-run",
-                "--no-default-browser-check", "--disable-features=Translate", "--new-window",
-                f"http://127.0.0.1:{web.port}/{query}"])
-            bid, pid = CHROME_ID, None
+            tests = {"": CHROME_TESTS, "slow": CHROME_SLOW_TESTS, "ac": WEB_AC_TESTS}.get(kind, WEB_EDIT_TESTS)
+            open_browser(name, f"http://127.0.0.1:{web.port}/{PAGE_KINDS[kind]}")
+            bid, pid = BROWSERS[name][1], None
         else:
             java = find_jbr() if app == "swingjbr" else find_java()
             if not java:
@@ -849,11 +953,14 @@ def run_app_suite(app, only=None, tag=None):
             shot(f"{app}-not-ready")
             return [{"terminal": app, "test": "-", "error": f"ô {app} không sẵn sàng (front={front()}, pid={front_pid()})"}]
         time.sleep(1.0)
-        if app.startswith("chrome"):
+        if browser:
             # Chrome vừa mở còn ì (phím tới trễ cả giây): gõ nháp rồi xoá trước khi chấm.
             time.sleep(3)
             configure("vni", "auto")
             ensure_mode(bid, "vi")
+            if browser[0] != "chrome":
+                drv(bid, "{ESC}", 60)           # hộp thoại / bảng thông báo lúc mới mở (nếu có) trả focus cho trang
+                time.sleep(0.5)
             drv(bid, "khoi dong ", 45)
             time.sleep(2)
             clear_field(out_file, web)
@@ -885,8 +992,12 @@ def run_app_suite(app, only=None, tag=None):
                 if underline:
                     r["underline"] = underline
                 r.update(ime_seen(mark, None if app.startswith("swing") else bid))
-                if app.startswith("chrome"):
+                if browser:
                     r.update(web_flash(mark))
+                    if browser[0] != "chrome":
+                        # Gecko: ghi lại từng phím (đường gõ, con trỏ ô báo ngay sau phím) — xem bộ đệm của nó chậm thế nào.
+                        r["keys"] = [re.sub(r"^\S+ \S+ ", "", l)[:110] for l in log_since(mark).splitlines()
+                                     if " phím " in l and " sel=" in l][:70]
                     if name in FLASH_NAMES and r["raw_flash"] and tag != "nosettle":
                         r["pass"] = False
                         r["info"] = f"chữ thô ra trang {r['raw_flash']} lần rồi mới được sửa"
@@ -897,9 +1008,9 @@ def run_app_suite(app, only=None, tag=None):
                     if any("soạn (marked)" in l for l in lines):
                         r["pass"] = False
                         r["info"] = "có phím soạn bằng marked text"
-                if got != expect or (app.startswith("chrome") and r.get("raw_flash") and name in FLASH_NAMES):
+                if got != expect or (browser and r.get("raw_flash") and name in FLASH_NAMES):
                     r["trace"] = ime_trace(mark)
-                    if app.startswith("chrome"):
+                    if browser:
                         r["session"] = [l.split(" ", 1)[-1][:200] for l in log_since(mark).splitlines()
                                         if "session:" in l or "hỏi đồng bộ" in l][:80]
             except Exception as e:  # noqa: BLE001
@@ -923,8 +1034,8 @@ def run_app_suite(app, only=None, tag=None):
                 r["info"] = "ô nhận: " + " | ".join(seen)[:300]
         if proc:
             proc.terminate()
-        elif app.startswith("chrome"):
-            sh(["pkill", "-f", "chrome-profile"])
+        elif browser:
+            close_browser(browser[0])
         else:
             sh(["pkill", "-f", str(FIELD_APP / "Contents/MacOS/field")])
         if web:
@@ -1267,6 +1378,25 @@ def main():
             set_settle(True)
         for r in part:
             r["terminal"] = r.get("terminal", app) + "-nosettle"
+            r["control"] = True
+            r["expect_final"] = r.get("expect")
+            r["expect"] = None
+            r.pop("pass", None)
+        results += part
+
+    # Đối chứng cho Gecko: cùng các bài đó với ô web của Firefox / Zen đi đường gõ trực tiếp cũ — gõ nhanh / trang chậm phải thấy
+    # từ mất dấu như người dùng báo (2026-11-26), thì kết quả của đường mới mới có nghĩa. Chỉ ghi lại, không chấm.
+    for app in os.environ.get("GECKODIRECT_APPS", "").split():
+        set_counter_mode(counter_modes[0])
+        set_gecko_direct(True)
+        try:
+            part = run_app_suite(app, tag="direct")
+        except Exception as e:  # noqa: BLE001
+            part = [{"terminal": app, "test": "-", "error": str(e)}]
+        finally:
+            set_gecko_direct(False)
+        for r in part:
+            r["terminal"] = r.get("terminal", app) + "-direct"
             r["control"] = True
             r["expect_final"] = r.get("expect")
             r["expect"] = None

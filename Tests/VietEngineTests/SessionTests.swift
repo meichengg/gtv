@@ -17,6 +17,9 @@ private final class Field: TextClient {
 
     let session = Session()
     var options = EngineOptions()
+    /// Đồng hồ (giây): bài thử tự cho trôi khi cần "một lúc sau".
+    var now = 0.0
+    func currentTime() -> Double { now }
 
     var text: String { String(decoding: units, as: UTF16.self) }
 
@@ -36,7 +39,9 @@ private final class Field: TextClient {
         sel = (location + s.utf16.count, 0)
         autocomplete()
     }
-    func setMarkedText(_ text: String) {}
+    /// Ô đã nhận phần đang soạn (marked text) — ô thật sẽ vẽ gạch chân.
+    var markedSeen = false
+    func setMarkedText(_ text: String) { if !text.isEmpty { markedSeen = true } }
     func replaceViaMarkedText(location: Int, length: Int, with s: String) {
         if chromiumStyle { insertAtCursor(s); return }
         // Qt và ứng dụng Cocoa: marked text thay đúng vùng, sau đó chốt.
@@ -100,6 +105,9 @@ private final class LaggyField: TextClient {
     var backspaceAlways = false
     let session = Session()
     var options = EngineOptions()
+    /// Đồng hồ (giây): bài thử tự cho trôi khi cần "một lúc sau".
+    var now = 0.0
+    func currentTime() -> Double { now }
 
     var text: String { String(decoding: real, as: UTF16.self) }
 
@@ -140,6 +148,78 @@ private final class LaggyField: TextClient {
     }
 }
 
+/// Ô gõ trực tiếp báo con trỏ / chữ chậm `lag` giây sau mỗi thay đổi (ô có bộ đệm phía ứng dụng), có đồng hồ và timer thật.
+/// `blackoutUntil`: trước lúc đó ô trả lời tạm {0,0} và không cho đọc chữ (ô vừa được gắn, ứng dụng vừa được chuyển tới).
+private final class SlowField: TextClient {
+    var real: [UInt16] = []
+    var caret = 0
+    private var shown: [UInt16] = []
+    private var shownCaret = 0
+    var lag = 0.02
+    var blackoutUntil = 0.0
+    var now = 0.0
+    private var timers: [(at: Double, work: () -> Void)] = []
+    private var reports: [(at: Double, units: [UInt16], caret: Int)] = []
+    var markedSeen = false
+    let session = Session()
+    var options = EngineOptions()
+
+    var text: String { String(decoding: real, as: UTF16.self) }
+
+    func selectedRange() -> (location: Int, length: Int)? { now < blackoutUntil ? (0, 0) : (shownCaret, 0) }
+    func text(location: Int, length: Int) -> String? {
+        guard now >= blackoutUntil, location >= 0, location + length <= shown.count else { return nil }
+        return String(decoding: shown[location..<location + length], as: UTF16.self)
+    }
+    func replaceText(location: Int, length: Int, with s: String) {
+        let end = min(location + length, real.count)
+        guard location >= 0, location <= end else { return }
+        real.replaceSubrange(location..<end, with: Array(s.utf16))
+        caret = location + s.utf16.count
+        changed()
+    }
+    func setMarkedText(_ text: String) { if !text.isEmpty { markedSeen = true } }
+    func replaceViaMarkedText(location: Int, length: Int, with text: String) { XCTFail("không phải Qt") }
+    func insertText(_ s: String) {
+        real.insert(contentsOf: Array(s.utf16), at: caret)
+        caret += s.utf16.count
+        changed()
+    }
+    func schedule(after delay: Double, _ work: @escaping () -> Void) { timers.append((now + delay, work)) }
+    func currentTime() -> Double { now }
+    private func changed() { reports.append((now + lag, real, caret)) }
+
+    func tick(_ seconds: Double) {
+        var steps = Int((seconds * 1000).rounded())
+        while steps > 0 {
+            steps -= 1
+            now += 0.001
+            let ready = reports.filter { $0.at <= now + 1e-9 }
+            reports.removeAll { $0.at <= now + 1e-9 }
+            if let last = ready.last { shown = last.units; shownCaret = last.caret }
+            let due = timers.filter { $0.at <= now + 1e-9 }
+            timers.removeAll { $0.at <= now + 1e-9 }
+            due.forEach { $0.work() }
+        }
+    }
+    /// Gõ `keys`, cách nhau `every` giây.
+    func type(_ keys: String, every: Double) {
+        for k in keys {
+            tick(every)
+            if !session.handle(.char(k), self, options: options, forceMarked: false) { insertText(String(k)) }
+        }
+    }
+    /// Ứng dụng tự xoá trắng ô (gửi tin bằng ⏎ mà bộ gõ không thấy) và báo ngay.
+    func appClears() {
+        real = []
+        caret = 0
+        shown = []
+        shownCaret = 0
+        reports = []
+    }
+    func finish() { tick(0.6) }
+}
+
 /// Ô kiểu Qt 5: luôn báo con trỏ ở 0, không cho đọc chữ, bỏ qua vùng cần thay (chèn tại con trỏ).
 private final class Qt5Field: TextClient {
     var units: [UInt16] = []
@@ -174,16 +254,41 @@ private final class ChromiumField: TextClient {
     var cCaret = 0
     var base = 0
     var lag = 0
-    var snapshots: [(units: [UInt16], caret: Int, due: Int)] = []
+    /// Một lần trang báo về: chữ, con trỏ, độ dài vùng bôi đen sau con trỏ; còn `due` phím nữa thì tới bộ đệm.
+    struct Snap {
+        var units: [UInt16]
+        var caret: Int
+        var due: Int
+        var len = 0
+    }
+    var snapshots: [Snap] = []
     var now = 0.0
     var timers: [(at: Double, work: () -> Void)] = []
     var stepMS = 80.0
     let session = Session()
     var options = EngineOptions()
 
-    var text: String { String(decoding: units, as: UTF16.self) }
+    /// Chữ người dùng coi là đã gõ: không tính phần gợi ý đang bôi đen sau con trỏ.
+    var text: String {
+        var u = units
+        if selLen > 0 { u.removeSubrange(caret..<min(caret + selLen, u.count)) }
+        return String(decoding: u, as: UTF16.self)
+    }
+    /// Vùng bôi đen thật của trang ngay sau con trỏ (gợi ý tự điền), và vùng bộ đệm đang báo.
+    var selLen = 0
+    var cLen = 0
+    /// Gợi ý tự điền kiểu thanh địa chỉ: gõ xong mà từ cuối là phần đầu của một gợi ý thì trang điền nốt và bôi đen phần điền thêm.
+    var completions: [String] = []
+    /// Ô web của Gecko (Firefox, Zen): bộ đệm không tự đoán; lần thay có vùng là "đặt vùng chọn" rồi "chèn chữ", bước đặt vùng
+    /// chọn bị bỏ khi vùng thay trùng vùng chọn bộ đệm đang báo; trang có thể báo cả trạng thái giữa hai bước (`midReports`).
+    var gecko = false {
+        didSet { session.webGuessFree = gecko }
+    }
+    var midReports = false
+    /// Trang báo về ngay (trong 10 ms) chứ không đợi tới sát phím kế tiếp.
+    var promptReports = false
 
-    func selectedRange() -> (location: Int, length: Int)? { (cCaret, 0) }
+    func selectedRange() -> (location: Int, length: Int)? { (cCaret, cLen) }
     func text(location: Int, length: Int) -> String? {
         let lo = max(0, location), hi = min(cUnits.count, location + length)
         guard lo < hi else { return length == 0 ? "" : nil }
@@ -194,10 +299,25 @@ private final class ChromiumField: TextClient {
     /// phím dấu: "ê" → "ế") để con trỏ nguyên chỗ: bộ đệm còn giữ chữ CŨ tới lần đổi con trỏ kế tiếp.
     var editContext = false
 
+    /// Số lần bộ gõ sửa chữ trong phím đang xử lý.
+    var editsInKey = 0
+    /// Số phím không ra chữ (⌥⌫, ⌘⌫…) bị Gecko nuốt vì bộ gõ sửa chữ ngay trong keyDown của chúng.
+    var swallowed = 0
+
     func replaceText(location: Int, length: Int, with t: String) {
         guard location <= units.count else { return }
+        if inKey { editsInKey += 1 }
+        if gecko, length > 0, cCaret == location, cLen == length {
+            // Gecko: vùng thay trùng vùng chọn nó đang nhớ — không đặt lại vùng chọn, chèn vào vùng chọn hiện có của trang.
+            send(t)
+            return
+        }
         let lo = location, hi = min(location + length, units.count)
         let before = caret
+        selLen = 0                                   // vùng chọn chuyển sang vùng thay: gợi ý cũ (nếu còn) thành chữ thường
+        if gecko, midReports, hi > lo {
+            snapshots.append(Snap(units: units, caret: lo, due: lag, len: hi - lo))     // đã chọn vùng, chưa chèn chữ
+        }
         units.replaceSubrange(lo..<hi, with: Array(t.utf16))
         if caret >= hi { caret += t.utf16.count - (hi - lo) } else if caret > lo { caret = lo + t.utf16.count }
         if editContext, caret == before {
@@ -212,9 +332,9 @@ private final class ChromiumField: TextClient {
     /// trang phải xử lý xong mọi thứ đã nhận rồi mới trả lời; các báo cáo nó đã gửi tới bộ đệm khi ứng dụng quay lại vòng lặp.
     var canSettle = false
     var settleCalls = 0
-    private var forced: [(units: [UInt16], caret: Int, due: Int)] = []
+    private var forced: [Snap] = []
     func settle() -> Bool {
-        guard canSettle else { return false }
+        guard canSettle, !gecko else { return false }
         XCTAssertFalse(inKey, "không hỏi đồng bộ trong lúc xử lý phím (chữ của phím chưa tới trang)")
         settleCalls += 1
         forced += snapshots
@@ -229,23 +349,40 @@ private final class ChromiumField: TextClient {
     var queued: [String] = []
 
     func insertText(_ t: String) {
-        // Bộ đệm đoán ngay lúc bộ gõ gọi (lab: con trỏ bộ đệm nhích ngay trong cùng phím).
-        cUnits.insert(contentsOf: Array(t.utf16), at: min(base, cUnits.count))
-        cCaret = base + t.utf16.count
-        if inKey {
+        if !gecko {
+            // Bộ đệm đoán ngay lúc bộ gõ gọi (lab: con trỏ bộ đệm nhích ngay trong cùng phím).
+            cUnits.insert(contentsOf: Array(t.utf16), at: min(base, cUnits.count))
+            cCaret = base + t.utf16.count
+            cLen = 0
+        }
+        if inKey, !gecko {
             queued.append(t)
             return
         }
         send(t)
     }
     private func send(_ t: String) {
+        if selLen > 0 {                              // gõ đè lên vùng đang bôi đen
+            units.removeSubrange(caret..<min(caret + selLen, units.count))
+            selLen = 0
+        }
         units.insert(contentsOf: Array(t.utf16), at: caret)
         caret += t.utf16.count
+        if caret == units.count, !completions.isEmpty {
+            let typed = String(decoding: units, as: UTF16.self)
+            let word = String(typed.reversed().prefix(while: { $0 != " " }).reversed())
+            if !word.isEmpty, let hit = completions.first(where: { $0.hasPrefix(word) && $0 != word }) {
+                let rest = Array(hit.dropFirst(word.count).utf16)
+                units += rest
+                selLen = rest.count
+            }
+        }
         snapshot()
     }
     /// Bộ gõ xử lý một phím: chữ nó chèn không kèm vùng thay tới trang khi phím xong.
     func key(_ handle: () -> Bool) -> Bool {
         inKey = true
+        editsInKey = 0
         let handled = handle()
         inKey = false
         let q = queued
@@ -259,10 +396,14 @@ private final class ChromiumField: TextClient {
     func currentTime() -> Double { now }
 
     func snapshot() {
-        snapshots.append((units, caret, lag))
+        snapshots.append(Snap(units: units, caret: caret, due: lag, len: selLen))
         shown.append(text)
+        if promptReports, lag == 0 {
+            forced += snapshots
+            snapshots = []
+        }
     }
-    func report(_ s: (units: [UInt16], caret: Int, due: Int)) { cUnits = s.units; cCaret = s.caret; base = s.caret }
+    func report(_ s: Snap) { cUnits = s.units; cCaret = s.caret; cLen = s.len; base = s.caret }
 
     /// Thời gian trôi tới phím kế tiếp: trang báo những gì tới hạn, timer tới hạn chạy.
     func tick(_ ms: Double) {
@@ -280,7 +421,7 @@ private final class ChromiumField: TextClient {
             due.forEach { $0.work() }
         }
         let ready = snapshots.filter { $0.due <= 0 }
-        snapshots = snapshots.filter { $0.due > 0 }.map { ($0.units, $0.caret, $0.due - 1) }
+        snapshots = snapshots.filter { $0.due > 0 }.map { Snap(units: $0.units, caret: $0.caret, due: $0.due - 1, len: $0.len) }
         ready.forEach(report)
     }
 
@@ -306,7 +447,12 @@ private final class ChromiumField: TextClient {
     /// `gap`: sổ phím báo có click / phím tắt bộ gõ không thấy trước phím này.
     func backspace(gap: KeyGap = .none) {
         tick(stepMS)
-        if !key({ session.handle(.backspace, self, options: options, forceMarked: false, gap: gap, web: true) }), caret > 0 {
+        guard !key({ session.handle(.backspace, self, options: options, forceMarked: false, gap: gap, web: true) }) else { return }
+        if selLen > 0 {
+            units.removeSubrange(caret..<min(caret + selLen, units.count))      // ⌫ xoá phần gợi ý đang bôi đen
+            selLen = 0
+            snapshot()
+        } else if caret > 0 {
             let n = graphemeBackspace ? (String(decoding: units[..<caret], as: UTF16.self).last.map { String($0).utf16.count } ?? 1) : 1
             units.removeSubrange((caret - n)..<caret)
             caret -= n
@@ -336,10 +482,16 @@ private final class ChromiumField: TextClient {
     func finish() { for _ in 0..<5 { tick(100) } }
     func idle() { for _ in 0..<10 { tick(200) } }
     /// Phím không ra chữ mà bộ gõ thấy (⌥⌫, ⌘⌫, ⌥←…): bộ gõ cho đi, trang xử lý bằng `effect` rồi báo như mọi phím.
-    func other(gap: KeyGap = .none, _ effect: () -> Void) {
+    /// `command`: phím tắt có ⌘ (⌘⌫…).
+    func other(gap: KeyGap = .none, command: Bool = false, _ effect: () -> Void) {
         tick(stepMS)
         XCTAssertFalse(key({ session.handle(.other, self, options: options, forceMarked: false, gap: gap, web: true) }))
-        effect()
+        if gecko, command, editsInKey > 0 {
+            swallowed += 1                           // Gecko: bộ gõ vừa sửa chữ trong keyDown này — phím tắt có ⌘ bị nuốt
+        } else {
+            if selLen > 0 { units.removeSubrange(caret..<min(caret + selLen, units.count)); selLen = 0 }
+            effect()
+        }
         snapshot()
     }
     /// ⌥⌫: xoá từ ngay trước con trỏ (cùng các dấu cách sau nó).
@@ -354,7 +506,7 @@ private final class ChromiumField: TextClient {
     }
     /// ⌘⌫: xoá từ đầu dòng tới con trỏ.
     func deleteLine(gap: KeyGap = .none) {
-        other(gap: gap) {
+        other(gap: gap, command: true) {
             var i = caret
             while i > 0, units[i - 1] != 0x0a { i -= 1 }
             units.removeSubrange(i..<caret)
@@ -2026,16 +2178,130 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(f.text, "GET /a đẳng ")
     }
 
-    /// Ô thường (không có cờ): con trỏ nhảy về 0 giữa từ vẫn bị coi là ô chưa cho biết con trỏ thật — các chữ còn lại của từ đi
-    /// nguyên văn, như trước.
-    func testCursorJumpToZeroLeavesWordRawWithoutReliableCursor() {
+    /// Ô thường đã từng báo con trỏ khác 0: con trỏ về 0 giữa từ là chữ đã bị xoá thật (ứng dụng tự xoá ô) — phím kế tiếp bắt
+    /// đầu từ mới ở đầu ô, có dấu như thường; không bị coi là ô mù.
+    func testCursorJumpToZeroStartsNewWordInSightedField() {
         let f = Field()
         f.options.method = .vni
         f.type("tie61ng")
         f.units = []
         f.sel = (0, 0)
+        f.now += 0.4
         f.type("d9a38ng ")
-        XCTAssertEqual(f.text, "d9a38ng ")
+        XCTAssertEqual(f.text, "đẳng ")
+        XCTAssertFalse(f.session.blindLatched)
+        XCTAssertFalse(f.markedSeen)
+    }
+
+    // MARK: Ô chat kiểu Telegram: ứng dụng tự xử lý ⏎ trước bộ gõ rồi xoá trắng ô
+
+    /// Nhật ký máy người dùng 2026-11-26 (Telegram): ⏎ gửi tin không tới bộ gõ, ô bị xoá trắng, bộ gõ còn giữ từ cuối của tin
+    /// vừa gửi. Từ đầu của tin kế tiếp phải ra dấu ngay; gõ dở, xoá bằng ⌥⌫ rồi gõ lại ở đầu ô không được soạn bằng marked text
+    /// (gạch chân).
+    func testChatFieldClearedOnSendKeepsTyping() {
+        for (method, first, next, want) in [
+            (InputMethod.vni, "tie61ng vie65t", "d9a38ng ca61p ", "đẳng cấp "),
+            (.vni, "k", "d9a38ng ca61p ", "đẳng cấp "),                 // tin một chữ: ô chưa kịp báo con trỏ khác 0
+            (.vni, "ok", "a1 a2 ", "á à "),
+            (.telex, "tieengs vieetj", "ddawngr caaps ", "đẳng cấp "),
+            (.telex, "k", "ddawngr caaps ", "đẳng cấp "),
+        ] {
+            let f = Field()
+            f.options.method = method
+            f.type(first)
+            f.units = []; f.sel = (0, 0)                  // ⏎: ứng dụng gửi tin, xoá ô — bộ gõ không thấy gì
+            f.now += 0.25                                 // từ phím cuối của tin trước tới phím đầu của tin sau
+            f.type(next)
+            XCTAssertEqual(f.text, want, "\(method) \(first) ⏎ \(next)")
+            XCTAssertFalse(f.markedSeen, "\(method) \(first): không được soạn bằng marked text")
+            XCTAssertFalse(f.session.blindLatched, "\(method) \(first)")
+            // Gửi tiếp, gõ dở từ đầu, xoá bằng ⌥⌫ rồi gõ lại ở đầu ô.
+            f.units = []; f.sel = (0, 0)
+            f.now += 0.25
+            f.type(String(next.prefix(2)))
+            XCTAssertFalse(f.session.handle(.other, f, options: f.options, forceMarked: false))
+            f.units = []; f.sel = (0, 0)                  // ⌥⌫ xoá từ đang gõ dở
+            f.type(next)
+            XCTAssertEqual(f.text, want, "\(method) \(first): gõ lại sau ⌥⌫ ở đầu ô")
+            XCTAssertFalse(f.markedSeen, "\(method) \(first): gõ lại ở đầu ô không được gạch chân")
+        }
+    }
+
+    // MARK: Ô gõ trực tiếp báo chậm: giữ phím chờ ô báo kịp
+
+    /// Ô vừa được gắn còn trả lời tạm {0,0} (gõ ngay lúc vừa mở Raycast / vừa chuyển ứng dụng): phím dấu tới trong lúc đó không
+    /// đi nguyên văn và ô không bị coi là ô mù — phím được giữ tới khi ô trả lời thật.
+    func testFieldAnsweringLateAfterAttachKeepsTones() {
+        for (method, keys, want) in [(InputMethod.vni, "d9a38ng ca61p ", "đẳng cấp "), (.telex, "ddawngr caaps ", "đẳng cấp ")] {
+            for every in [0.012, 0.02, 0.035] {
+                let f = SlowField()
+                f.options.method = method
+                f.lag = 0.001
+                f.blackoutUntil = 0.05
+                f.type(keys, every: every)
+                f.finish()
+                XCTAssertEqual(f.text, want, "\(method), \(Int(every * 1000)) ms / phím")
+                XCTAssertFalse(f.markedSeen, "\(method), \(Int(every * 1000)) ms / phím")
+                XCTAssertFalse(f.session.blindLatched)
+            }
+        }
+    }
+
+    /// Mọi dạng một từ có thể mang khi bộ gõ thôi theo dõi nó giữa chừng: phần đầu đã gõ thành chữ, phần còn lại nguyên văn.
+    private func partials(_ raw: String, _ method: InputMethod) -> Set<String> {
+        var out: Set<String> = [raw]
+        let keys = Array(raw)
+        for j in 1...keys.count {
+            let e = Engine()
+            e.options.method = method
+            for k in keys[..<j] { _ = e.process(k) }
+            out.insert(e.displayed + String(keys[j...]))
+        }
+        return out
+    }
+
+    /// Ô báo chậm hơn tốc độ gõ (bộ đệm phía ứng dụng, không phải ô web): từ nào cũng là "phần đầu đã thành chữ + phần còn lại
+    /// nguyên văn" — không bao giờ sửa nhầm chỗ, mất phím, đảo thứ tự, và không soạn bằng marked text. Ô báo kịp trước phím
+    /// kế tiếp thì luôn ra đúng. Lõi cũ ở đây sửa lệch một ký tự ("ca61p" ra "cáp" rồi thừa "6" cuối dòng).
+    func testSlowFieldNeverCorruptsAndCatchesUp() {
+        let words: [(raw: String, ideal: String)] = [
+            ("d9a38ng", "đẳng"), ("ca61p", "cấp"), ("tuye65t", "tuyệt"), ("d9o61i", "đối"), ("a1", "á"), ("xin", "xin"),
+            ("ngu7o7i2", "người"), ("to6i", "tôi"), ("la2", "là"), ("a2", "à"), ("ba", "ba"), ("ba2", "bà"),
+        ]
+        var checked = 0, exact = 0
+        for lag in [0.002, 0.008, 0.02, 0.06, 0.12] {
+            for every in [0.004, 0.012, 0.03, 0.08, 0.2] {
+                for clearAfter in [nil, 3] as [Int?] {
+                    let f = SlowField()
+                    f.options.method = .vni
+                    f.lag = lag
+                    f.type("ok ", every: lag + 0.03)             // ô đã báo con trỏ thật trước khi gõ nhanh
+                    var expect: [(raw: String, ideal: String)] = [("ok", "ok")]
+                    for (i, w) in words.enumerated() {
+                        if i == clearAfter {
+                            f.tick(0.3)
+                            f.appClears()
+                            expect = []
+                        }
+                        f.type(w.raw + " ", every: every)
+                        expect.append(w)
+                    }
+                    f.finish()
+                    let got = f.text.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+                    let note = "ô chậm \(Int(lag * 1000)) ms, gõ \(Int(every * 1000)) ms / phím\(clearAfter == nil ? "" : ", ứng dụng xoá ô"): \(f.text.debugDescription)"
+                    XCTAssertFalse(f.markedSeen, "soạn bằng marked text — " + note)
+                    guard got.count == expect.count + 1, got.last == "" else { XCTFail("mất / thừa từ — " + note); continue }
+                    for (i, w) in expect.enumerated() {
+                        checked += 1
+                        if got[i] == w.ideal { exact += 1 }
+                        XCTAssertTrue(partials(w.raw, .vni).contains(got[i]), "sửa nhầm chỗ ở từ \(i) (\(got[i])) — " + note)
+                        if every > lag + 0.0015 { XCTAssertEqual(got[i], w.ideal, "ô báo kịp mà từ \(i) mất dấu — " + note) }
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(checked, 500)
+        XCTAssertGreaterThan(exact, checked / 2)
     }
 
     // MARK: Ô web: xoá cả từ / cả dòng rồi gõ lại (người dùng báo: ra số thay vì ra dấu — Claude desktop, Zalo)
@@ -2794,6 +3060,7 @@ final class SessionTests: XCTestCase {
             l.type("n ")
             l.flush()
             l.autoFlush = true
+            l.now += 0.5                                  // "sau đó gõ chậm": ô đã có thời gian báo
             l.type(next + " ")
             XCTAssertEqual(l.text, "xin " + want + " ", "\(m)")
         }
@@ -2804,11 +3071,13 @@ final class SessionTests: XCTestCase {
         let f = Field()
         f.options.method = .vni
         f.type("ok")
-        f.units = []; f.sel = (0, 0)                      // ứng dụng xoá ô giữa từ
-        f.type("d9a38ng")
-        XCTAssertEqual(f.text, "d9a38ng")                 // theo thiết kế: phần còn lại của từ đi nguyên văn
-        for _ in 0..<7 { f.backspace() }
-        XCTAssertEqual(f.text, "")
+        f.readable = false                                // từ đi nguyên văn: ô không cho đọc lại chữ trước con trỏ
+        f.type(" tie")
+        f.readable = true
+        f.units.removeLast(); f.sel = (5, 0)              // ô bỏ phím vừa đi thẳng: con trỏ không nhích
+        f.type("61ng")
+        XCTAssertTrue(f.text.hasPrefix("ok ti"), f.text)
+        while !f.text.isEmpty { f.backspace() }
         f.type("d9a38ng ")
         XCTAssertEqual(f.text, "đẳng ")
         // Con trỏ chưa nhích sau phím đi thẳng.
@@ -3125,6 +3394,147 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(f.text, "tiếng việt ")
     }
 
+    // MARK: Ô web của Gecko (Firefox, Zen): bộ đệm không tự đoán, không hỏi đồng bộ được
+
+    private func gecko(_ method: InputMethod, lag: Int = 0, step: Double = 80) -> ChromiumField {
+        let f = web(method, lag: lag, step: step)
+        f.gecko = true
+        f.promptReports = true
+        return f
+    }
+
+    /// IME Lab 45776448337 (Firefox thật, đường gõ trực tiếp cũ): gõ nhanh ra "đo61i", trang chậm ra "d9a38ng" / "ho5c" — đúng
+    /// lỗi "một từ không nhận dấu" người dùng gặp ở Zen. Đi đường ô web: trang báo kịp thì luôn ra đúng và không chữ thô nào ra
+    /// trang; trang chậm vài phím vẫn ra đúng (bộ gõ tự giữ vị trí), không bao giờ sửa nhầm chỗ.
+    func testGeckoWebTypesWithTones() {
+        for (method, keys, want) in [
+            (InputMethod.vni, "Vie65t Nam, d9a5i ho5c d9a38ng ca61p tuye65t d9o61i ", "Việt Nam, đại học đẳng cấp tuyệt đối "),
+            (.telex, "Vieetj Nam, ddaij hocj ddawngr caaps tuyeetj ddoois ", "Việt Nam, đại học đẳng cấp tuyệt đối "),
+            (.vni, "d9 a1 o6 u7o7ng2 ", "đ á ô ường "),
+        ] {
+            for lag in 0...3 {
+                for step in [10.0, 30, 80, 150] {
+                    let f = gecko(method, lag: lag, step: step)
+                    f.idle()
+                    f.type(keys)
+                    f.finish()
+                    let note = "\(method), trang chậm \(lag) phím, \(Int(step)) ms / phím"
+                    XCTAssertEqual(f.text, want, note)
+                    if lag == 0, method == .vni { XCTAssertEqual(rawShown(f), [], "chữ thô ra trang — " + note) }
+                }
+            }
+        }
+    }
+
+    /// Xoá rồi gõ lại ở Gecko (⌥⌫ / ⌘⌫, một hay nhiều lần): từ gõ lại ra dấu ngay, không chữ thô nào ra trang khi trang báo kịp.
+    func testGeckoDeleteAndRetype() {
+        for lag in 0...2 {
+            for step in [40.0, 110] {
+                for deletes in 1...3 {
+                    let f = gecko(.vni, lag: lag, step: step)
+                    f.type("d9a38ng ca61p")
+                    for _ in 0..<deletes { f.deleteLine() }
+                    let from = f.shown.count
+                    f.type("d9a38ng ca61p ")
+                    f.finish(); f.idle()
+                    let note = "trang chậm \(lag) phím, \(Int(step)) ms, ⌘⌫ ×\(deletes)"
+                    XCTAssertEqual(f.text, "đẳng cấp ", note)
+                    // Phím xoá bấm từ ba lần liền mà con trỏ không đổi thì không còn gì cho biết trang đã xử lý chúng chưa (Gecko
+                    // không hỏi đồng bộ được): từ đầu gõ lại có thể tạm đi nguyên văn rồi được sửa. Một, hai lần thì không.
+                    if lag == 0, deletes < 3 { XCTAssertEqual(rawShown(f, from: from), [], "chữ thô ra trang — " + note) }
+
+                    let g = gecko(.vni, lag: lag, step: step)
+                    g.type("xin chao tuye65t ")
+                    g.deleteWord()
+                    g.type("d9a38ng tie61")
+                    g.deleteWord()
+                    g.type("tie61ng vie65t ")
+                    g.finish(); g.idle()
+                    if lag == 0 {
+                        XCTAssertEqual(g.text, "xin chao đẳng tiếng việt ", "⌥⌫ — " + note)
+                    } else {
+                        // Trang chậm mà phím xoá tới trước khi có bằng chứng vị trí: từ đang nguyên văn để nguyên — không sửa nhầm.
+                        XCTAssertTrue(["xin chao đẳng tiếng việt ", "xin chao d9a38ng tiếng việt "].contains(g.text), "⌥⌫ — " + note + ": " + g.text)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Gecko bỏ bước đặt vùng chọn khi vùng thay trùng vùng chọn nó đang nhớ. Trang báo cả trạng thái giữa chừng của một lần thay
+    /// (đã chọn vùng, chưa chèn chữ) đúng lúc bộ gõ gửi lần thay kế tiếp trên cùng vùng ("a6" rồi "1": "â" rồi "ấ"): bộ gõ phải
+    /// nới vùng thay để Gecko đặt lại vùng chọn — không thì chữ mới bị chèn thêm ("âấ").
+    func testGeckoSameRangeTwiceWhileSelectionPending() {
+        for lag in 0...2 {
+            for step in [10.0, 30, 80] {
+                for (keys, want) in [("a61 ", "ấ "), ("xin a61 o72 u7o71c ", "xin ấ ờ ước "), ("d9a61 ", "đấ "), ("a16 a62 ", "ấ ầ ")] {
+                    let f = gecko(.vni, lag: lag, step: step)
+                    f.midReports = true
+                    f.type(keys)
+                    f.finish()
+                    XCTAssertEqual(f.text, want, "\(keys), trang chậm \(lag) phím, \(Int(step)) ms")
+                }
+            }
+        }
+    }
+
+    /// Gecko nuốt phím tắt nếu bộ gõ sửa chữ ngay trong keyDown của nó (IME Lab 45776448337: gõ dở "tie61" rồi ⌘⌫ — lần khôi phục
+    /// "tiế" → "tie61" làm ⌘⌫ không xoá gì, ra "xin đẳng tie61tiếng việt"). Ở Gecko bộ gõ không sửa cuối từ ở phím không ra chữ.
+    func testGeckoNoEditInsideShortcutKey() {
+        for step in [40.0, 120] {
+            let f = gecko(.vni, step: step)
+            f.type("xin d9a38ng tie61")
+            f.deleteLine()
+            f.type("tie61ng vie65t ")
+            f.finish()
+            XCTAssertEqual(f.swallowed, 0, "bộ gõ sửa chữ trong keyDown của ⌘⌫")
+            XCTAssertEqual(f.text, "tiếng việt ", "\(Int(step)) ms")
+
+            let g = gecko(.telex, step: step)
+            g.type("ddawngr tiees")
+            g.deleteWord()
+            g.type("tieengs vieejt ")
+            g.finish()
+            XCTAssertEqual(g.swallowed, 0)
+            XCTAssertEqual(g.text, "đẳng tiếng việt ", "telex, \(Int(step)) ms")
+        }
+        // Chromium không nuốt: lần khôi phục cuối từ vẫn làm như trước.
+        let c = web(.vni)
+        c.type("xin d9a38ng tie61")
+        c.deleteLine()
+        c.type("tie61ng vie65t ")
+        c.finish()
+        XCTAssertEqual(c.text, "tiếng việt ")
+    }
+
+    // MARK: Ô web có gợi ý tự điền bôi đen sau con trỏ (thanh địa chỉ, ô tìm kiếm)
+
+    /// IME Lab 45776448337 (Chrome thật, trang có gợi ý tự điền): "a1" ra "a1", "tie61ng" ra "tieng" — phím dấu mất hẳn. Phím dấu
+    /// phải thay cả phần gợi ý đang bôi đen (như khi người dùng gõ đè lên nó), không để gợi ý dính lại thành chữ thật.
+    func testWebInlineSuggestionReplacedByToneKey() {
+        for isGecko in [false, true] {
+            for canSettle in [false, true] where !(isGecko && canSettle) {
+                for step in [20.0, 80, 150] {
+                    for (method, keys, want) in [
+                        (InputMethod.vni, "a1 ", "á "), (.vni, "tie61ng ", "tiếng "), (.vni, "a1 tie61ng to6i a2 ", "á tiếng tôi à "),
+                        (.telex, "as tieengs tooi af ", "á tiếng tôi à "), (.vni, "to6 ", "tô "), (.vni, "xin tie61ng ", "xin tiếng "),
+                    ] {
+                        let f = isGecko ? gecko(method, step: step) : web(method, step: step)
+                        f.promptReports = true
+                        f.canSettle = canSettle
+                        f.completions = ["axyz", "tiendo", "toolbar", "tieuhoc"]
+                        f.idle()
+                        f.type(keys)
+                        f.finish()
+                        let note = "\(isGecko ? "Gecko" : "Chromium")\(canSettle ? ", hỏi đồng bộ được" : ""), \(method) \(keys), \(Int(step)) ms"
+                        XCTAssertEqual(f.text, want, note)
+                        XCTAssertEqual(String(decoding: f.units, as: UTF16.self), want, "gợi ý dính lại thành chữ thật — " + note)
+                    }
+                }
+            }
+        }
+    }
+
     /// Xoá rồi gõ lại nhiều lượt liền, kể cả ⌥⌫ hai lần, ở ô EditContext.
     func testEditContextRepeatedDeleteAndRetype() {
         for method in [InputMethod.vni, .telex] {
@@ -3210,7 +3620,7 @@ final class SessionTests: XCTestCase {
         ]
         let partials = ["tie61", "vie65", "tuye6", "d9a3", "ngu7o7", "d9", "to6", "ca6"]
         enum Op { case word(Int), partial(Int), deleteWord(Bool), deleteLine(Bool) }
-        var corrupt = 0, inexact = 0, total = 0, settleInexact = 0, flashed = 0, settleRuns = 0
+        var corrupt = 0, inexact = 0, total = 0, settleInexact = 0, flashed = 0, settleRuns = 0, geckoSwallowed = 0
         for _ in 0..<250 {
             var ops: [Op] = []
             for _ in 0..<(4 + rnd(8)) {
@@ -3228,9 +3638,11 @@ final class SessionTests: XCTestCase {
             for lag in 0...3 {
                 for editContext in [false, true] {
                     for step in [40.0, 100.0] {
-                      for settle in [false, true] {
+                      for mode in 0..<3 where !(mode == 2 && editContext) {
+                        // 0: Chromium; 1: Chromium, hỏi đồng bộ được; 2: Gecko (bộ đệm không tự đoán, không hỏi đồng bộ được).
+                        let settle = mode == 1
                         total += 1
-                        let f = web(.vni, lag: lag, step: step)
+                        let f = mode == 2 ? gecko(.vni, lag: lag, step: step) : web(.vni, lag: lag, step: step)
                         f.editContext = editContext
                         f.canSettle = settle
                         var model: [(raw: String, ideal: String)] = []
@@ -3266,8 +3678,15 @@ final class SessionTests: XCTestCase {
                             }
                         }
                         f.finish(); f.idle(); f.idle()
+                        if f.swallowed > 0 {
+                            // Gecko, trang chậm: phím dấu còn đang giữ chờ trang báo thì gặp ⌘⌫ — bộ gõ buộc phải trả phím trong
+                            // keyDown của ⌘⌫, Gecko nuốt ⌘⌫ đó (người dùng bấm lại). Trang báo kịp thì không bao giờ xảy ra.
+                            geckoSwallowed += 1
+                            if lag == 0 { XCTFail("Gecko nuốt ⌘⌫ dù trang báo kịp — \(script.debugDescription)") }
+                            continue
+                        }
                         let got = f.text.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
-                        let note = "trang chậm \(lag) phím, \(editContext ? "EditContext" : "ô thường"), \(step) ms\(settle ? ", hỏi đồng bộ được" : ""): \(script.debugDescription) ra \(f.text.debugDescription)"
+                        let note = "trang chậm \(lag) phím, \(editContext ? "EditContext" : "ô thường"), \(step) ms\(settle ? ", hỏi đồng bộ được" : mode == 2 ? ", Gecko" : ""): \(script.debugDescription) ra \(f.text.debugDescription)"
                         guard got.count == model.count + 1, got.last == "" else {
                             corrupt += 1
                             if corrupt <= 6 { XCTFail("mất / thừa từ — " + note) }
@@ -3306,5 +3725,6 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(inexact, 0, "trang báo kịp mà còn từ nguyên văn trong \(total) lượt")
         XCTAssertEqual(settleInexact, 0, "hỏi đồng bộ được mà còn từ nguyên văn trong \(settleRuns) lượt")
         XCTAssertEqual(flashed, 0, "chữ thô ra trang rồi mới được sửa trong \(settleRuns) lượt hỏi đồng bộ được")
+        XCTAssertTrue(geckoSwallowed < total / 50, "Gecko nuốt ⌘⌫ ở \(geckoSwallowed) / \(total) lượt")
     }
 }
