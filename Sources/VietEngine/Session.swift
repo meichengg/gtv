@@ -279,6 +279,8 @@ public final class Session {
     /// đó, đọc ở `webRead`; chỉ dùng khi chưa có gì đổi từ lúc đọc (`webTailStates`). Xem `webReplace`.
     private var webTail = 0
     private var webTailStates = 0
+    /// Độ dài vùng bôi đen sau từ lúc `webMoved` / `webResync` thấy từ nằm ở chỗ khác — `webMove` chuyển thành `webTail`.
+    private var webMovedTail = 0
     /// Rào đồng bộ (`TextClient.settle`) vừa qua: trang đã xử lý xong mọi thứ gửi trước `at`; `states` là số trạng thái của
     /// chuỗi lúc đó (chưa gửi thêm gì từ đó). Sau một nhịp (`webSettleRead`) bộ đệm cho thấy đúng con trỏ thật của trang —
     /// không còn gì "có thể chưa báo", không có chữ tự đoán: đọc là biết chuỗi nằm ở đâu (`webTryAnchor`).
@@ -1709,9 +1711,10 @@ public final class Session {
         return sel.location == 0 && sel.length == 0 && expected > 0
     }
 
-    // MARK: - Ô web Chromium (Chrome, Electron)
+    // MARK: - Ô web: Chromium (Chrome, Electron) và Gecko (Firefox, Zen)
 
-    /// Chuỗi gõ liền trong một ô web của Chromium (Chrome, Electron: VS Code, Zalo, Discord, Slack, Claude…).
+    /// Chuỗi gõ liền trong một ô web của Chromium (Chrome, Electron: VS Code, Zalo, Discord, Slack, Claude…) hay của Gecko
+    /// (Firefox, Zen — các khác biệt: `webGuessFree`).
     ///
     /// Chromium trả lời vị trí con trỏ và chữ quanh nó từ một bộ đệm phía trình duyệt; trang chỉ cập nhật bộ đệm sau khi xử lý
     /// xong phím (trang bận thì chậm một hai phím), lần sửa của bộ gõ (insertText kèm vùng thay) không bao giờ vào bộ đệm, và
@@ -1801,7 +1804,9 @@ public final class Session {
     /// `pending`: mọi vị trí con trỏ bộ đệm còn có thể cho thấy trong lúc trang báo nốt phần cuối của chuỗi đó (bộ đệm lúc ấy
     /// có thể đang chậm vài phím / lần sửa — kể cả lần sửa bộ gõ gửi ngay lúc kết thúc chuỗi); `final`: con trỏ của chuỗi khi
     /// trang đã báo hết chuỗi mà chưa báo tác dụng của phím kết thúc.
-    private var webLeft: (pending: Set<Int>, final: Int)?
+    /// `several`: từ trạng thái đó đã có hơn một phím không biết tác dụng (⌘⌫ bấm mấy lần liền, nhiều phím tắt): bộ đệm đổi khác
+    /// chỉ cho biết ít nhất một phím đã được báo — đầu chuỗi sau chưa đáng tin, nhưng vẫn chắc không còn phím GÕ nào chưa báo.
+    private var webLeft: (pending: Set<Int>, final: Int, several: Bool)?
     /// Trang chậm hợp lý tới chừng này phím; bộ đệm cho thấy trạng thái cũ hơn là chữ lạ.
     private static let webLagLimit = 8
     private static let webIdleBreak = 1.0
@@ -1933,7 +1938,11 @@ public final class Session {
                 // đệm không còn gì chưa báo ngoài tác dụng của phím này nếu đã ngừng gõ lâu, hoặc bộ đệm vừa cho thấy tác dụng
                 // của phím trước.
                 if idle || left.map({ !$0.pending.contains(sel.location) }) == true {
-                    webLeft = ([sel.location], sel.location)
+                    webLeft = ([sel.location], sel.location, false)
+                } else if let left, sel.location == left.final {
+                    // Bộ đệm vẫn ở đúng trạng thái "mọi phím gõ đã được báo, chỉ tác dụng của phím trước có thể chưa" (⌘⌫ lần hai
+                    // không còn gì để xoá — con trỏ đứng yên): thêm phím này cũng vậy.
+                    webLeft = ([sel.location], sel.location, true)
                 }
             }
             return false
@@ -2020,7 +2029,7 @@ public final class Session {
     private static let webOwedLimit = 48
 
     private func startWebWord(_ client: TextClient, options: EngineOptions, resume: Bool, dropped: Bool = false,
-                              left: (pending: Set<Int>, final: Int)? = nil) {
+                              left: (pending: Set<Int>, final: Int, several: Bool)? = nil) {
         engine.options = options
         endDirectWord()
         marked = false
@@ -2045,7 +2054,7 @@ public final class Session {
             if let left {
                 if !left.pending.contains(location) {
                     clean = true                                 // trang đã báo hết chuỗi cũ lẫn tác dụng của phím đó
-                    if !dropped { trusted = true }
+                    if !dropped, !left.several { trusted = true }
                 } else if location == left.final {
                     clean = true                                 // chỉ còn tác dụng của phím đó là có thể chưa báo
                 }
@@ -2114,6 +2123,7 @@ public final class Session {
         let model = webBefore + word
         let base = chain.start
         webTail = 0
+        webMovedTail = 0
         if sel.length > 0 {
             // Vùng bôi đen bắt đầu đúng ở con trỏ của chuỗi, chữ trước nó đúng là trọn chuỗi, và trong các trạng thái bộ đệm còn
             // có thể cho thấy chỉ trạng thái mới nhất có đúng chữ đó: trang đã báo kịp và đang bôi đen một gợi ý tự điền ngay
@@ -2245,8 +2255,10 @@ public final class Session {
     /// Từ đang gõ nằm nguyên ngay trước con trỏ trang báo, nhưng ở chỗ khác chỗ bộ gõ nhớ: bắt đầu chuỗi mới ở đó.
     private func webMoved(_ client: TextClient, _ sel: (location: Int, length: Int), _ word: String) -> WebRead {
         let n = word.utf16.count
-        // Một ký tự trước con trỏ trùng chữ đang gõ không chứng minh được gì (chữ đó có thể là chữ có sẵn).
-        if n >= 2, sel.length == 0, sel.location >= n, let t = client.text(location: sel.location - n, length: n), t == word {
+        // Một ký tự trước con trỏ trùng chữ đang gõ không chứng minh được gì (chữ đó có thể là chữ có sẵn). Vùng bôi đen ngay sau
+        // từ (gợi ý tự điền) thì lần sửa kế tiếp thay luôn (`webTail`).
+        if n >= 2, sel.location >= n, let t = client.text(location: sel.location - n, length: n), t == word {
+            webMovedTail = sel.length
             return .moved(sel.location - n)
         }
         return .foreign
@@ -2258,6 +2270,9 @@ public final class Session {
         anchor = at
         webBefore = ""
         webSetHistory(word)
+        webTail = webMovedTail
+        webTailStates = webStateCount
+        webMovedTail = 0
     }
 
     private func webEdit(old: String, new: String, typed: Character, _ client: TextClient) -> Bool {
@@ -2313,9 +2328,9 @@ public final class Session {
     /// chuỗi thì không thể (vùng đó ngắn hơn chuỗi).
     /// Chỉ khi lúc chuỗi bắt đầu không còn phím cũ nào chưa được báo (`WebChain.clean`).
     private func webEvident(_ client: TextClient, word: String) -> Bool {
-        guard let chain = web, chain.clean, webGapSerial == nil, let sel = client.selectedRange(), sel.length == 0 else {
-            return false
-        }
+        // (Vùng bôi đen bắt đầu ở con trỏ — gợi ý tự điền sau chữ vừa gõ — không ảnh hưởng: chỉ xét chữ từ đầu chuỗi tới đó. Vùng
+        // thay của chính bộ gõ mà trang chưa chèn chữ thì bắt đầu trước cuối chuỗi: không khớp độ dài.)
+        guard let chain = web, chain.clean, webGapSerial == nil, let sel = client.selectedRange() else { return false }
         let model = webBefore + word
         let m = sel.location - chain.start
         guard m == model.utf16.count, m - chain.evidenceFrom >= webProofUnits else { return false }
@@ -2389,9 +2404,10 @@ public final class Session {
     private func webTryAnchor(_ client: TextClient) -> Bool {
         guard let s = webSettle else { return false }
         webSettle = nil
+        // (Ô đang bôi đen một gợi ý tự điền ngay sau chữ vừa gõ thì vùng chọn bắt đầu ở con trỏ: vẫn là con trỏ thật.)
         guard var chain = web, !chain.proven, s.states == webStateCount,
               client.currentTime() - s.at >= Self.webSettleRead - 0.0005,
-              let sel = client.selectedRange(), sel.length == 0 else { return false }
+              let sel = client.selectedRange() else { return false }
         let page = webShadow ?? engine.displayed            // từ đang gõ, đúng như trang đang có
         let units = Array((webBefore + page).utf16)
         func shows(_ n: Int) -> Bool {
@@ -2705,11 +2721,12 @@ public final class Session {
     /// báo) rồi gõ phím đã giữ lại lên đó; không đọc được thì gõ phím đó nguyên văn.
     private func webResync(_ client: TextClient, typed: Character) {
         engine.reset()
-        if let sel = client.selectedRange(), sel.length == 0, sel.location > 0 {
+        if let sel = client.selectedRange(), sel.location > 0 {
             let len = min(sel.location, 16)
             if let text = client.text(location: sel.location - len, length: len) {
                 let word = String(text.reversed().prefix(while: { $0.isLetter }).reversed())
                 if !word.isEmpty, word.utf16.count < len || len == sel.location, engine.seed(word) {
+                    webMovedTail = sel.length           // gợi ý tự điền đang bôi đen sau từ: lần sửa thay luôn
                     webMove(to: sel.location - word.utf16.count, word: word)
                     log?("ô web: đọc lại từ \(word.debugDescription) trước con trỏ")
                     if let action = engine.process(typed) {
@@ -2895,7 +2912,7 @@ public final class Session {
         // từ một ký tự ("d9" rồi ⌥⌫) đưa con trỏ về đúng chỗ đó — tính vào thì tác dụng của phím xoá trông như chưa được báo.
         var pending: Set<Int> = [final, sel.location]
         for state in webHistory[(first + 1)...] { pending.insert(chain.start + state.text.utf16.count) }
-        webLeft = (pending, final)
+        webLeft = (pending, final, false)
     }
 
     /// ← / → kết thúc chuỗi: ký tự ngay trước con trỏ mới là ký tự biết trước (của chuỗi, hay chữ có sẵn ngay sau con trỏ) —

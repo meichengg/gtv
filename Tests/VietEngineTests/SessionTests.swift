@@ -3369,7 +3369,7 @@ final class SessionTests: XCTestCase {
     func testGeckoDeleteAndRetype() {
         for lag in 0...2 {
             for step in [40.0, 110] {
-                for deletes in 1...3 {
+                for deletes in 1...5 {
                     let f = gecko(.vni, lag: lag, step: step)
                     f.type("d9a38ng ca61p")
                     for _ in 0..<deletes { f.deleteLine() }
@@ -3378,9 +3378,7 @@ final class SessionTests: XCTestCase {
                     f.finish(); f.idle()
                     let note = "trang chậm \(lag) phím, \(Int(step)) ms, ⌘⌫ ×\(deletes)"
                     XCTAssertEqual(f.text, "đẳng cấp ", note)
-                    // Phím xoá bấm từ ba lần liền mà con trỏ không đổi thì không còn gì cho biết trang đã xử lý chúng chưa (Gecko
-                    // không hỏi đồng bộ được): từ đầu gõ lại có thể tạm đi nguyên văn rồi được sửa. Một, hai lần thì không.
-                    if lag == 0, deletes < 3 { XCTAssertEqual(rawShown(f, from: from), [], "chữ thô ra trang — " + note) }
+                    if lag == 0 { XCTAssertEqual(rawShown(f, from: from), [], "chữ thô ra trang — " + note) }
 
                     let g = gecko(.vni, lag: lag, step: step)
                     g.type("xin chao tuye65t ")
@@ -3447,6 +3445,33 @@ final class SessionTests: XCTestCase {
     }
 
     // MARK: Ô web có gợi ý tự điền bôi đen sau con trỏ (thanh địa chỉ, ô tìm kiếm)
+
+    /// IME Lab 45784599049 (Chrome thật): trang thử xoá ô bằng JavaScript nên bộ đệm còn báo con trỏ CŨ lúc chuỗi bắt đầu, rồi
+    /// trang báo gợi ý tự điền đang bôi đen sau chữ vừa gõ — các bước lấy lại vị trí đều bỏ cuộc vì "đang có vùng chọn", phím dấu
+    /// đi nguyên văn ("a1"). Vùng bôi đen bắt đầu ở con trỏ là gợi ý: vẫn lấy được vị trí, và lần sửa thay luôn gợi ý.
+    func testWebInlineSuggestionWithStaleStart() {
+        for canSettle in [false, true] {
+            for (method, keys, want) in [(InputMethod.vni, "a1 ", "á "), (.vni, "tie61ng ", "tiếng "), (.telex, "as tieengs ", "á tiếng ")] {
+                let f = web(method, step: 150)
+                f.promptReports = true
+                f.canSettle = canSettle
+                f.completions = ["axyz", "tiendo"]
+                f.type("xin chao ban ")
+                f.idle()
+                f.jsSet("")                                  // trang tự xoá ô, bộ đệm không được báo: con trỏ cũ 13
+                f.type(keys)
+                f.finish()
+                let note = "\(canSettle ? "hỏi đồng bộ được" : "không hỏi đồng bộ"), \(method) \(keys)"
+                if canSettle {
+                    XCTAssertEqual(String(decoding: f.units, as: UTF16.self), want, note)
+                } else {
+                    // Không có rào đồng bộ: không được để gợi ý dính lại thành chữ thật; từ đầu có thể ra nguyên văn.
+                    XCTAssertTrue(!String(decoding: f.units, as: UTF16.self).contains("xyz")
+                                  && !String(decoding: f.units, as: UTF16.self).contains("ndo"), note + ": " + f.text)
+                }
+            }
+        }
+    }
 
     /// IME Lab 45776448337 (Chrome thật, trang có gợi ý tự điền): "a1" ra "a1", "tie61ng" ra "tieng" — phím dấu mất hẳn. Phím dấu
     /// phải thay cả phần gợi ý đang bôi đen (như khi người dùng gõ đè lên nó), không để gợi ý dính lại thành chữ thật.
