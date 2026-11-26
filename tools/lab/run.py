@@ -42,7 +42,9 @@ TERMINALS = {
     "ghostty": ("com.mitchellh.ghostty", "/Applications/Ghostty.app"),
     "kitty": ("net.kovidgoyal.kitty", "/Applications/kitty.app"),
     "wezterm": ("com.github.wez.wezterm", "/Applications/WezTerm.app"),
-    "rex": ("com.superlogical.rex", "/Applications/Rex Beta.app"),
+    # (Bản dựng 2147 trở đi gói tên "Rex.app"; trước đó "Rex Beta.app".)
+    "rex": ("com.superlogical.rex", next((a for a in ("/Applications/Rex.app", "/Applications/Rex Beta.app")
+                                         if pathlib.Path(a).exists()), "/Applications/Rex.app")),
     "muxy": ("com.muxy.app", "/Applications/Muxy.app"),
     "herdr": ("dev.herdr.app", "/Applications/Herdr.app"),
 }

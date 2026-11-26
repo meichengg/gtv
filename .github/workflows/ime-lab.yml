@@ -97,7 +97,7 @@ jobs:
           brew install --cask herdr-app >/dev/null || echo "::warning::không cài được Herdr"
           curl -fsSL https://releases.herdr.dev/core/install.sh | sh >/dev/null 2>&1 || echo "::warning::không cài được herdr-core"
           # Bỏ cờ quarantine để lần mở đầu không bị Gatekeeper hỏi (hộp thoại chặn cả lab)
-          for a in /Applications/iTerm.app /Applications/Ghostty.app /Applications/kitty.app /Applications/WezTerm.app "/Applications/Rex Beta.app" /Applications/Muxy.app /Applications/Herdr.app; do
+          for a in /Applications/iTerm.app /Applications/Ghostty.app /Applications/kitty.app /Applications/WezTerm.app "/Applications/Rex Beta.app" /Applications/Rex.app /Applications/Muxy.app /Applications/Herdr.app; do
             [ -d "$a" ] && xattr -dr com.apple.quarantine "$a" 2>/dev/null || true
           done
           ls -d /Applications/*.app | grep -iE "ghostty|iterm|kitty|wezterm|rex|muxy|herdr" || true
