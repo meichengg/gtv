@@ -24,6 +24,10 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
     ít nhất 10 giây; máy ảo đã trả lời "không" thì không hỏi lại. Không nạp được thì ứng dụng soạn từng từ như trước, và mục
     menu *Gõ thẳng trong … (Java)…* nêu lý do kèm dòng cấu hình để thêm tay.
   - Tắt được: menu GTV → *Tự nạp trợ thủ vào ứng dụng Java* (mục hiện khi đang ở một ứng dụng Java chạy JDK gốc).
+  - IME Lab (Swing trên Temurin 25.0.5, cùng bản Java Burp Suite đang kèm; ứng dụng không có dòng cấu hình nào): 28/28 bài ở
+    cả hai chế độ bộ đếm, mọi phím đi đường thay chữ qua trợ thủ, không một sự kiện soạn nào; trợ thủ vào máy ảo sau 25–33 ms.
+    Lượt đối chứng tắt việc tự nạp: cả 19 bài đều có gạch chân. Bài thử của trợ thủ chạy chính đoạn mã nạp đó với máy ảo thật
+    (Java 21 và 25): máy ảo thường, `-Xrs`, tắt cơ chế attach, không cho nạp agent lúc chạy — máy ảo nào cũng còn chạy sau khi thử.
 
 ### Lưu ý
 - Java 21 trở lên in một cảnh báo ra stderr của ứng dụng khi agent được nạp lúc đang chạy, và báo trước rằng một bản Java sau

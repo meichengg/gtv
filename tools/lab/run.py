@@ -1380,7 +1380,7 @@ def main():
     # Ứng dụng thường cũng chạy từng chế độ bộ đếm: ô web trên macOS 27 khác macOS 26.
     for counter_mode in counter_modes:
         suffix = set_counter_mode(counter_mode)
-        for app in os.environ.get("APPS", "field blind swing chrome").split():
+        for app in os.environ.get("APPS", "field blind swing swingattach chrome").split():
             try:
                 part = run_vscode() if app == "vscode" else run_app_suite(app)
             except Exception as e:  # noqa: BLE001
