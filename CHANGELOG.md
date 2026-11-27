@@ -4,6 +4,33 @@ Mỗi phiên bản là một mục `## <phiên bản> — <ngày>`. Nội dung c
 note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớp `MARKETING_VERSION` trong
 `project.yml`.
 
+## 1.14.1 — 2026-11-27
+
+### Sửa lỗi
+- **Burp Suite (và mọi ứng dụng Java chạy JDK gốc) quay lại soạn từng từ — gạch chân, con trỏ ở đầu từ — sau khi ứng dụng
+  cập nhật.** Gõ thẳng ở các ứng dụng này cần trợ thủ Java của GTV trong máy ảo của ứng dụng, và ở 1.14 đường duy nhất đưa nó
+  vào là dòng `-javaagent` trong file tham số JVM của ứng dụng. File đó nằm trong gói ứng dụng: Burp Suite cập nhật (thay cả
+  gói) hay một công cụ ghi lại `user.vmoptions` là dòng mất, lần mở sau máy ảo không còn trợ thủ — không có gì báo cho người
+  dùng. Nay **GTV tự nạp trợ thủ vào máy ảo đang chạy**: khi ô nhập liệu của một ứng dụng Java (JDK gốc, chưa có trợ thủ)
+  nhận focus, GTV nạp `gtv-java-helper.jar` qua cổng attach của chính máy ảo — cổng mà `jcmd`, VisualVM và các profiler dùng
+  (`VirtualMachine.loadAgent`). Mất vài chục mili giây, không cần mở lại ứng dụng, không cần dòng cấu hình nào, nên không
+  còn gì để mất khi ứng dụng cập nhật. Dòng `-javaagent` cũ vẫn dùng được (máy ảo có trợ thủ từ lúc khởi động thì GTV không
+  nạp gì nữa).
+  - Một từ đang soạn dở kiểu cũ lúc trợ thủ vừa vào được soạn nốt; từ kế tiếp gõ thẳng.
+  - Máy ảo mở cổng attach khi nhận SIGQUIT (cách của JDK). GTV chỉ gửi tín hiệu đó cho tiến trình của chính người dùng, đúng
+    tiến trình vừa nhận ra là Java, và chỉ khi nó đang bắt SIGQUIT; máy ảo chạy với `-Xrs` (không bắt) mở sẵn cổng từ lúc khởi
+    động nên không cần tín hiệu.
+  - Mỗi máy ảo chỉ thử một lần. Không nạp được thì ứng dụng soạn từng từ như trước, và mục menu *Gõ thẳng trong … (Java)…*
+    nêu lý do máy ảo đưa ra kèm dòng cấu hình để thêm tay.
+  - Tắt được: menu GTV → *Tự nạp trợ thủ vào ứng dụng Java* (mục hiện khi đang ở một ứng dụng Java chạy JDK gốc).
+
+### Lưu ý
+- Java 21 trở lên in một cảnh báo ra stderr của ứng dụng khi agent được nạp lúc đang chạy, và báo trước rằng một bản Java sau
+  này sẽ mặc định từ chối việc đó. Khi ấy (hoặc với máy ảo chạy `-XX:-EnableDynamicAgentLoading`) GTV không tự nạp được: thêm
+  dòng `-javaagent` như ở 1.14, hoặc `-XX:+EnableDynamicAgentLoading`, vào tham số JVM của ứng dụng.
+- Máy ảo đã tắt cơ chế attach (`-XX:+DisableAttachMechanism`) hay ứng dụng Java chạy trong sandbox: GTV không tự nạp được;
+  lần thử duy nhất làm máy ảo in danh sách luồng ra stdout của nó.
+
 ## 1.14 — 2026-11-26
 
 ### Thay đổi

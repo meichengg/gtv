@@ -56,3 +56,41 @@ public enum JavaWire {
         return State(focus: focus, serial: serial, start: start)
     }
 }
+
+/// Giao thức attach của HotSpot (bản 1) — phần GTV dùng để tự nạp trợ thủ vào một máy ảo Java đang chạy (`JavaAttach` trong
+/// GTVInput), như `VirtualMachine.loadAgent` của JDK. Yêu cầu là các chuỗi kết thúc bằng NUL: bản giao thức, tên lệnh, rồi
+/// đúng ba tham số. Trả lời là một dòng mã kết quả của lệnh (0: máy ảo đã chạy lệnh), sau đó là phần chữ lệnh in ra.
+public enum JavaAttachWire {
+    /// Lệnh nạp một agent Java: `load instrument false <file .jar>`.
+    /// nil: đường dẫn không gửi được — thư viện instrument của máy ảo tách "<file>=<tham số>" ở dấu "=" đầu tiên.
+    public static func loadRequest(agentJar: String) -> [UInt8]? {
+        guard !agentJar.isEmpty, !agentJar.utf8.contains(0), !agentJar.utf8.contains(UInt8(ascii: "=")) else { return nil }
+        var bytes: [UInt8] = []
+        for field in ["1", "load", "instrument", "false", agentJar] {
+            bytes.append(contentsOf: field.utf8)
+            bytes.append(0)
+        }
+        return bytes
+    }
+
+    public enum Reply: Equatable, Sendable {
+        case loaded
+        /// Máy ảo không nạp (đã tắt việc nạp agent lúc chạy, thiếu module java.instrument, agent báo lỗi…), kèm lời nó nói.
+        case refused(String)
+    }
+
+    /// Đọc trả lời của lệnh `load`. Sau dòng mã kết quả, JDK 9 trở lên in "return code: <n>" (n: giá trị Agent_OnAttach trả
+    /// về, 0 là agent đã chạy), JDK 8 chỉ in "<n>".
+    public static func reply<S: Sequence>(_ bytes: S) -> Reply where S.Element == UInt8 {
+        let lines = String(decoding: Array(bytes), as: UTF8.self)
+            .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+            .map { String($0.drop(while: { $0 == " " })) }
+        guard let status = lines.first else { return .refused("máy ảo không trả lời") }
+        let said = String(lines.dropFirst().joined(separator: " ").prefix(200))
+        guard status == "0" else { return .refused(said.isEmpty ? "mã \(status)" : said) }
+        guard lines.count > 1 else { return .refused("máy ảo không cho biết agent đã chạy chưa") }
+        let prefix = "return code: "
+        let code = lines[1].hasPrefix(prefix) ? String(lines[1].dropFirst(prefix.count)) : lines[1]
+        return Int(code) == 0 ? .loaded : .refused(said)
+    }
+}

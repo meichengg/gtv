@@ -549,10 +549,14 @@ final class GTVInputController: IMKInputController {
             forceMarked = toolkit.markedOnly || toolkit.flutterTerminal || (toolkit.swiftTerm && clientKind == .terminalView)
             if !forceMarked, isJavaView(client) {
                 // Java chạy JDK gốc: có trợ thủ GTV trong máy ảo thì thay chữ trực tiếp qua nó, không thì soạn từng từ.
-                switch javaHelperFocus() {
-                case .direct?:
+                let focus = javaHelperFocus()
+                // Trợ thủ vừa có mặt (GTV tự nạp nó vào máy ảo đang chạy) giữa lúc một từ đang soạn dở kiểu cũ: soạn nốt từ
+                // đó — đổi đường giữa từ thì phần đã soạn bị chốt và phần còn lại thành một từ mới, mất dấu.
+                let finishing = !helperRoute && session.composing
+                switch focus {
+                case .direct? where !finishing:
                     adapter.javaHelper = true
-                case JavaWire.Focus.none?:
+                case JavaWire.Focus.none? where !finishing:
                     // Ô đang giữ focus không nhận chữ (bảng, cây, nút, ô chỉ đọc): phím là lệnh của ứng dụng. Soạn từ ở đó chỉ
                     // làm AWT nuốt phím và hiện cửa sổ soạn nổi.
                     session.reset()

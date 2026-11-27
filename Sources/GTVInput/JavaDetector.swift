@@ -47,9 +47,12 @@ enum JavaDetector {
     /// Hàng đợi song song: lần quét chậm của tiến trình này (không chạy Java: đi hết vùng nhớ) không chặn tiến trình khác.
     private static let queue = DispatchQueue.global(qos: .userInitiated)
 
-    /// Bắt đầu kiểm tra sớm (lúc gắn bộ gõ), để có kết quả trước phím đầu tiên.
+    /// Bắt đầu kiểm tra sớm (lúc gắn bộ gõ), để có kết quả trước phím đầu tiên. Tiến trình đã biết là JDK gốc: tự nạp trợ thủ
+    /// nếu nó chưa có (người dùng vừa bật lại việc tự nạp; lần đầu thấy tiến trình này thì `finish` đã làm).
     static func prefetch(_ bundleID: String) {
-        guard let p = process(for: bundleID), cache[p] == nil, running[p] == nil else { return }
+        guard let p = process(for: bundleID) else { return }
+        if cache[p] == .stock { JavaHelper.autoLoad(pid: p.pid, start: p.start) }
+        guard cache[p] == nil, running[p] == nil else { return }
         start(p)
     }
 
@@ -70,6 +73,18 @@ enum JavaDetector {
     static func helper(_ bundleID: String) -> JavaWire.State? {
         guard let p = process(for: bundleID) else { return nil }
         return JavaHelper.state(pid: p.pid, start: p.start / 1_000_000)
+    }
+
+    /// Tự nạp trợ thủ GTV vào máy ảo (JDK gốc) của tiến trình có ô nhập liệu, nếu nó chưa có — xem `JavaHelper.autoLoad`.
+    static func loadHelper(_ bundleID: String) {
+        guard let p = process(for: bundleID), cache[p] == .stock else { return }
+        JavaHelper.autoLoad(pid: p.pid, start: p.start)
+    }
+
+    /// Vì sao GTV không tự nạp được trợ thủ vào tiến trình có ô nhập liệu; nil: chưa thử hay không có gì hỏng.
+    static func helperLoadFailure(_ bundleID: String) -> String? {
+        guard let p = process(for: bundleID) else { return nil }
+        return JavaHelper.loadFailure(pid: p.pid, start: p.start)
     }
 
     @discardableResult
@@ -93,7 +108,10 @@ enum JavaDetector {
         waited.remove(p)
         switch check.result {
         case .none: break
-        case .stock: DebugLog.event("tiến trình \(p.pid) chạy Java (JDK gốc): ô không khai báo thuộc tính văn bản soạn bằng marked text")
+        case .stock:
+            DebugLog.event("tiến trình \(p.pid) chạy Java (JDK gốc): gõ thẳng khi máy ảo có trợ thủ GTV, không thì soạn bằng marked text")
+            // Ngay khi biết (thường là lúc ô vừa nhận focus): trợ thủ vào trước phím đầu tiên.
+            JavaHelper.autoLoad(pid: p.pid, start: p.start)
         case .replacing: DebugLog.event("tiến trình \(p.pid) chạy Java (JetBrains Runtime): gõ trực tiếp")
         }
         return check.result

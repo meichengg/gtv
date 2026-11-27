@@ -5,9 +5,13 @@ import VietEngine
 /// Trợ thủ Java của GTV (JavaHelper/ trong mã nguồn, `gtv-java-helper.jar` trong gói bộ gõ).
 ///
 /// Ứng dụng Java chạy JDK gốc (Burp Suite, Ghidra, JMeter…) không cho bộ gõ thay chữ đã gõ: AWT bỏ qua vùng cần thay, nên
-/// chỉ soạn từng từ được — Swing tự gạch chân phần đang soạn, và AWT nuốt phím tắt / mũi tên bấm ngay sau từ. Nạp trợ thủ
-/// vào máy ảo của ứng dụng (thêm `-javaagent:<đường dẫn>` vào tham số JVM của nó) thì AWT nhận vùng cần thay như JetBrains
-/// Runtime: GTV thay chữ trực tiếp, không còn gì "đang soạn".
+/// chỉ soạn từng từ được — Swing tự gạch chân phần đang soạn, và AWT nuốt phím tắt / mũi tên bấm ngay sau từ. Có trợ thủ
+/// trong máy ảo của ứng dụng thì AWT nhận vùng cần thay như JetBrains Runtime: GTV thay chữ trực tiếp, không còn gì "đang soạn".
+///
+/// Trợ thủ vào máy ảo bằng một trong hai đường:
+/// - GTV tự nạp nó vào máy ảo đang chạy (`autoLoad`, qua cổng attach của máy ảo — `JavaAttach`) lần đầu thấy ứng dụng đó có ô
+///   nhập liệu. Không cần cấu hình gì ở ứng dụng, nên không mất khi ứng dụng cập nhật hay ghi lại file tham số JVM của nó.
+/// - Dòng `-javaagent:<đường dẫn>` trong tham số JVM của ứng dụng: cho máy ảo không cho nạp agent lúc chạy.
 ///
 /// Trợ thủ báo sự có mặt của nó qua một file nhỏ theo pid (`JavaWire.State`); GTV đọc file đó ở mỗi phím gõ vào ô Java.
 enum JavaHelper {
@@ -36,6 +40,56 @@ enum JavaHelper {
         return state
     }
 
+    /// Một máy ảo đã được thử tự nạp trợ thủ (pid có thể được dùng lại: kèm thời điểm khởi động, micro giây).
+    private struct Target: Hashable {
+        let pid: pid_t
+        let start: UInt64
+    }
+
+    /// Kết quả tự nạp theo máy ảo; nil trong lúc đang nạp. Mỗi máy ảo chỉ thử một lần: máy ảo đã từ chối thì hỏi lại cũng
+    /// vậy, và mỗi lần hỏi một máy ảo tắt cơ chế attach là một lần nó in danh sách luồng ra stdout. Chỉ dùng trên luồng chính.
+    private static var loads: [Target: JavaAttach.Outcome?] = [:]
+    private static let loadQueue = DispatchQueue(label: "gtv.java-helper-load", qos: .userInitiated)
+
+    /// Người dùng cho GTV tự nạp trợ thủ vào ứng dụng Java (mặc định bật). Đọc thẳng UserDefaults: IME Lab đổi bằng
+    /// `defaults write` giữa hai lượt.
+    static var autoLoads: Bool {
+        get { UserDefaults.standard.object(forKey: "javaAutoHelper") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "javaAutoHelper") }
+    }
+
+    /// Tự nạp trợ thủ vào máy ảo (JDK gốc) của tiến trình `pid` nếu nó chưa có — ở luồng nền, một lần cho mỗi máy ảo. Nạp
+    /// xong thì trợ thủ tự ghi file trạng thái; phím kế tiếp vào ô Java thấy nó (`state`).
+    static func autoLoad(pid: pid_t, start: UInt64) {
+        let target = Target(pid: pid, start: start)
+        guard autoLoads, loads[target] == nil, state(pid: pid, start: start / 1_000_000) == nil else { return }
+        if loads.count > 64 { loads = loads.filter { kill($0.key.pid, 0) == 0 } }
+        loads[target] = .some(nil)
+        if !FileManager.default.fileExists(atPath: jarURL.path) { installJar() }
+        let jar = jarURL.path
+        loadQueue.async {
+            let began = DispatchTime.now().uptimeNanoseconds
+            let outcome = JavaAttach.loadAgent(pid: pid, start: start, jar: jar)
+            let ms = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
+            DispatchQueue.main.async {
+                loads[target] = outcome
+                switch outcome {
+                case .loaded: DebugLog.event("trợ thủ Java: đã tự nạp vào tiến trình \(pid) (\(ms) ms)")
+                case .skipped(let why): DebugLog.event("trợ thủ Java: không tự nạp vào tiến trình \(pid): \(why)")
+                case .failed(let why): DebugLog.event("trợ thủ Java: tiến trình \(pid) không nạp (\(ms) ms): \(why)")
+                }
+            }
+        }
+    }
+
+    /// Vì sao GTV không tự nạp được trợ thủ vào máy ảo đó; nil: chưa thử, đang nạp, hay đã nạp.
+    static func loadFailure(pid: pid_t, start: UInt64) -> String? {
+        switch loads[Target(pid: pid, start: start)] {
+        case .some(.some(.skipped(let why))), .some(.some(.failed(let why))): return why
+        default: return nil
+        }
+    }
+
     /// Chép file .jar đi kèm bộ gõ ra `jarURL` (lúc bộ gõ khởi động): tham số JVM của các ứng dụng luôn trỏ tới bản mới
     /// nhất. Ghi ra file tạm rồi đổi tên: máy ảo đang chạy vẫn giữ bản nó đã mở.
     static func installJar() {
@@ -61,16 +115,19 @@ enum JavaHelper {
         }
     }
 
-    /// Hướng dẫn nạp trợ thủ vào ứng dụng Java `name`. Không dùng runModal: tiến trình này còn là bộ gõ.
-    static func showInstructions(appName name: String) {
+    /// Hướng dẫn nạp trợ thủ vào ứng dụng Java `name` bằng dòng cấu hình — cho máy ảo GTV không tự nạp được (`failure`: lý
+    /// do, nếu GTV đã thử). Không dùng runModal: tiến trình này còn là bộ gõ.
+    static func showInstructions(appName name: String, failure: String?) {
         installJar()
         let alert = NSAlert()
         alert.messageText = "Gõ thẳng trong \(name)"
+        let tried = failure.map { "GTV đã thử tự nạp trợ thủ vào Java của \(name) nhưng không được: \($0).\n\n" }
+            ?? (autoLoads ? "" : "Mục \"Tự nạp trợ thủ vào ứng dụng Java\" đang tắt: bật nó thì GTV tự lo việc dưới đây.\n\n")
         alert.informativeText = """
             \(name) chạy Java (JDK gốc): Java không cho bộ gõ thay chữ đã gõ, nên GTV phải soạn từng từ — từ đang soạn bị \
             gạch chân, phím tắt và mũi tên bấm ngay sau từ bị Java bỏ qua.
 
-            Để gõ thẳng như ứng dụng thường, thêm dòng sau vào tham số JVM của \(name) rồi mở lại nó:
+            \(tried)Để gõ thẳng như ứng dụng thường, thêm dòng sau vào tham số JVM của \(name) rồi mở lại nó:
 
             \(agentOption)
 

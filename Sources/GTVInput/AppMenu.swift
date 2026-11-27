@@ -12,7 +12,7 @@ enum AppMenu {
         case hotkey = 50   // 50 + ToggleHotkey.rawValue
         case excludeCurrent = 60, addExcluded
         case showStatusIcon = 70, playSwitchSound, selectAtLogin, checkForUpdates, autoCheckUpdates
-        case javaHelper = 80
+        case javaHelper = 80, javaAutoHelper
         case quit = 99
         case removeExcluded = 1000   // 1000 + vị trí trong `shownExcluded`
     }
@@ -140,7 +140,8 @@ enum AppMenu {
                 : "Mặc định GTV thay chữ trực tiếp. Bật nếu ứng dụng này gõ sai dấu: từ đang gõ được soạn rồi mới chốt."
             i.representedObject = appBundleID
             menu.addItem(i)
-            // Ứng dụng Java chạy JDK gốc: gõ thẳng được khi máy ảo của nó nạp trợ thủ GTV (`JavaHelper`).
+            // Ứng dụng Java chạy JDK gốc: gõ thẳng được khi máy ảo của nó có trợ thủ GTV (`JavaHelper`) — GTV tự nạp, hoặc
+            // người dùng thêm dòng cấu hình cho máy ảo không cho nạp lúc chạy.
             if JavaDetector.runtime(appBundleID, wait: 0) == .stock {
                 if JavaDetector.helper(appBundleID) != nil {
                     header("\(appName(appBundleID)) (Java): đang gõ thẳng qua trợ thủ GTV")
@@ -150,6 +151,11 @@ enum AppMenu {
                     j.representedObject = appBundleID
                     menu.addItem(j)
                 }
+                let auto = item("Tự nạp trợ thủ vào ứng dụng Java", Tag.javaAutoHelper.rawValue, JavaHelper.autoLoads)
+                auto.toolTip = "GTV nạp trợ thủ gõ thẳng (gtv-java-helper.jar) vào Java của ứng dụng lúc nó đang chạy, qua cổng "
+                    + "attach của Java. Tắt: chỉ ứng dụng có dòng -javaagent của GTV trong cấu hình mới gõ thẳng."
+                auto.representedObject = appBundleID
+                menu.addItem(auto)
             }
         }
         add("Luôn soạn từng từ (tương thích tối đa)", .markedAlways, s.alwaysMarked)
@@ -225,8 +231,13 @@ enum AppMenu {
         case .javaHelper:
             let name = NSRunningApplication.runningApplications(withBundleIdentifier: appBundleID).first?.localizedName
                 ?? fileName(appBundleID)
+            let failure = JavaDetector.helperLoadFailure(appBundleID)
             // Đợi menu đóng hẳn rồi mới mở hộp thoại.
-            DispatchQueue.main.async { JavaHelper.showInstructions(appName: name) }
+            DispatchQueue.main.async { JavaHelper.showInstructions(appName: name, failure: failure) }
+        case .javaAutoHelper:
+            JavaHelper.autoLoads.toggle()
+            // Bật: nạp ngay vào ứng dụng đang dùng. Tắt: máy ảo đã có trợ thủ vẫn giữ nó tới khi ứng dụng đó thoát.
+            JavaDetector.prefetch(appBundleID)
         case .quit:
             InputSources.selectSystemKeyboard()
             NSApp.terminate(nil)

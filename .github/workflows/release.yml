@@ -84,7 +84,7 @@ jobs:
             if [ -n "$h" ] && [ -x "$h/bin/javac" ]; then javac="$h/bin/javac"; break; fi
           done
           "$javac" -version
-          GTV_JAVAC="$javac" JavaHelper/test.sh | tail -14
+          GTV_JAVAC="$javac" JavaHelper/test.sh | tail -20
 
       # Chứng chỉ ký mã riêng của fork: chữ ký cố định giữa các bản.
       - name: Import code signing certificate

@@ -476,6 +476,18 @@ def set_gecko_direct(on):
     time.sleep(0.6)
 
 
+def set_java_auto(on):
+    """Bộ gõ tự nạp trợ thủ Java vào máy ảo đang chạy (`javaAutoHelper`, mặc định bật). Tắt cho app "swing": đường soạn từng
+    từ khi máy ảo không có trợ thủ — cũng là lượt đối chứng của "swingattach"."""
+    d = "com.gtv.inputmethod.GTV"
+    if on:
+        sh(["defaults", "delete", d, "javaAutoHelper"])
+    else:
+        sh(["defaults", "write", d, "javaAutoHelper", "-bool", "false"])
+    sh(["notifyutil", "-p", "com.gtv.lab.reload"])
+    time.sleep(0.6)
+
+
 def ime_seen(mark, bid):
     """Số phím GTV thấy (và tự xử lý) ở ứng dụng `bid` kể từ `mark`: bài nào GTV không thấy phím nào là lỗi hạ
     tầng (phím đi vòng bộ gõ, sai chế độ…), không phải PASS/FAIL của GTV."""
@@ -906,7 +918,9 @@ fetch('/ready', {method: 'POST', body: '1'});
 
 def run_app_suite(app, only=None, tag=None):
     """Bài gõ trong ô của ứng dụng thường. `app`: "field" (Cocoa), "blind", "swing" (Java, JDK gốc), "swingjbr" (JetBrains
-    Runtime), "swinghelper" (JDK gốc, máy ảo nạp trợ thủ Java của GTV). `only`: chỉ chạy các bài có tên trong đó; `tag`: hậu tố cho file log (lượt đo cách gắn thuộc tính)."""
+    Runtime), "swinghelper" (JDK gốc, máy ảo nạp trợ thủ Java của GTV bằng -javaagent), "swingattach" (JDK gốc, không có dòng
+    cấu hình nào: bộ gõ tự nạp trợ thủ vào máy ảo đang chạy). `only`: chỉ chạy các bài có tên trong đó; `tag`: hậu tố cho file
+    log (lượt đo cách gắn thuộc tính)."""
     out_file = L / f"{app}.txt"
     ready = pathlib.Path(str(out_file) + ".ready")
     out_file.unlink(missing_ok=True)
@@ -941,7 +955,11 @@ def run_app_suite(app, only=None, tag=None):
                 return [{"terminal": app, "test": "-", "error": "không có JetBrains Runtime" if app == "swingjbr" else "không có JDK 11+"}]
             print(app, "java:", java, sh([java, "-version"]).stderr.strip().replace("\n", " | "), flush=True)
             cmd = [java]
-            tests = JAVA_COMPOSE_TESTS if app == "swing" else JAVA_HELPER_TESTS if app == "swinghelper" else JAVA_DIRECT_TESTS
+            tests = (JAVA_COMPOSE_TESTS if app == "swing" else JAVA_HELPER_TESTS if app in ("swinghelper", "swingattach")
+                     else JAVA_DIRECT_TESTS)
+            # "swing" là đường soạn từng từ (máy ảo không có trợ thủ): ở đó bộ gõ không được tự nạp.
+            set_java_auto(app != "swing")
+            load_mark = log_mark()
             if app == "swinghelper":
                 # Bản trợ thủ đi kèm chính bộ gõ đang thử (cũng là thử việc đóng gói).
                 jar = IM / "Contents/Resources/gtv-java-helper.jar"
@@ -1003,7 +1021,7 @@ def run_app_suite(app, only=None, tag=None):
                     if name in FLASH_NAMES and r["raw_flash"] and tag != "nosettle":
                         r["pass"] = False
                         r["info"] = f"chữ thô ra trang {r['raw_flash']} lần rồi mới được sửa"
-                if app == "swinghelper":
+                if app in ("swinghelper", "swingattach"):
                     # Phím nào cũng phải đi đường thay chữ qua trợ thủ (không phím nào soạn bằng marked text).
                     lines = [l for l in log_since(mark).splitlines() if " phím " in l]
                     r["helper_keys"] = sum("trợ thủ Java" in l for l in lines)
@@ -1035,6 +1053,12 @@ def run_app_suite(app, only=None, tag=None):
             for r in results:
                 r["info"] = "ô nhận: " + " | ".join(seen)[:300]
         if proc:
+            if app.startswith("swing"):
+                # Bộ gõ đã tự nạp trợ thủ vào máy ảo này chưa, mất bao lâu (hay vì sao không).
+                loads = [re.sub(r"^\S+ ", "", l)[:160] for l in log_since(load_mark).splitlines() if "trợ thủ Java:" in l]
+                for r in results:
+                    r["helper_load"] = loads
+                set_java_auto(True)
             proc.terminate()
         elif browser:
             close_browser(browser[0])
