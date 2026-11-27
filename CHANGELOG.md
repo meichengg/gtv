@@ -20,8 +20,9 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   - Máy ảo mở cổng attach khi nhận SIGQUIT (cách của JDK). GTV chỉ gửi tín hiệu đó cho tiến trình của chính người dùng, đúng
     tiến trình vừa nhận ra là Java, và chỉ khi nó đang bắt SIGQUIT; máy ảo chạy với `-Xrs` (không bắt) mở sẵn cổng từ lúc khởi
     động nên không cần tín hiệu.
-  - Mỗi máy ảo chỉ thử một lần. Không nạp được thì ứng dụng soạn từng từ như trước, và mục menu *Gõ thẳng trong … (Java)…*
-    nêu lý do máy ảo đưa ra kèm dòng cấu hình để thêm tay.
+  - Máy ảo đang bận (vừa khởi động, đang dọn bộ nhớ) chưa trả lời thì GTV thử lại ở các phím sau, tối đa ba lần, cách nhau
+    ít nhất 10 giây; máy ảo đã trả lời "không" thì không hỏi lại. Không nạp được thì ứng dụng soạn từng từ như trước, và mục
+    menu *Gõ thẳng trong … (Java)…* nêu lý do kèm dòng cấu hình để thêm tay.
   - Tắt được: menu GTV → *Tự nạp trợ thủ vào ứng dụng Java* (mục hiện khi đang ở một ứng dụng Java chạy JDK gốc).
 
 ### Lưu ý
@@ -29,7 +30,7 @@ note trên trang GitHub Releases (workflow `Release`). Phiên bản phải khớ
   này sẽ mặc định từ chối việc đó. Khi ấy (hoặc với máy ảo chạy `-XX:-EnableDynamicAgentLoading`) GTV không tự nạp được: thêm
   dòng `-javaagent` như ở 1.14, hoặc `-XX:+EnableDynamicAgentLoading`, vào tham số JVM của ứng dụng.
 - Máy ảo đã tắt cơ chế attach (`-XX:+DisableAttachMechanism`) hay ứng dụng Java chạy trong sandbox: GTV không tự nạp được;
-  lần thử duy nhất làm máy ảo in danh sách luồng ra stdout của nó.
+  mỗi lần thử (tối đa ba) làm máy ảo in danh sách luồng ra stdout của nó.
 
 ## 1.14 — 2026-11-26
 

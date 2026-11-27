@@ -47,12 +47,9 @@ enum JavaDetector {
     /// Hàng đợi song song: lần quét chậm của tiến trình này (không chạy Java: đi hết vùng nhớ) không chặn tiến trình khác.
     private static let queue = DispatchQueue.global(qos: .userInitiated)
 
-    /// Bắt đầu kiểm tra sớm (lúc gắn bộ gõ), để có kết quả trước phím đầu tiên. Tiến trình đã biết là JDK gốc: tự nạp trợ thủ
-    /// nếu nó chưa có (người dùng vừa bật lại việc tự nạp; lần đầu thấy tiến trình này thì `finish` đã làm).
+    /// Bắt đầu kiểm tra sớm (lúc gắn bộ gõ), để có kết quả trước phím đầu tiên.
     static func prefetch(_ bundleID: String) {
-        guard let p = process(for: bundleID) else { return }
-        if cache[p] == .stock { JavaHelper.autoLoad(pid: p.pid, start: p.start) }
-        guard cache[p] == nil, running[p] == nil else { return }
+        guard let p = process(for: bundleID), cache[p] == nil, running[p] == nil else { return }
         start(p)
     }
 
@@ -76,6 +73,8 @@ enum JavaDetector {
     }
 
     /// Tự nạp trợ thủ GTV vào máy ảo (JDK gốc) của tiến trình có ô nhập liệu, nếu nó chưa có — xem `JavaHelper.autoLoad`.
+    /// Lần đầu thấy tiến trình thì `finish` đã làm; gọi lại ở các phím sau là để thử lại khi lần trước chưa tới được máy ảo
+    /// (đang bận), hoặc khi người dùng vừa bật lại việc tự nạp.
     static func loadHelper(_ bundleID: String) {
         guard let p = process(for: bundleID), cache[p] == .stock else { return }
         JavaHelper.autoLoad(pid: p.pid, start: p.start)

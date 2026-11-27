@@ -46,10 +46,20 @@ enum JavaHelper {
         let start: UInt64
     }
 
-    /// Kết quả tự nạp theo máy ảo; nil trong lúc đang nạp. Mỗi máy ảo chỉ thử một lần: máy ảo đã từ chối thì hỏi lại cũng
-    /// vậy, và mỗi lần hỏi một máy ảo tắt cơ chế attach là một lần nó in danh sách luồng ra stdout. Chỉ dùng trên luồng chính.
-    private static var loads: [Target: JavaAttach.Outcome?] = [:]
+    /// Việc tự nạp vào một máy ảo: kết quả lần thử gần nhất (nil: đang nạp), số lần đã thử, lúc bắt đầu lần gần nhất.
+    private struct Load {
+        var outcome: JavaAttach.Outcome?
+        var attempts: Int
+        var began: UInt64
+    }
+
+    /// Chỉ dùng trên luồng chính.
+    private static var loads: [Target: Load] = [:]
     private static let loadQueue = DispatchQueue(label: "gtv.java-helper-load", qos: .userInitiated)
+    /// Máy ảo không tới được (đang bận) thì thử lại, thưa và có hạn: mỗi lần thử một máy ảo đã tắt cơ chế attach là một lần
+    /// nó in danh sách luồng ra stdout. Máy ảo đã trả lời "không" thì không hỏi lại.
+    private static let maxAttempts = 3
+    private static let retryAfter: UInt64 = 10_000_000_000
 
     /// Người dùng cho GTV tự nạp trợ thủ vào ứng dụng Java (mặc định bật). Đọc thẳng UserDefaults: IME Lab đổi bằng
     /// `defaults write` giữa hai lượt.
@@ -58,24 +68,31 @@ enum JavaHelper {
         set { UserDefaults.standard.set(newValue, forKey: "javaAutoHelper") }
     }
 
-    /// Tự nạp trợ thủ vào máy ảo (JDK gốc) của tiến trình `pid` nếu nó chưa có — ở luồng nền, một lần cho mỗi máy ảo. Nạp
-    /// xong thì trợ thủ tự ghi file trạng thái; phím kế tiếp vào ô Java thấy nó (`state`).
+    /// Tự nạp trợ thủ vào máy ảo (JDK gốc) của tiến trình `pid` nếu nó chưa có — ở luồng nền. Nạp xong thì trợ thủ tự ghi file
+    /// trạng thái; phím kế tiếp vào ô Java thấy nó (`state`). Gọi được ở mỗi phím: đã thử rồi thì chỉ là một lần tra bảng.
     static func autoLoad(pid: pid_t, start: UInt64) {
         let target = Target(pid: pid, start: start)
-        guard autoLoads, loads[target] == nil, state(pid: pid, start: start / 1_000_000) == nil else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        var attempts = 0
+        if let load = loads[target] {
+            guard case .unreachable? = load.outcome, load.attempts < maxAttempts, now - load.began >= retryAfter else { return }
+            attempts = load.attempts
+        }
+        guard autoLoads, state(pid: pid, start: start / 1_000_000) == nil else { return }
         if loads.count > 64 { loads = loads.filter { kill($0.key.pid, 0) == 0 } }
-        loads[target] = .some(nil)
+        loads[target] = Load(outcome: nil, attempts: attempts + 1, began: now)
         if !FileManager.default.fileExists(atPath: jarURL.path) { installJar() }
         let jar = jarURL.path
         loadQueue.async {
-            let began = DispatchTime.now().uptimeNanoseconds
             let outcome = JavaAttach.loadAgent(pid: pid, start: start, jar: jar)
-            let ms = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
+            let ms = (DispatchTime.now().uptimeNanoseconds - now) / 1_000_000
             DispatchQueue.main.async {
-                loads[target] = outcome
+                loads[target]?.outcome = outcome
                 switch outcome {
                 case .loaded: DebugLog.event("trợ thủ Java: đã tự nạp vào tiến trình \(pid) (\(ms) ms)")
                 case .skipped(let why): DebugLog.event("trợ thủ Java: không tự nạp vào tiến trình \(pid): \(why)")
+                case .unreachable(let why):
+                    DebugLog.event("trợ thủ Java: chưa nạp được vào tiến trình \(pid) (lần \(attempts + 1)/\(maxAttempts), \(ms) ms): \(why)")
                 case .failed(let why): DebugLog.event("trợ thủ Java: tiến trình \(pid) không nạp (\(ms) ms): \(why)")
                 }
             }
@@ -84,8 +101,8 @@ enum JavaHelper {
 
     /// Vì sao GTV không tự nạp được trợ thủ vào máy ảo đó; nil: chưa thử, đang nạp, hay đã nạp.
     static func loadFailure(pid: pid_t, start: UInt64) -> String? {
-        switch loads[Target(pid: pid, start: start)] {
-        case .some(.some(.skipped(let why))), .some(.some(.failed(let why))): return why
+        switch loads[Target(pid: pid, start: start)]?.outcome {
+        case .skipped(let why)?, .unreachable(let why)?, .failed(let why)?: return why
         default: return nil
         }
     }

@@ -349,6 +349,7 @@ final class GTVInputController: IMKInputController {
     private func javaHelperFocus() -> JavaWire.Focus? {
         guard JavaDetector.helper(bundleID) != nil else {      // không có trợ thủ: khỏi hỏi ô
             javaFocus = nil
+            JavaDetector.loadHelper(bundleID)                  // chưa nạp được (máy ảo đang bận): thử lại, có hạn
             return nil
         }
         adapter.remembersSelection = true

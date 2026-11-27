@@ -17,13 +17,16 @@ enum JavaAttach {
         case loaded
         /// Không thử: gửi tín hiệu cho tiến trình này không an toàn hoặc vô ích.
         case skipped(String)
-        /// Đã thử mà máy ảo không nạp.
+        /// Không tới được máy ảo trong thời gian chờ (nó đang bận — khởi động, dọn bộ nhớ, bị trình gỡ lỗi giữ — hoặc đã tắt
+        /// cơ chế attach): lát nữa thử lại có thể được.
+        case unreachable(String)
+        /// Máy ảo đã trả lời là không nạp: hỏi lại cũng vậy.
         case failed(String)
     }
 
     /// `start`: thời điểm khởi động của tiến trình (micro giây, như `proc_bsdinfo`) — pid đã sang tiến trình khác thì thôi.
     /// `wait`: thời gian tối đa chờ máy ảo mở cổng sau tín hiệu.
-    static func loadAgent(pid: pid_t, start: UInt64?, jar: String, wait: Double = 3) -> Outcome {
+    static func loadAgent(pid: pid_t, start: UInt64?, jar: String, wait: Double = 5) -> Outcome {
         guard let request = JavaAttachWire.loadRequest(agentJar: jar) else {
             return .skipped("đường dẫn file trợ thủ có ký tự không gửi được")
         }
@@ -46,14 +49,20 @@ enum JavaAttach {
                 usleep(5_000)
                 fd = connect(socketPath)
             } while fd < 0 && now() < deadline
-            guard fd >= 0 else { return .failed("máy ảo không mở cổng attach (đã tắt cơ chế attach, hoặc chạy trong sandbox)") }
+            guard fd >= 0 else {
+                return .unreachable("máy ảo không mở cổng attach (đang bận, đã tắt cơ chế attach, hoặc chạy trong sandbox)")
+            }
         }
         defer { close(fd) }
 
         var uid: uid_t = 0, gid: gid_t = 0
         guard getpeereid(fd, &uid, &gid) == 0, uid == geteuid() else { return .failed("cổng attach không phải của người dùng này") }
-        guard send(fd, request) else { return .failed("không gửi được lệnh (errno \(errno))") }
-        switch JavaAttachWire.reply(receive(fd)) {
+        guard send(fd, request) else { return .unreachable("không gửi được lệnh (errno \(errno))") }
+        let reply = receive(fd)
+        // Lệnh đã gửi mà hết thời gian chờ vẫn chưa có chữ nào: máy ảo có thể chạy nó sau — trợ thủ tự báo sự có mặt, và nạp
+        // lần nữa không sao (trợ thủ chỉ khởi động một lần).
+        guard !reply.isEmpty else { return .unreachable("máy ảo không trả lời") }
+        switch JavaAttachWire.reply(reply) {
         case .loaded: return .loaded
         case .refused(let said): return .failed(said)
         }

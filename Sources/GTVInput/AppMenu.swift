@@ -237,7 +237,7 @@ enum AppMenu {
         case .javaAutoHelper:
             JavaHelper.autoLoads.toggle()
             // Bật: nạp ngay vào ứng dụng đang dùng. Tắt: máy ảo đã có trợ thủ vẫn giữ nó tới khi ứng dụng đó thoát.
-            JavaDetector.prefetch(appBundleID)
+            JavaDetector.loadHelper(appBundleID)
         case .quit:
             InputSources.selectSystemKeyboard()
             NSApp.terminate(nil)

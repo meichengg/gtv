@@ -33,7 +33,7 @@ mkdir -p "$WORK/jar/META-INF"
 cp -R "$WORK/gtv" "$WORK/jar/" && cp MANIFEST.MF "$WORK/jar/META-INF/MANIFEST.MF"
 (cd "$WORK/jar" && zip -q -X "$WORK/helper.jar" META-INF/MANIFEST.MF && zip -q -X -r "$WORK/helper.jar" gtv)
 FAILED=0
-# attach_case <tên> <kết quả phải có: loaded|failed> <máy ảo phải có trợ thủ: yes|no> [tham số máy ảo…]
+# attach_case <tên> <kết quả phải có: loaded|unreachable|failed> <máy ảo phải có trợ thủ: yes|no> [tham số máy ảo…]
 attach_case() {
     local name="$1" want="$2" agent="$3"; shift 3
     local out="$WORK/target.out"
@@ -59,7 +59,7 @@ attach_case "máy ảo thường" loaded yes
 # -Xrs: máy ảo không bắt SIGQUIT (tín hiệu đó sẽ kết thúc nó) nhưng mở cổng attach từ lúc khởi động — nạp không cần tín hiệu.
 attach_case "máy ảo -Xrs" loaded yes -Xrs
 # Tắt cơ chế attach: máy ảo chỉ in danh sách luồng; bộ gõ thôi sau thời gian chờ, máy ảo chạy tiếp.
-attach_case "máy ảo tắt cơ chế attach" failed no -XX:+DisableAttachMechanism
+attach_case "máy ảo tắt cơ chế attach" unreachable no -XX:+DisableAttachMechanism
 # Java 21 trở lên: tắt việc nạp agent lúc chạy (mặc định của một bản Java sau này) — máy ảo từ chối, chạy tiếp.
 if "$JAVA" -XX:-EnableDynamicAgentLoading -version >/dev/null 2>&1; then
     attach_case "máy ảo không cho nạp agent lúc chạy" failed no -XX:-EnableDynamicAgentLoading
